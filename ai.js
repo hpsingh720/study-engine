@@ -22,7 +22,40 @@ const AI = {
   get bulkModel() { return localStorage.getItem('gem_bulk') || 'gemini-2.5-flash-lite'; },
   get rpm() { return Math.max(1, +localStorage.getItem('gem_rpm') || 8); },
 
-  async call({ prompt, images = [], system, json = true, temperature = 0.35, model }) {
+  async call(opts) {
+    try { return await this._call(opts); }
+    catch (e) {
+      // Google retires models for new users and names the replacement — switch to it automatically and retry once.
+      const m = /no longer available|not found|not supported|deprecated/i.test(e.message || '') && (e.message.match(/use (?:models\/)?(gemini-[\w.\-]+)/i) || [])[1];
+      const used = opts.model || this.model;
+      if (m && m !== used && !opts._retried) {
+        if (used === this.model) localStorage.setItem('gem_model', m);
+        if (used === this.bulkModel) localStorage.setItem('gem_bulk', m);
+        return this.call({ ...opts, model: m, _retried: true });
+      }
+      if (/no longer available|not found for API|is not supported/i.test(e.message || '') && !opts._retried) {
+        const best = await this.autoPick().catch(() => null);
+        if (best) return this.call({ ...opts, model: opts.model === undefined || used === this.model ? best.main : best.bulk, _retried: true });
+      }
+      throw e;
+    }
+  },
+
+  // Pick the newest general-purpose Flash and Flash-Lite models this key can use.
+  async autoPick() {
+    const ms = (await this.listModels()).filter(m => /^gemini-\d/.test(m) && !/tts|image|audio|live|embedding|vision|thinking-exp|computer|robotics|native/i.test(m));
+    const ver = m => parseFloat((m.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1] || 0);
+    const stable = m => /preview|exp/.test(m) ? 0 : 1;
+    const rank = (a, b) => ver(b) - ver(a) || stable(b) - stable(a) || a.length - b.length;
+    const flash = ms.filter(m => /flash/.test(m) && !/lite/.test(m)).sort(rank);
+    const lite = ms.filter(m => /flash-lite/.test(m)).sort(rank);
+    if (!flash.length) return null;
+    const best = { main: flash[0], bulk: lite[0] && ver(lite[0]) >= ver(flash[0]) - 0.5 ? lite[0] : flash[0] };
+    localStorage.setItem('gem_model', best.main); localStorage.setItem('gem_bulk', best.bulk);
+    return best;
+  },
+
+  async _call({ prompt, images = [], system, json = true, temperature = 0.35, model }) {
     if (!this.key) throw new Error('Add your Gemini API key in Settings first.');
     const parts = [{ text: prompt }];
     for (const im of images) {

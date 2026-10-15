@@ -267,7 +267,13 @@ const A = {
   async testKey() {
     const msg = $('#key-msg'); const key = $('input[name=key]').value.trim(); localStorage.setItem('gem_key', key);
     msg.textContent = 'Checking…';
-    try { const ms = await AI.listModels(); $('#models').innerHTML = ms.map(m => `<option value="${m}">`).join(''); msg.textContent = `Key works. ${ms.length} models available — e.g. ${ms.filter(m => /flash|pro/.test(m)).slice(0, 4).join(', ')}`; }
+    try {
+      const ms = await AI.listModels(); $('#models').innerHTML = ms.map(m => `<option value="${m}">`).join('');
+      const best = await AI.autoPick();
+      if (best) { const a = $('input[name=model]'), b = $('input[name=bulk]'); if (a) a.value = best.main; if (b) b.value = best.bulk; }
+      msg.textContent = `Key works. ${ms.length} models available. Picked the newest: ${best ? best.main + ' (main) and ' + best.bulk + ' (bulk)' : 'none found — type a model name'}. Click Save.`;
+      Queue.pausedUntil = 0; Queue.limitHits = 0;
+    }
     catch (e) { msg.textContent = 'Problem: ' + e.message; }
   },
   async copySql() { try { await navigator.clipboard.writeText(SYNC_SQL); toast('Setup script copied'); } catch (e) { openModal(`<h3>Setup script</h3><textarea rows="16" readonly>${esc(SYNC_SQL)}</textarea><div class="row end mt"><button class="btn" data-act="closeModal">Close</button></div>`); } },
@@ -415,6 +421,7 @@ async function init() {
   }
   Practice.load();
   await Queue.recover();
+  if (AI.key && !localStorage.getItem('gem_picked')) { try { await AI.autoPick(); localStorage.setItem('gem_picked', '1'); } catch (e) {} }
   Queue.listeners.add(() => { const q = $('#qstatus'); if (q) q.innerHTML = queueLine(); const nb = $('#nav-q'); if (nb) nb.hidden = !(Queue.running.local || Queue.running.ai); });
   await App.render();
   Queue.kick();
