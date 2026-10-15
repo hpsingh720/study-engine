@@ -261,6 +261,11 @@ const A = {
     toast(n ? `Queued ${n} jobs. Your focus system (${sysName(prefs.focus)}) goes first.` : 'Everything is already generated or queued.');
     App.render(true);
   },
+  async bookFirst(el) {
+    let n = 0;
+    for (const j of await DB.all('queue')) if (j.payload?.bookId === el.dataset.id && j.status === 'pending') { j.prio = 0.1; await DB.put('queue', j); n++; }
+    toast(n ? `This book jumps the queue (${n} jobs).` : 'Nothing waiting for this book.'); App.render(true);
+  },
   async delBook(el) { if (!confirm('Remove this book from the laptop? Sheets and questions already made from it stay.')) return; await deleteBook(el.dataset.id); App.render(true); },
 
   // Settings
@@ -357,7 +362,8 @@ const F = {
   },
   async saveProviders(form) {
     const d = new FormData(form);
-    Providers.list().forEach(p => Providers.save(p.id, { key: (d.get('key_' + p.id) || '').trim(), model: (d.get('model_' + p.id) || '').trim(), on: true }));
+    Providers.list().forEach(p => Providers.save(p.id, { key: (d.get('key_' + p.id) || '').trim(), model: (d.get('model_' + p.id) || '').trim(), rpm: Math.max(1, +d.get('rpm_' + p.id) || p.rpm), on: true }));
+    Object.keys(Queue.paused).forEach(k => { if (k.startsWith('p:')) Queue.paused[k] = 0; });
     toast('Saved'); Queue.kick(); App.render(true);
   },
   async saveGoals(form) {

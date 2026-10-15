@@ -124,7 +124,7 @@ const Handlers = {
           await DB.putMany('pages', batch); batch = [];
           job.payload.from = i + 1; job.payload.scanned = scanned; job.payload.imgPages = imgPages;
           job.progress = i / pdf.numPages; await DB.put('queue', job);
-          Queue.status.local = `Reading ${book.short} — page ${i}/${pdf.numPages}`; Queue.emit();
+          Queue.setStatus(Queue._laneOf?.[job.id] || 'local', `Reading ${book.short} — page ${i}/${pdf.numPages}`);
         }
       }
     }
@@ -173,11 +173,11 @@ const Handlers = {
       }
       return;
     }
-    const worker = await getOcrWorker();
+    const worker = await getOcrWorker(ctx?.lane || 'local');
     for (const p of job.payload.pages) {
       if (done.includes(p)) continue;
-      Queue.status.local = `OCR ${book.short} — page ${p}`; Queue.emit();
-      const canvas = await renderPage(book, p, 2000);
+      Queue.setStatus(ctx?.lane || 'local', `OCR ${book.short} — page ${p}`);
+      const canvas = await renderPage(book, p, 1700);
       const { data } = await worker.recognize(canvas);
       const text = (data.text || '').replace(/[ \t]+/g, ' ').trim();
       if (text.length > 30) await DB.put('pages', { bookId: book.id, p, text, ocr: 1 });
@@ -338,9 +338,9 @@ async function saveImported(raw, book, firstPage, canvases) {
   await DB.putMany('mcqs', list);
 }
 
-let _ocr;
-async function getOcrWorker() {
-  if (_ocr) return _ocr;
+const _ocrWorkers = {};
+async function getOcrWorker(lane = 'local') {
+  if (_ocrWorkers[lane]) return _ocrWorkers[lane];
   if (!window.Tesseract) {
     await new Promise((res, rej) => {
       const s = document.createElement('script');
@@ -349,8 +349,8 @@ async function getOcrWorker() {
       document.head.appendChild(s);
     });
   }
-  _ocr = await Tesseract.createWorker('eng');
-  return _ocr;
+  _ocrWorkers[lane] = await Tesseract.createWorker('eng');
+  return _ocrWorkers[lane];
 }
 
 // ---------- Queue ----------
@@ -374,7 +374,7 @@ const Queue = {
   },
   // Which jobs each lane may take: local = OCR/reading, ai = Gemini (everything AI), p:<id> = free providers (bulk + OCR if it can see images).
   accepts(lane, j, prov) {
-    if (lane === 'local') return j.lane === 'local';
+    if (lane.startsWith('local')) return j.lane === 'local';
     if (lane === 'ai') return j.lane === 'ai' && !j.noGemini;
     if (!prov) return false;
     if (j.kind === 'mcqtext') return true;
@@ -394,7 +394,9 @@ const Queue = {
     c.sort((a, b) => a.prio - b.prio || a.created - b.created);
     return c[0];
   },
-  lanes() { return ['local', 'ai', ...Providers.active().map(p => 'p:' + p.id)]; },
+  // Several OCR workers on the laptop at once (one per spare CPU core, max 3).
+  localLanes() { const n = Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 1)); return Array.from({ length: n }, (_, i) => i ? 'local' + (i + 1) : 'local'); },
+  lanes() { return [...this.localLanes(), 'ai', ...Providers.active().map(p => 'p:' + p.id)]; },
   kick() { this.lanes().forEach(l => this.loop(l)); },
   async holdWake(on) {
     try {
@@ -404,7 +406,7 @@ const Queue = {
   },
   async loop(lane) {
     if (this.running[lane]) return;
-    const isAI = lane !== 'local';
+    const isAI = !lane.startsWith('local');
     this.running[lane] = true; this.holdWake(true);
     try {
       while (true) {
@@ -427,6 +429,7 @@ const Queue = {
           const name = j.payload.topicId ? (await DB.get('topics', j.payload.topicId))?.name : (await DB.get('books', j.payload.bookId))?.short;
           this.setStatus(lane, `${prov ? prov.name + ': ' : lane === 'ai' ? 'Gemini: ' : ''}${JOB_LABEL[j.kind]}${name ? ' — ' + name : ''}`);
           try {
+            (this._laneOf ||= {})[j.id] = lane;
             await Handlers[j.kind](j, { lane, provider: prov });
             this.hits[lane] = 0;
             j.status = 'done'; j.finished = Date.now(); delete j.error;
@@ -466,7 +469,7 @@ const Queue = {
       if (lane === 'ai' && this.pausedUntil > Date.now() && !this.manualPause) {
         clearTimeout(this._retry); this._retry = setTimeout(() => this.kick(), this.pausedUntil - Date.now() + 1000);
       }
-      if (lane === 'local') setTimeout(() => this.loop('ai'), 500);
+      if (lane.startsWith('local')) setTimeout(() => this.loop('ai'), 500);
     }
   },
   async counts() {

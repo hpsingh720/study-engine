@@ -417,6 +417,7 @@ Views.library = async () => {
       <span class="role role-${b.role}">${ROLES[b.role]}</span>
       <div class="tr-main"><div class="tr-name">${esc(b.name)}</div><div class="tr-meta">${b.pages} pages${b.scannedPages ? ` · ${b.scannedPages} scanned` : ''}${qByBook[b.short] ? ` · <b>${qByBook[b.short]} questions imported</b>` : ''} · ${statusText(b.status)}</div></div>
       <select class="select-sm" data-change="bookRole" data-id="${b.id}">${Object.entries(ROLES).map(([k, l]) => `<option value="${k}" ${b.role === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      ${['ready', 'partial'].includes(b.status) ? '' : `<button class="btn sm" data-act="bookFirst" data-id="${b.id}">Do this first</button>`}
       <button class="btn sm ghost" data-act="delBook" data-id="${b.id}">Delete</button></div>`).join('') || '<p class="muted pad">No books yet.</p>'}</div></section>
   </div>`;
 };
@@ -466,7 +467,8 @@ Views.settings = async () => {
       <div class="row between wrap gap"><b>${p.name}</b><a class="link small" href="${p.signup}" target="_blank" rel="noopener">Get a free key ›</a></div>
       <p class="muted small">${p.note}${p.vision ? ' Reads images too.' : ''}</p>
       <div class="form-row"><label>API key<input type="password" name="key_${p.id}" value="${esc(p.key || '')}" autocomplete="off"></label>
-      <label>Model<input name="model_${p.id}" list="pm_${p.id}" value="${esc(p.model || '')}" placeholder="click Test to choose"><datalist id="pm_${p.id}"></datalist></label></div>
+      <label>Model<input name="model_${p.id}" list="pm_${p.id}" value="${esc(p.model || '')}" placeholder="click Test to choose"><datalist id="pm_${p.id}"></datalist></label>
+      <label>Requests / minute<input type="number" min="1" max="60" name="rpm_${p.id}" value="${p.rpm}"></label></div>
       <div class="row gap mt"><button type="button" class="btn sm" data-act="testProvider" data-id="${p.id}">Test</button><span class="muted small" id="pmsg_${p.id}">${p.key && p.model ? (p.on === false ? 'Off' : 'Active') : ''}</span></div>
     </div>`).join('')}
     <button class="btn primary mt">Save</button></form>
