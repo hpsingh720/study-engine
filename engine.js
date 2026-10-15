@@ -416,7 +416,8 @@ const Queue = {
     let c = pend.filter(j => this.accepts(lane, j, prov));
     if (lane === 'ai') {
       const localBusy = pend.some(j => j.lane === 'local') || (await DB.byIndex('queue', 'status', 'running')).some(j => j.lane === 'local');
-      if (localBusy) c = c.filter(j => j.kind !== 'sheet' && j.kind !== 'mcqgen');
+      // Only the big "every topic" batch waits for the scanned books; topics you asked for yourself go first.
+      if (localBusy) c = c.filter(j => (j.kind !== 'sheet' && j.kind !== 'mcqgen') || j.prio < 6);
     }
     // Providers help with OCR only when there is no import work for them.
     if (lane.startsWith('p:')) { const bulk = c.filter(j => j.kind !== 'ocr'); if (bulk.length) c = bulk; }
