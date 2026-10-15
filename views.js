@@ -217,7 +217,7 @@ function mcqTab(t, live, all, st, books, inQueue) {
         <button class="btn" data-act="practiseTopic" data-id="${t.id}" data-type="IMG" ${n('IMG') ? '' : 'disabled'}>Images only</button>
       </div></div>
     <div class="card"><h3>Shrink & combine</h3>
-      <p class="muted">${merged.length ? `${merged.length} questions folded into ${combined.length} combined ones (originals hidden). ` : ''}AI fuses duplicates and links related questions (picture → diagnosis → next step) into one harder vignette, so you repeat fewer questions without losing facts.</p>
+      <p class="muted">${merged.length ? `${merged.length} questions folded into ${combined.length} combined ones (originals hidden). ` : ''}Fuses overlapping <b>AI-written</b> questions into fewer, harder vignettes. Questions from AMEDEX and your books are always kept exactly as they are.</p>
       <div class="row gap wrap">${AI.key ? `<button class="btn" data-act="mergeTopic" data-id="${t.id}" ${live.length >= 4 && !inQueue.some(j => j.kind === 'merge') ? '' : 'disabled'}>${inQueue.some(j => j.kind === 'merge') ? 'Combining…' : 'Combine overlapping questions'}</button>` : '<span class="muted small">Add your Gemini key in Settings to use this.</span>'}
       ${merged.length ? `<button class="btn ghost" data-act="unmergeTopic" data-id="${t.id}">Undo combining</button>` : ''}</div></div>
     <div class="card"><h3>More questions</h3>
@@ -382,7 +382,8 @@ Views.result = async (id) => {
 
 // ---------------- Library (laptop) ----------------
 Views.library = async () => {
-  const [books, qc, est] = await Promise.all([DB.all('books'), Queue.counts(), navigator.storage?.estimate?.() || Promise.resolve(null)]);
+  const [books, qc, est, allQ] = await Promise.all([DB.all('books'), Queue.counts(), navigator.storage?.estimate?.() || Promise.resolve(null), DB.live('mcqs')]);
+  const qByBook = {}; allQ.forEach(m => { const k = (m.src || '').replace(/ p\.\d+$/, ''); qByBook[k] = (qByBook[k] || 0) + 1; });
   const staged = App.staged || [];
   const kindTotals = Object.entries(qc.byKind).map(([k, v]) => `<div class="qk"><span>${JOB_LABEL[k]}</span><b>${v.done}</b><small>/ ${v.done + v.pending + v.running + v.failed}${v.failed ? ` · ${v.failed} failed` : ''}</small></div>`).join('');
   const failed = qc.all.filter(j => j.status === 'failed').slice(0, 6);
@@ -414,7 +415,7 @@ Views.library = async () => {
   <section class="card mt flush"><div class="card-head pad"><h3>Your books</h3><span class="muted">${books.length}</span></div>
     <div class="list">${books.sort((a, b) => a.role.localeCompare(b.role)).map(b => `<div class="topic-row static">
       <span class="role role-${b.role}">${ROLES[b.role]}</span>
-      <div class="tr-main"><div class="tr-name">${esc(b.name)}</div><div class="tr-meta">${b.pages} pages${b.scannedPages ? ` · ${b.scannedPages} scanned` : ''} · ${statusText(b.status)}</div></div>
+      <div class="tr-main"><div class="tr-name">${esc(b.name)}</div><div class="tr-meta">${b.pages} pages${b.scannedPages ? ` · ${b.scannedPages} scanned` : ''}${qByBook[b.short] ? ` · <b>${qByBook[b.short]} questions imported</b>` : ''} · ${statusText(b.status)}</div></div>
       <select class="select-sm" data-change="bookRole" data-id="${b.id}">${Object.entries(ROLES).map(([k, l]) => `<option value="${k}" ${b.role === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
       <button class="btn sm ghost" data-act="delBook" data-id="${b.id}">Delete</button></div>`).join('') || '<p class="muted pad">No books yet.</p>'}</div></section>
   </div>`;

@@ -192,47 +192,43 @@ const Handlers = {
     const pages = [];
     for (const p of job.payload.pages) { const pg = await DB.get('pages', [book.id, p]); if (pg) pages.push(pg); }
     if (!pages.length) return;
-    const prompt = `Below is text from pages ${pages[0].p}–${pages[pages.length - 1].p} of the MCQ book "${book.name}".
-Extract every COMPLETE multiple-choice question.
-- Copy stem and options faithfully; fix only obvious spacing/OCR errors. Do not add A–E letters inside option text.
-- If the book gives the answer and/or explanation on these pages, use it and set "keyedBy":"book". If not, choose the best answer yourself, set "keyedBy":"ai", and write a short explanation.
-- Explanation format: "Answer: <text>" then 1–3 lines why, then one short line per wrong option.
-- Assign each question to the ONE closest topic id from the list below (or "" if none fit).
-- type: "AMC" if Australian-style / 5 options, else "MBBS".
-- Skip fragments cut off at page edges, answer-key-only pages, and non-questions.
+    const first = pages[0].p, last = pages[pages.length - 1].p;
+    const extra = await DB.get('pages', [book.id, last + 1]); // next page only to finish a question cut off at the end
+    const prompt = `Below is text from pages ${first}–${last} of the question book "${book.name}"${extra ? `, plus page ${last + 1} for context` : ''}.
+${IMPORT_RULES(first, last, extra ? last + 1 : null)}
 
 TOPIC LIST (id|name):
 ${await topicListText()}
 
 PAGES:
-${pages.map(pg => `--- page ${pg.p} ---\n${pg.text}`).join('\n').slice(0, 60000)}
+${pages.map(pg => `--- page ${pg.p} ---\n${pg.text}`).join('\n').slice(0, 70000)}
+${extra ? `--- page ${last + 1} (CONTEXT ONLY: use it just to complete a question that started on page ${last}) ---\n${extra.text.slice(0, 8000)}` : ''}
 
-Return JSON: {"mcqs":[{"type":"MBBS","stem":"","options":[""],"answer":0,"explanation":"","topicId":"","keyedBy":"book"}]}`;
-    const out = await bulkCall(ctx, { prompt, system: SYSTEM_TUTOR, temperature: 0.1 });
-    await saveImported(out.mcqs || [], book, pages[0].p);
+Return JSON: {"mcqs":[{"type":"AMC","stem":"","options":[""],"answer":0,"explanation":"","topicId":"","keyedBy":"book"}]}`;
+    const out = await bulkCall(ctx, { prompt, system: SYSTEM_IMPORT, temperature: 0 });
+    await saveImported(out.mcqs || [], book, first);
   },
 
   async mcqvision(job, ctx) {
     const book = await DB.get('books', job.payload.bookId); if (!book) return;
+    const pgs = job.payload.pages, first = pgs[0], last = pgs[pgs.length - 1];
+    const hasNext = last + 1 <= (book.pages || 0);
     const canvases = [];
-    for (const p of job.payload.pages) canvases.push(await renderPage(book, p, 1600));
+    for (const p of pgs) canvases.push(await renderPage(book, p, 1600));
+    if (hasNext) canvases.push(await renderPage(book, last + 1, 1200));
     const images = canvases.map(c => c.toDataURL('image/jpeg', 0.8));
     const texts = [];
-    for (const p of job.payload.pages) { const pg = await DB.get('pages', [book.id, p]); if (pg) texts.push(`--- page ${p} text ---\n${pg.text.slice(0, 6000)}`); }
-    const prompt = `${texts.length ? 'Extracted page text (use it for exact wording; the images show the pictures and layout):\n' + texts.join('\n') + '\n\n' : ''}These ${images.length} images are photos/screenshots of question-bank pages (book: "${book.name}", pages ${job.payload.pages.join(', ')}). They may be photos of a computer screen — read through glare and skew.
-Extract every COMPLETE multiple-choice question (a question cut off at the end of the last page belongs to the next batch — skip it; a question whose start is on an earlier page — skip it).
-- Copy stem and options faithfully. If the correct answer / explanation is visible (highlighted option, "correct answer", explanation panel), use it and set "keyedBy":"book". Otherwise choose the best answer, set "keyedBy":"ai".
-- Explanation format: "Answer: <text>" then 1–3 lines why, then one short line per wrong option.
-- If the question includes a clinical image (ECG, X-ray, CT, photo, slide), give "figure":{"image":<0-based image index>,"box_2d":[ymin,xmin,ymax,xmax]} with coordinates normalised 0–1000 of that image. Otherwise "figure":null.
-- Assign the ONE closest topic id from the list (or "").
-- type "AMC" for AMC/AMEDEX-style questions.
+    for (const p of [...pgs, ...(hasNext ? [last + 1] : [])]) { const pg = await DB.get('pages', [book.id, p]); if (pg) texts.push(`--- page ${p} text ---\n${pg.text.slice(0, 7000)}`); }
+    const prompt = `${texts.length ? 'Extracted page text (use it for exact wording; the images show pictures and layout):\n' + texts.join('\n') + '\n\n' : ''}The images are pages of the question bank "${book.name}": images 0–${pgs.length - 1} are pages ${pgs.join(', ')}${hasNext ? `, and the LAST image is page ${last + 1} (CONTEXT ONLY, to finish a question cut off at the end of page ${last})` : ''}. They may be photos of a computer screen — read through glare and skew.
+${IMPORT_RULES(first, last, hasNext ? last + 1 : null)}
+- If a question has a clinical image (ECG, X-ray, CT, photo, slide), give "figure":{"image":<0-based image index>,"box_2d":[ymin,xmin,ymax,xmax]} normalised 0–1000 within that image. Otherwise "figure":null.
 
 TOPIC LIST (id|name):
 ${await topicListText()}
 
 Return JSON: {"mcqs":[{"type":"AMC","stem":"","options":[""],"answer":0,"explanation":"","topicId":"","keyedBy":"book","figure":null}]}`;
-    const out = await bulkCall(ctx, { prompt, images, system: SYSTEM_TUTOR, temperature: 0.1 });
-    await saveImported(out.mcqs || [], book, job.payload.pages[0], canvases);
+    const out = await bulkCall(ctx, { prompt, images, system: SYSTEM_IMPORT, temperature: 0 });
+    await saveImported(out.mcqs || [], book, first, canvases);
   },
 
   async practical(job, ctx) {
@@ -315,6 +311,16 @@ Return JSON: {"duplicates":[{"keep":0,"drop":[3]}],"combined":[{"from":[1,4],"im
   }
 };
 
+const SYSTEM_IMPORT = 'You are a meticulous data-entry assistant digitising the student\'s own purchased question bank for private study. Completeness and exactness matter more than anything: never skip, merge, summarise or rewrite questions.';
+const IMPORT_RULES = (first, last, ctxPage) => `Extract EVERY multiple-choice question that STARTS on pages ${first}–${last}. Do not skip any — the student needs the complete bank.
+- If a question starts on page ${last} and continues onto ${ctxPage ? 'page ' + ctxPage : 'the next page'}, ${ctxPage ? 'finish it using page ' + ctxPage : 'include whatever is present'}. Do NOT include questions that start on ${ctxPage ? 'page ' + ctxPage : 'a later page'}, and do NOT include the tail end of a question that started before page ${first} (the previous batch has it).
+- Copy the stem and every option EXACTLY as written (fix only obvious OCR/spacing errors). Keep all options in their original order. Do not put A–E letters inside the option text.
+- Answer: use the book's answer ("keyedBy":"book"). Only if the book shows no answer, choose the best one yourself and set "keyedBy":"ai".
+- Explanation: copy the book's explanation IN FULL, word for word, including the notes on each wrong option. Only if the book has none, write: "Answer: <text>", 1–3 lines why, and one short line per wrong option.
+- Assign each question to the ONE closest topic id from the list (or "" if none fits).
+- type: "AMC" for Australian / AMC / AMEDEX-style (usually 5 options), otherwise "MBBS".
+- Ignore headers, footers, page numbers, adverts and answer-key-only pages.`;
+
 async function saveImported(raw, book, firstPage, canvases) {
   const topics = Object.fromEntries((await DB.live('topics')).map(t => [t.id, t]));
   const list = [];
@@ -369,7 +375,7 @@ const Queue = {
   // Which jobs each lane may take: local = OCR/reading, ai = Gemini (everything AI), p:<id> = free providers (bulk + OCR if it can see images).
   accepts(lane, j, prov) {
     if (lane === 'local') return j.lane === 'local';
-    if (lane === 'ai') return j.lane === 'ai';
+    if (lane === 'ai') return j.lane === 'ai' && !j.noGemini;
     if (!prov) return false;
     if (j.kind === 'mcqtext') return true;
     if (prov.vision && (j.kind === 'mcqvision' || j.kind === 'practical' || j.kind === 'ocr')) return true;
@@ -436,7 +442,12 @@ const Queue = {
                 setTimeout(() => this.loop(lane), 30 * 60 * 1000 + 1000);
               } else { this.setStatus(lane, `${prov ? prov.name : 'Gemini'}: rate limited — retrying shortly (${this.hits[lane]}/4)`); await sleep(Math.max(e.retryMs, 20000)); }
             } else {
+              if (lane === 'ai' && /RECITATION/i.test(e.message || '') && Providers.active().length) {
+                j.noGemini = 1; j.status = 'pending'; j.error = 'Blocked by Gemini’s copyright filter — handing it to ' + Providers.active().map(p => p.name).join(' / ');
+                await DB.put('queue', j); this.emit(); continue;
+              }
               j.tries++; j.error = (prov ? prov.name + ': ' : '') + String(e.message || e).slice(0, 300);
+              if (/RECITATION/i.test(e.message || '')) j.error = 'Gemini’s copyright filter blocked these pages. Add a free Groq/Mistral/GitHub key in Settings, then press Retry — they can import them.';
               j.status = j.tries >= 3 ? 'failed' : 'pending';
               if (j.status === 'pending') await sleep(4000);
             }
@@ -504,7 +515,7 @@ async function queueMerge(topicIds, prio = 7) {
   let n = 0;
   for (const id of topicIds) {
     if (pending.has(id)) continue;
-    const qs = (await DB.byIndex('mcqs', 'topicId', id)).filter(m => !m.deleted && !m.merged && !m.flagged && m.src !== 'merged');
+    const qs = (await DB.byIndex('mcqs', 'topicId', id)).filter(m => !m.deleted && !m.merged && !m.flagged && m.src === 'ai'); // only AI-written questions; book/AMEDEX questions are never merged or hidden
     if (qs.length < 4) continue;
     qs.sort((a, b) => a.stem.localeCompare(b.stem)); // rough grouping so related stems share a batch
     for (let i = 0; i < qs.length; i += 30) { await Queue.add('merge', { topicId: id, ids: qs.slice(i, i + 30).map(m => m.id) }, prio); n++; }

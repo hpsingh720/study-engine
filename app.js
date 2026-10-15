@@ -290,7 +290,14 @@ const A = {
       }
       Providers.save(id, { model, on: true });
       const out = await Providers.call(Providers.get(id), { prompt: 'Reply with JSON {"ok":true}', json: true, maxTokens: 50 });
-      msg.textContent = out.ok ? `Works with ${model}. Saved — it will start helping now.` : 'Replied, but oddly — try another model.';
+      // Can this model see images? Send a tiny picture; if it refuses, it only gets text jobs.
+      let vision = false;
+      if (PROVIDER_PRESETS[id].vision) {
+        const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d'); x.fillStyle = '#c00'; x.fillRect(0, 0, 64, 64);
+        try { const t = await Providers.call(Providers.get(id), { prompt: 'What colour is this square? One word.', images: [c.toDataURL('image/png')], json: false, maxTokens: 20 }); vision = /red/i.test(t); } catch (e) { vision = false; }
+      }
+      Providers.save(id, { vision });
+      msg.textContent = out.ok ? `Works with ${model}${vision ? ' — reads images too' : ' — text only (pick a vision model from the list for scanned pages)'}. Saved, it will start helping now.` : 'Replied, but oddly — try another model.';
       Queue.kick();
     } catch (e) { msg.textContent = 'Problem: ' + e.message; }
   },
