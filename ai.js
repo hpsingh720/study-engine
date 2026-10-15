@@ -104,7 +104,7 @@ const AI = {
 };
 
 function parseJSON(t) {
-  t = t.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/, '').trim();
+  t = t.replace(/<think>[\s\S]*?<\/think>/gi, '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/, '').trim();
   try { return JSON.parse(t); } catch (e) {
     const a = t.indexOf('{'), b = t.lastIndexOf('}');
     if (a >= 0 && b > a) return JSON.parse(t.slice(a, b + 1));

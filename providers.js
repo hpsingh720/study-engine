@@ -4,7 +4,7 @@ const PROVIDER_PRESETS = {
   groq: { name: 'Groq', base: 'https://api.groq.com/openai/v1', model: 'meta-llama/llama-4-scout-17b-16e-instruct', rpm: 25, vision: true, signup: 'https://console.groq.com/keys', note: 'Free, no card. About 1,000 requests a day.' },
   mistral: { name: 'Mistral', base: 'https://api.mistral.ai/v1', model: 'mistral-small-latest', rpm: 20, vision: true, signup: 'https://console.mistral.ai/api-keys', note: 'Free "Experiment" plan, no card (phone number needed). Large monthly allowance.' },
   nvidia: { name: 'NVIDIA (build.nvidia.com)', base: 'https://integrate.api.nvidia.com/v1', model: 'meta/llama-3.2-90b-vision-instruct', rpm: 30, vision: true, signup: 'https://build.nvidia.com/settings/api-keys', note: 'Free, no card. Needs the relay (below). Sign up with email, then "Get API Key". About 40 requests a minute on free credits.' },
-  siliconflow: { name: 'SiliconFlow', base: 'https://api.siliconflow.com/v1', model: 'Qwen/Qwen2.5-VL-72B-Instruct', rpm: 20, vision: true, signup: 'https://cloud.siliconflow.com/account/ak', note: 'Free models, no card. If the key does not work, try the China site: change the address to https://api.siliconflow.cn/v1.' },
+  siliconflow: { name: 'SiliconFlow', base: 'https://api.siliconflow.com/v1', model: '', rpm: 20, vision: true, signup: 'https://cloud.siliconflow.com/account/ak', note: 'Free models, no card. Click Test and it finds a free model by itself. If the key does not work, try the China site: change the address to https://api.siliconflow.cn/v1.' },
   zhipu: { name: 'Z.ai / Zhipu GLM', base: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4v-flash', rpm: 5, vision: true, signup: 'https://open.bigmodel.cn/usercenter/apikeys', note: 'GLM "Flash" models are free forever. Only one request at a time, so keep this low.' },
   openrouter: { name: 'OpenRouter', base: 'https://openrouter.ai/api/v1', model: '', rpm: 15, vision: false, signup: 'https://openrouter.ai/keys', note: 'Free “:free” models, about 50 requests a day. Text only here.' },
   custom: { name: 'Any other (OpenAI-compatible)', base: '', model: '', rpm: 10, vision: false, custom: true, signup: 'https://github.com/cheahjs/free-llm-api-resources', note: 'Any service that says “OpenAI-compatible”: paste its address (ends in /v1), key and model.' },
@@ -68,7 +68,7 @@ const Providers = {
       if (json && /response_format|json/i.test(msg) && !body._noJson) return this.call(p, { prompt: prompt + '\n\nReply with JSON only.', images, system, json: false, temperature, maxTokens }).then(t => parseJSON(t));
       throw new Error(`${p.name}: ${msg}`);
     }
-    const text = d.choices?.[0]?.message?.content || '';
+    const text = (d.choices?.[0]?.message?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
     if (!text) throw new Error(`${p.name}: empty reply`);
     return json ? parseJSON(text) : text;
   },

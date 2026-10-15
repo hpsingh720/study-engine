@@ -304,7 +304,21 @@ const A = {
         model = pick || ''; $(`input[name=model_${id}]`).value = model;
       }
       Providers.save(id, { model, on: true });
-      const out = await Providers.call(Providers.get(id), { prompt: 'Reply with JSON {"ok":true}', json: true, maxTokens: 50 });
+      const ping = () => Providers.call(Providers.get(id), { prompt: 'Reply with JSON {"ok":true}', json: true, maxTokens: 400 });
+      let out;
+      try { out = await ping(); }
+      catch (e) {
+        // "Balance insufficient" = this model is paid. Try the others until a free one answers, image-reading ones first.
+        if (!/balance|insufficient|credit|payment|billing|not free|upgrade|quota|permission|not have access|not found|does not exist/i.test(e.message) || !ms.length) throw e;
+        const score = m => (/vl|vision|4\.1v|4\.5v|glm-4v|pixtral|scout/i.test(m) ? 0 : 10) + (/(^|[^0-9])(7|8|9)b/i.test(m) ? 0 : /(1\.5|3|4)b/i.test(m) ? 2 : 4) + (/embed|rerank|bge|whisper|tts|speech|flux|stable-diffusion|kolors|wan|video|image-/i.test(m) ? 100 : 0);
+        const cands = ms.filter(m => m !== model).sort((x, y) => score(x) - score(y)).filter(m => score(m) < 100).slice(0, 15);
+        for (const m of cands) {
+          msg.textContent = `That model is paid — trying ${m}…`;
+          Providers.save(id, { model: m }); model = m; $(`input[name=model_${id}]`).value = m;
+          try { out = await ping(); break; } catch (e2) { if (!/balance|insufficient|credit|payment|billing|not free|upgrade|permission|not have access|not found|does not exist|json/i.test(e2.message)) throw e2; }
+        }
+        if (!out) throw new Error('none of the free models answered. Check the Models page on their site for ones marked “Free”, type the exact name in Model, and Test again.');
+      }
       // Can this model see images? Send a tiny picture; if it refuses, it only gets text jobs.
       let vision = false;
       if (PROVIDER_PRESETS[id].vision || PROVIDER_PRESETS[id].custom) {
