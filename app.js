@@ -57,7 +57,7 @@ const App = {
     if (drop) {
       ['dragenter', 'dragover'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('over'); }));
       ['dragleave', 'drop'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('over'); }));
-      drop.addEventListener('drop', e => stageFiles([...e.dataTransfer.files]));
+      drop.addEventListener('drop', async e => stageFiles(await filesFromDrop(e.dataTransfer)));
     }
   }
 };
@@ -66,22 +66,52 @@ async function stageFiles(files) {
   // Skip books already in the Library (same file = same size), so the whole folder can be selected safely.
   const have = new Set((await DB.all('books')).filter(b => b.kind === 'pdf').map(b => b.size));
   App.staged.forEach(e => { if (e.files.length === 1) have.add(e.files[0].size); });
+  const pathOf = f => (f._path || f.webkitRelativePath || f.name).replace(/\\/g, '/');
+  // Subfolder name (e.g. "CVS" in AMC/CVS/file.pdf) — not the top folder you picked.
+  const dirOf = f => { const p = pathOf(f).split('/'); return p.length > 2 ? p[p.length - 2] : ''; };
+  // Files sitting in subject subfolders are usually question-bank parts (e.g. AMEDEX per system).
+  const roleOf = f => { const r = guessRole(f.name); return r === 'ref' && dirOf(f) ? 'mcq-amc' : r; };
   const zips = files.filter(f => /\.(zip|rar|7z)$/i.test(f.name));
-  let pdfs = files.filter(f => /pdf$/i.test(f.type || f.name));
+  const isPdf = f => /pdf$/i.test(f.type || f.name);
+  const isImg = f => /^image\//.test(f.type) || /\.(jpe?g|png|webp|heic)$/i.test(f.name);
+  const other = files.filter(f => !isPdf(f) && !isImg(f) && !zips.includes(f) && !/^(\.|desktop\.ini|thumbs\.db)/i.test(f.name));
+  let pdfs = files.filter(isPdf);
   const dup = pdfs.filter(f => have.has(f.size));
   pdfs = pdfs.filter(f => !have.has(f.size));
-  const imgs = files.filter(f => /^image\//.test(f.type) || /\.(jpe?g|png|webp|heic)$/i.test(f.name));
-  pdfs.forEach(f => App.staged.push({ files: [f], name: f.name.replace(/\.pdf$/i, ''), role: guessRole(f.name) }));
-  if (imgs.length) {
+  pdfs.sort((a, b) => pathOf(a).localeCompare(pathOf(b), undefined, { numeric: true }));
+  pdfs.forEach(f => {
+    have.add(f.size);
+    const dir = dirOf(f), base = f.name.replace(/\.pdf$/i, '');
+    const name = dir && !base.toLowerCase().includes(dir.toLowerCase()) ? `${dir} – ${base}` : base;
+    App.staged.push({ files: [f], name, role: roleOf(f) });
+  });
+  // Photos: one question bank per folder (e.g. "CVS (photos)").
+  const groups = {};
+  files.filter(isImg).forEach(f => (groups[dirOf(f)] ||= []).push(f));
+  Object.entries(groups).forEach(([dir, imgs]) => {
     imgs.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-    App.staged.push({ files: imgs, name: imgs.length > 1 ? `Question bank photos (${imgs.length})` : imgs[0].name, role: 'mcq-amc' });
-  }
+    App.staged.push({ files: imgs, name: imgs.length > 1 ? `${dir || 'Question bank'} (${imgs.length} photos)` : imgs[0].name, role: 'mcq-amc' });
+  });
   const msg = [];
   if (pdfs.length) msg.push(`${pdfs.length} new`);
   if (dup.length) msg.push(`${dup.length} already in your Library — skipped`);
-  if (zips.length) msg.push(`${zips.length} zip file${zips.length > 1 ? 's' : ''} skipped — right-click it → “Extract All”, then add what’s inside`);
-  if (msg.length) toast(msg.join(' · '), 8000);
+  if (zips.length) msg.push(`${zips.length} zip file${zips.length > 1 ? 's' : ''} skipped — right-click it → “Extract All”, then add the folder`);
+  if (other.length) msg.push(`${other.length} other file${other.length > 1 ? 's' : ''} (not PDF/photo) ignored`);
+  if (msg.length) toast(msg.join(' · '), 9000);
   App.render(true);
+}
+// Dropped folders: walk inside them and collect every file.
+async function filesFromDrop(dt) {
+  const entries = [...(dt.items || [])].map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+  if (!entries.length) return [...dt.files];
+  const out = [];
+  const walk = async (en, path) => {
+    if (en.isFile) { const f = await new Promise((r, j) => en.file(r, j)); f._path = path + f.name; out.push(f); return; }
+    const rd = en.createReader(); let batch;
+    do { batch = await new Promise((r, j) => rd.readEntries(r, j)); for (const c of batch) await walk(c, path + en.name + '/'); } while (batch.length);
+  };
+  for (const en of entries) await walk(en, '');
+  return out;
 }
 
 // ---------- Actions ----------
@@ -451,6 +481,7 @@ const C = {
   stageFiles(el) { stageFiles([...el.files]); },
   stageName(el) { App.staged[+el.dataset.i].name = el.value; },
   stageRole(el) { App.staged[+el.dataset.i].role = el.value; },
+  stageRoleAll(el) { if (!el.value) return; App.staged.forEach(e => e.role = el.value); App.render(true); },
   async bookRole(el) {
     const b = await DB.get('books', el.dataset.id); b.role = el.value; await DB.put('books', b);
     if (confirm('Re-process this book with its new type?')) { await Queue.add('extract', { bookId: b.id }, 1); }

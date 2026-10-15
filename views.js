@@ -424,8 +424,9 @@ Views.library = async () => {
   return `<div class="page"><header class="page-head"><div><p class="eyebrow">Books stay on this device · ${est ? (est.usage / 1e9).toFixed(1) + ' GB used of ' + (est.quota / 1e9).toFixed(0) + ' GB available' : ''}</p><h1>Library</h1></div></header>
   <section class="card">
     <label class="drop" id="drop"><input type="file" multiple accept="application/pdf,image/*,.zip,.rar" hidden data-change="stageFiles">
-      <b>Drop all your books here, or click to choose</b><span class="muted">PDFs (text or scanned) and photos of question-bank screens. Select everything at once.</span></label>
-    ${staged.length ? `<div class="staged">${staged.map((e, i) => `<div class="stage-row">
+      <b>Drop all your books here, or click to choose</b><span class="muted">PDFs (text or scanned) and photos of question-bank screens. Select everything at once — books already added are skipped.</span></label>
+    <label class="btn mt">Choose a whole folder (with all its subfolders)<input type="file" webkitdirectory multiple hidden data-change="stageFiles"></label>
+    ${staged.length ? `<div class="staged"><div class="row gap wrap mb"><span class="muted small">Set all to:</span><select data-change="stageRoleAll"><option value="">—</option>${Object.entries(ROLES).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></div>${staged.map((e, i) => `<div class="stage-row">
         <input value="${esc(e.name)}" data-change="stageName" data-i="${i}" aria-label="Name">
         <select data-change="stageRole" data-i="${i}">${Object.entries(ROLES).map(([k, l]) => `<option value="${k}" ${e.role === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
         <span class="muted small">${e.files.length > 1 ? e.files.length + ' images' : (e.files[0].size / 1e6).toFixed(0) + ' MB'}</span>
