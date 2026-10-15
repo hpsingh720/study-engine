@@ -3,7 +3,7 @@
 const LOCAL_KINDS = ['extract', 'ocr'];
 const JOB_LABEL = {
   extract: 'Reading book', ocr: 'OCR scanned pages', mcqtext: 'Importing MCQs', mcqvision: 'Importing MCQs from photos',
-  practical: 'Making image spotters', sheet: 'Writing topic sheet', mcqgen: 'Writing MCQs', merge: 'Combining questions'
+  practical: 'Making image spotters', figure: 'Attaching question pictures', sheet: 'Writing topic sheet', mcqgen: 'Writing MCQs', merge: 'Combining questions'
 };
 
 function guessRole(name) {
@@ -140,7 +140,10 @@ const Handlers = {
       await DB.each('pages', 'bookId', book.id, pg => { if (!withImg.has(pg.p)) textPages.push(pg.p); });
       textPages.sort((a, b) => a - b);
       for (const c of chunk(textPages, 8)) await Queue.add('mcqtext', { bookId: book.id, pages: c }, 4);
-      const visual = [...new Set([...imgPages, ...scanned])].sort((a, b) => a - b);
+      // Scanned PDF pages: read them on the laptop (free), then import as text — far fewer AI tokens than page pictures.
+      // Photo sets (screen photos) and text pages with embedded pictures still go to vision.
+      if (book.kind === 'pdf') for (const c of chunk(scanned, 4)) await Queue.add('ocr', { bookId: book.id, pages: c, then: 'mcqtext' }, 3);
+      const visual = [...new Set([...imgPages, ...(book.kind === 'pdf' ? [] : scanned)])].sort((a, b) => a - b);
       for (const c of chunk(visual, 4)) await Queue.add('mcqvision', { bookId: book.id, pages: c }, 4);
     } else if (book.role === 'practical') {
       const all = [...new Set([...imgPages, ...scanned])].sort((a, b) => a - b);
@@ -171,6 +174,7 @@ const Handlers = {
         done.push(...batch); job.payload.done = done; await DB.put('queue', job);
         await sleep(Math.max(0, 60000 / ctx.provider.rpm));
       }
+      if (job.payload.then === 'mcqtext') await Queue.add('mcqtext', { bookId: book.id, pages: job.payload.pages, ocr: 1 }, 4);
       return;
     }
     const worker = await getOcrWorker(ctx?.lane || 'local');
@@ -183,6 +187,7 @@ const Handlers = {
       if (text.length > 30) await DB.put('pages', { bookId: book.id, p, text, ocr: 1 });
       done.push(p); job.payload.done = done; await DB.put('queue', job);
     }
+    if (job.payload.then === 'mcqtext') { await Queue.add('mcqtext', { bookId: book.id, pages: job.payload.pages, ocr: 1 }, 4); return; }
     const left = (await DB.all('queue')).filter(j => j.kind === 'ocr' && j.payload.bookId === book.id && j.id !== job.id && j.status !== 'done');
     if (!left.length) { book.status = 'ready'; await DB.put('books', book); }
   },
@@ -203,9 +208,11 @@ PAGES:
 ${pages.map(pg => `--- page ${pg.p} ---\n${pg.text}`).join('\n').slice(0, 70000)}
 ${extra ? `--- page ${last + 1} (CONTEXT ONLY: use it just to complete a question that started on page ${last}) ---\n${extra.text.slice(0, 8000)}` : ''}
 
-Return JSON: {"mcqs":[{"type":"AMC","stem":"","options":[""],"answer":0,"explanation":"","topicId":"","keyedBy":"book"}]}`;
+${job.payload.ocr ? '- This text was read from scanned pages by OCR: silently fix OCR mistakes (broken words, wrong letters, stray symbols) but do not change meaning.\n' : ''}- "page": the page number the question starts on. "hasFigure": true if the question refers to a picture, ECG, X-ray, scan, photo or "the image shown".
+
+Return JSON: {"mcqs":[{"type":"AMC","stem":"","options":[""],"answer":0,"explanation":"","topicId":"","keyedBy":"book","page":${first},"hasFigure":false}]}`;
     const out = await bulkCall(ctx, { prompt, system: SYSTEM_IMPORT, temperature: 0 });
-    await saveImported(out.mcqs || [], book, first);
+    await saveImported(out.mcqs || [], book, first, null, !!job.payload.ocr);
   },
 
   async mcqvision(job, ctx) {
@@ -299,6 +306,20 @@ Return JSON: {"duplicates":[{"keep":0,"drop":[3]}],"combined":[{"from":[1,4],"im
     }
   },
 
+  async figure(job, ctx) {
+    const book = await DB.get('books', job.payload.bookId); const m = await DB.get('mcqs', job.payload.mcqId);
+    if (!book || !m || m.img) return;
+    const pages = [job.payload.page, job.payload.page + 1].filter(p => p <= (book.pages || 0));
+    const canvases = []; for (const p of pages) canvases.push(await renderPage(book, p, ctx?.provider ? 1150 : 1500));
+    const out = await bulkCall(ctx, { temperature: 0, images: canvases.map(c => c.toDataURL('image/jpeg', 0.8)),
+      prompt: `These are page ${pages.join(' and ')} of a question book. Find the clinical picture (ECG, X-ray, CT, photo, slide, chart) that belongs to this question:\n"${m.stem.slice(0, 300)}"\nReturn JSON {"image":<0-based index of the page image>,"box_2d":[ymin,xmin,ymax,xmax]} normalised 0–1000, or {"image":null} if there is no such picture.` });
+    if (out.image == null || !canvases[out.image]) return;
+    const crop = cropBox(canvases[out.image], out.box_2d); if (!crop) return;
+    const id = 'img-' + uid();
+    await DB.put('media', { id, data: await compressImage(crop, 1200, 0.8), kind: 'qbank' });
+    m.img = id; m.type = 'IMG'; await DB.put('mcqs', m);
+  },
+
   async sheet(job) {
     const t = await DB.get('topics', job.payload.topicId); if (!t) return;
     await Gen.sheet(t);
@@ -327,7 +348,7 @@ async function matchTopic(text) {
   for (const x of _termCache) { const sc = scorePage(text, x.terms); if (sc > bs) { bs = sc; best = x.t; } }
   return bs >= 2 ? best : null;
 }
-async function saveImported(raw, book, firstPage, canvases) {
+async function saveImported(raw, book, firstPage, canvases, scannedSrc) {
   const topics = Object.fromEntries((await DB.live('topics')).map(t => [t.id, t]));
   const list = [];
   for (const m of raw) {
@@ -338,10 +359,12 @@ async function saveImported(raw, book, firstPage, canvases) {
       if (crop) { img = 'img-' + uid(); await DB.put('media', { id: img, data: await compressImage(crop, 1200, 0.8), kind: 'qbank' }); }
     }
     const forcedType = img ? 'IMG' : (book.role === 'mcq-amc' ? 'AMC' : (m.type === 'AMC' ? 'AMC' : 'MBBS'));
-    const q = cleanMcq(m, t, { type: forcedType, src: `${book.short} p.${firstPage}`, img, system: t?.system || '' });
-    if (q) list.push(q);
+    const pg = +m.page || firstPage;
+    const q = cleanMcq(m, t, { type: forcedType, src: `${book.short} p.${pg}`, img, system: t?.system || '' });
+    if (q) { list.push(q); if (scannedSrc && m.hasFigure && !img) q._fig = pg; }
   }
   await DB.putMany('mcqs', list);
+  for (const q of list) if (q._fig) await Queue.add('figure', { bookId: book.id, page: q._fig, mcqId: q.id }, 5);
 }
 
 const _ocrWorkers = {};
@@ -384,7 +407,7 @@ const Queue = {
     if (lane === 'ai') return j.lane === 'ai' && !j.noGemini;
     if (!prov || j.noProv) return false;
     if (j.kind === 'mcqtext') return true;
-    if (prov.vision && (j.kind === 'mcqvision' || j.kind === 'practical' || j.kind === 'ocr')) return true;
+    if (prov.vision && (j.kind === 'mcqvision' || j.kind === 'practical' || j.kind === 'ocr' || j.kind === 'figure')) return true;
     return false;
   },
   providerOcr() { return Providers.active().some(p => p.vision); },
@@ -401,7 +424,7 @@ const Queue = {
     return c[0];
   },
   // Several OCR workers on the laptop at once (one per spare CPU core, max 3).
-  localLanes() { const n = Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 1)); return Array.from({ length: n }, (_, i) => i ? 'local' + (i + 1) : 'local'); },
+  localLanes() { const auto = Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 1)); const n = Math.min(auto, +localStorage.getItem('ocrWorkers') || auto); return Array.from({ length: n }, (_, i) => i ? 'local' + (i + 1) : 'local'); },
   lanes() { return [...this.localLanes(), 'ai', ...Providers.active().map(p => 'p:' + p.id)]; },
   kick() { this.lanes().forEach(l => this.loop(l)); },
   async holdWake(on) {
@@ -488,6 +511,25 @@ const Queue = {
     all.forEach(j => { c[j.status]++; const k = c.byKind[j.kind] ||= { pending: 0, done: 0, failed: 0, running: 0 }; k[j.status]++; });
     c.all = all;
     return c;
+  },
+  // One-time: pending picture-import jobs on scanned PDF pages → read on laptop, then cheap text import.
+  async convertVisionToOcr() {
+    if (localStorage.getItem('convertedV2')) return;
+    const books = Object.fromEntries((await DB.all('books')).map(b => [b.id, b]));
+    let n = 0;
+    for (const j of await DB.byIndex('queue', 'status', 'pending')) {
+      if (j.kind !== 'mcqvision') continue;
+      const b = books[j.payload.bookId]; if (!b || b.kind !== 'pdf') continue;
+      const scanned = [];
+      for (const p of j.payload.pages) if (!(await DB.get('pages', [b.id, p]))) scanned.push(p);
+      if (scanned.length !== j.payload.pages.length) continue; // has real text + pictures → keep as vision
+      await DB.del('queue', j.id);
+      await DB.put('queue', { ...j, id: uid(), kind: 'ocr', lane: 'local', prio: 3, payload: { bookId: b.id, pages: scanned, then: 'mcqtext' } });
+      n++;
+    }
+    localStorage.setItem('convertedV2', '1');
+    if (n) console.log('Converted', n, 'vision jobs to OCR→text');
+    return n;
   },
   async recover() {
     for (const j of await DB.byIndex('queue', 'status', 'running')) { j.status = 'pending'; await DB.put('queue', j); }

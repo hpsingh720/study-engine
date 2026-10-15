@@ -390,6 +390,7 @@ const F = {
 
 // Change / input handlers
 const C = {
+  ocrWorkers(el) { localStorage.setItem('ocrWorkers', el.value); toast('Saved — takes effect after the current pages (or reload the page)'); },
   keepAwake(el) { localStorage.setItem('keepAwake', el.checked ? '1' : '0'); if (!el.checked) Queue.holdWake(false); else Queue.holdWake(true); toast(el.checked ? 'Screen will stay on' : 'Windows can now turn the display off'); },
   setModePref(el) { localStorage.setItem('modePref', el.value); toast('Saved'); },
   async setFocus(el) { await Prefs.set({ focus: el.value }); App.render(true); },
@@ -467,6 +468,7 @@ async function init() {
   }
   Practice.load();
   await Queue.recover();
+  try { const n = await Queue.convertVisionToOcr(); if (n) setTimeout(() => toast(`Switched ${n} scanned question-bank jobs to the faster read-then-import route`, 6000), 1500); } catch (e) { console.warn(e); }
   if (AI.key && !localStorage.getItem('gem_picked')) { try { await AI.autoPick(); localStorage.setItem('gem_picked', '1'); } catch (e) {} }
   Queue.listeners.add(() => { const q = $('#qstatus'); if (q) q.innerHTML = queueLine(); const nb = $('#nav-q'); if (nb) nb.hidden = !(Queue.running.local || Queue.running.ai); });
   await App.render();

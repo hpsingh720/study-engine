@@ -444,6 +444,7 @@ Views.library = async () => {
     <div class="qstatus" id="qstatus">${queueLine()}</div>
     ${kindTotals ? `<div class="qkinds">${kindTotals}</div>` : '<p class="muted">Nothing queued.</p>'}
     ${failed.length ? `<div class="failed"><p class="label">Recent failures</p>${failed.map(j => `<p class="small"><b>${JOB_LABEL[j.kind]}</b> — ${esc(j.error || '')}</p>`).join('')}</div>` : ''}
+    <label class="inline small mt">Page readers on this laptop <select class="select-sm" data-change="ocrWorkers">${[[1, '1 — quiet'], [2, '2 — balanced'], [3, '3 — fastest (loud fan)']].map(([v, l]) => `<option value="${v}" ${(+localStorage.getItem('ocrWorkers') || 3) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label><br>
     <label class="inline small mt"><input type="checkbox" data-change="keepAwake" ${localStorage.getItem('keepAwake') === '0' ? '' : 'checked'}> Keep the screen on while working (untick to let Windows turn the display off — set Windows “Sleep” to Never when plugged in)</label>
     <p class="muted small">Keep this tab open while it works. If a daily limit is hit, it pauses and carries on by itself later.</p>
   </section>
