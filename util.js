@@ -93,3 +93,20 @@ function download(name, blob) {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
+
+// Questions can have one answer, or several ("select all that apply", old AMC-style "could be due to").
+function correctSet(m) {
+  if (Array.isArray(m.multi) && m.multi.length > 1) return [...m.multi].sort();
+  const mm = String(m.expl || '').match(/^\s*(?:\*\*)?Answer:?(?:\*\*)?\s*([A-E](?:\s*(?:,|and|&)\s*[A-E])+)(?![a-z])/i);
+  if (mm) {
+    const arr = [...new Set(mm[1].toUpperCase().match(/[A-E]/g).map(c => c.charCodeAt(0) - 65))].filter(i => i < (m.options || []).length);
+    if (arr.length > 1) return arr.sort();
+  }
+  return [m.ans];
+}
+function isMulti(m) { return correctSet(m).length > 1; }
+function isRight(m, choice) {
+  const set = correctSet(m), ch = Array.isArray(choice) ? choice : [choice];
+  return set.length === ch.length && set.every(x => ch.includes(x));
+}
+const letters = arr => (Array.isArray(arr) ? arr : [arr]).filter(x => x != null).map(i => String.fromCharCode(65 + i)).join(', ');

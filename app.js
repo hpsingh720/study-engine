@@ -79,6 +79,10 @@ const A = {
   async quickPractice() { await Practice.start({ kind: 'custom', title: 'Mixed practice', mode: 'tutor', count: 20, weightMistakes: true }); },
   async startMistakes() { await Practice.start({ kind: 'mistakes', title: 'Mistake bank', mode: 'tutor', source: 'mistakes', count: 40 }); },
   startBiweekly,
+  async pickMode(el) {
+    const k = el.dataset.m; if ($('#mode-remember')?.checked) localStorage.setItem('modePref', k);
+    const opts = Practice._pending; closeModal(); if (opts) await Practice._start({ ...opts, ...MODES[k] });
+  },
   startDue,
   async mergeTopic(el) { const n = await queueMerge([el.dataset.id], 0); toast(n ? 'Combining questions — a minute or two.' : 'Not enough questions to combine yet.'); App.render(true); },
   async mergeEverything() {
@@ -195,12 +199,14 @@ const A = {
   // Session
   async pick(el) {
     const s = Practice.s; const i = +el.dataset.i;
-    if (s.mode === 'exam') { const m = await DB.get('mcqs', s.qs[s.idx]); s.ans[m.id] = { c: i, ok: i === m.ans ? 1 : 0 }; }
-    else s.sel = i;
+    const m = await DB.get('mcqs', s.qs[s.idx]);
+    const toggle = cur => { const a = Array.isArray(cur) ? [...cur] : []; const k = a.indexOf(i); k >= 0 ? a.splice(k, 1) : a.push(i); return a.sort(); };
+    if (s.mode === 'exam') { const c = isMulti(m) ? toggle(s.ans[m.id]?.c) : i; if (Array.isArray(c) && !c.length) delete s.ans[m.id]; else s.ans[m.id] = { c, ok: isRight(m, c) ? 1 : 0 }; }
+    else s.sel = isMulti(m) ? toggle(s.sel) : i;
     Practice.save(); App.render(true);
   },
   async checkQ() {
-    const s = Practice.s; if (s.sel == null) return;
+    const s = Practice.s; if (s.sel == null || (Array.isArray(s.sel) && !s.sel.length)) return;
     const m = await DB.get('mcqs', s.qs[s.idx]); await Practice.answer(m, s.sel); s.sel = null; Practice.save(); App.render(true);
   },
   nextQ() { const s = Practice.s; s.idx = Math.min(s.qs.length - 1, s.idx + 1); s.sel = null; Practice.save(); App.render(); },
@@ -216,7 +222,7 @@ const A = {
   },
   async askQ() {
     const s = Practice.s; const m = await DB.get('mcqs', s.qs[s.idx]);
-    openModal(`<form data-submit="askQSend"><h3>Ask about this question</h3><textarea name="q" rows="3">Why is ${String.fromCharCode(65 + m.ans)} correct and not ${String.fromCharCode(65 + (s.ans[m.id]?.c ?? 0))}?</textarea>
+    openModal(`<form data-submit="askQSend"><h3>Ask about this question</h3><textarea name="q" rows="3">Why is ${letters(correctSet(m))} correct and not ${letters(s.ans[m.id]?.c ?? 0)}?</textarea>
       <div id="askq-out" class="read mt"></div><div class="row gap mt end"><button type="button" class="btn" data-act="closeModal">Close</button><button class="btn primary">Ask</button></div></form>`);
   },
   async flagQ() {
@@ -226,7 +232,7 @@ const A = {
   closeResults() { Practice.clear(); history.length > 1 ? history.back() : (location.hash = '#/'); },
   async retryWrong(el) {
     const t = await DB.get('tests', el.dataset.test);
-    const ids = []; for (const id of t.qs) { const m = await DB.get('mcqs', id); if (m && t.ans[id] != null && t.ans[id] !== m.ans) ids.push(id); }
+    const ids = []; for (const id of t.qs) { const m = await DB.get('mcqs', id); if (m && t.ans[id] != null && !isRight(m, t.ans[id])) ids.push(id); }
     Practice.s = { id: uid(), kind: 'retry', title: 'Retry: ' + t.title, mode: 'tutor', topicId: t.topicId, qs: shuffle(ids), idx: 0, ans: {}, sel: null, start: Date.now(), limit: 0, finished: false };
     Practice.save(); location.hash = '#/session'; App.render();
   },
@@ -234,7 +240,7 @@ const A = {
     const t = await DB.get('tests', el.dataset.test); const out = $('#ai-review');
     out.innerHTML = '<p class="muted"><span class="spin"></span>Analysing…</p>';
     const items = [];
-    for (const id of t.qs) { const m = await DB.get('mcqs', id); if (m && t.ans[id] != null && t.ans[id] !== m.ans) items.push(`Q: ${m.stem}\nOptions: ${m.options.map((o, i) => String.fromCharCode(65 + i) + '. ' + o).join(' | ')}\nStudent chose ${String.fromCharCode(65 + t.ans[id])}, correct ${String.fromCharCode(65 + m.ans)}. Topic: ${m.topicId}`); }
+    for (const id of t.qs) { const m = await DB.get('mcqs', id); if (m && t.ans[id] != null && !isRight(m, t.ans[id])) items.push(`Q: ${m.stem}\nOptions: ${m.options.map((o, i) => String.fromCharCode(65 + i) + '. ' + o).join(' | ')}\nStudent chose ${letters(t.ans[id])}, correct ${letters(correctSet(m))}. Topic: ${m.topicId}`); }
     try {
       const txt = await AI.call({ json: false, system: SYSTEM_TUTOR, prompt: `The student scored ${t.correct}/${t.total} on "${t.title}". Here are the questions they got wrong:\n\n${items.join('\n\n').slice(0, 30000)}\n\nWrite a short review: (1) the 2–4 patterns behind these mistakes (e.g. Indian vs Australian practice confusion, misreading the lead-in, a knowledge gap), (2) for each pattern the exact facts to revise as bullets, (3) one line on exam technique. Be specific and brief.` });
       t.review = txt; await DB.put('tests', t); out.innerHTML = md(txt);
@@ -345,7 +351,7 @@ const F = {
     const s = Practice.s; const m = await DB.get('mcqs', s.qs[s.idx]); const t = m.topicId ? await DB.get('topics', m.topicId) : null;
     out.innerHTML = '<p class="muted"><span class="spin"></span>Thinking…</p>';
     try {
-      const a = await askTutor(t, q, `MCQ: ${m.stem}\nOptions: ${m.options.map((o, i) => String.fromCharCode(65 + i) + '. ' + o).join(' | ')}\nKeyed answer: ${String.fromCharCode(65 + m.ans)}\nExplanation: ${m.expl}`);
+      const a = await askTutor(t, q, `MCQ: ${m.stem}\nOptions: ${m.options.map((o, i) => String.fromCharCode(65 + i) + '. ' + o).join(' | ')}\nKeyed answer: ${letters(correctSet(m))}\nExplanation: ${m.expl}`);
       out.innerHTML = md(a);
       if (t) { const n = await getNote(t.id); (n.doubts ||= []).push({ q: q + ' (about an MCQ)', a, ts: Date.now() }); await DB.put('notes', n); }
     } catch (e) { out.innerHTML = `<p class="warn-t">${esc(e.message)}</p>`; }
@@ -354,7 +360,7 @@ const F = {
     const d = new FormData(form);
     const f = { systems: d.getAll('sys'), type: d.get('type'), source: d.get('source'), count: Math.max(5, Math.min(150, +d.get('count') || 20)), mode: d.get('mode') };
     localStorage.setItem('pform', JSON.stringify(f));
-    await Practice.start({ kind: 'custom', title: f.systems.length === 1 ? sysName(f.systems[0]) : f.systems.length ? `${f.systems.length} systems` : 'All systems', ...f, weightMistakes: f.source === 'all' });
+    await Practice.start({ ...MODES[f.mode] || MODES.tutor, chosen: true, kind: 'custom', title: f.systems.length === 1 ? sysName(f.systems[0]) : f.systems.length ? `${f.systems.length} systems` : 'All systems', ...f, weightMistakes: f.source === 'all', mode: (MODES[f.mode] || MODES.tutor).mode });
   },
   async saveAI(form) {
     const d = new FormData(form);
@@ -384,6 +390,7 @@ const F = {
 
 // Change / input handlers
 const C = {
+  setModePref(el) { localStorage.setItem('modePref', el.value); toast('Saved'); },
   async setFocus(el) { await Prefs.set({ focus: el.value }); App.render(true); },
   async setTarget(el) { const p = await Prefs.get(); p.targets = { ...(p.targets || {}), [el.dataset.sys]: el.value }; await DB.put('prefs', p); toast('Deadline saved — plan updated'); App.render(true); },
   async setStart(el) { const p = await Prefs.get(); p.starts = { ...(p.starts || {}), [el.dataset.sys]: el.value }; await DB.put('prefs', p); App.render(true); },

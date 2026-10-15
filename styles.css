@@ -362,3 +362,5 @@ a.topic-row:hover { background: var(--surface-2); }
 .pd-date small { display: block; color: var(--muted); font-weight: 500; }
 .plan .chip { text-decoration: none; }
 @media (max-width: 600px) { .plan-day { grid-template-columns: 1fr; gap: 4px; } }
+
+.menu .btn { justify-content: flex-start; text-align: left; white-space: normal; padding: 12px 14px; }

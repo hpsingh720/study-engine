@@ -301,10 +301,11 @@ Views.session = async () => {
   const a = s.ans[m.id];
   const revealed = s.mode === 'tutor' && !!a;
   const chosen = a ? a.c : s.sel;
+  const multi = isMulti(m), right = correctSet(m), chosenArr = chosen == null ? [] : Array.isArray(chosen) ? chosen : [chosen];
   const opts = m.options.map((o, i) => {
     let cls = '';
-    if (revealed) { if (i === m.ans) cls = 'right'; else if (i === a.c) cls = 'wrong'; else cls = 'dim'; }
-    else if (chosen === i) cls = 'sel';
+    if (revealed) { if (right.includes(i)) cls = 'right'; else if (chosenArr.includes(i)) cls = 'wrong'; else cls = 'dim'; }
+    else if (chosenArr.includes(i)) cls = 'sel';
     return `<button class="opt ${cls}" data-act="pick" data-i="${i}" ${revealed ? 'disabled' : ''}><span class="opt-l">${String.fromCharCode(65 + i)}</span><span class="opt-t">${esc(o)}</span></button>`;
   }).join('');
   const last = s.idx === s.qs.length - 1;
@@ -329,12 +330,13 @@ Views.session = async () => {
           <div class="row between"><span class="tag tag-${m.type.toLowerCase()}">${TYPE_LABEL[m.type] || m.type}</span><span class="muted small">${esc(m.src && m.src !== 'ai' ? m.src : sysName(m.system))}</span></div>
           ${img ? `<figure class="q-img"><img src="${img}" data-act="zoomImg" alt="Question image"></figure>` : ''}
           <div class="q-stem">${md(m.stem)}</div>
+          ${multi ? '<p class="pill warn">More than one answer — select all that apply</p>' : ''}
           <div class="opts">${opts}</div>
-          ${revealed ? `<div class="expl ${a.ok ? 'ok' : 'bad'}"><b>${a.ok ? 'Correct' : 'Not quite — answer ' + String.fromCharCode(65 + m.ans)}</b>${md(m.expl)}${m.cite ? `<p class="muted small">Source: ${esc(m.cite)}</p>` : ''}${m.keyedBy === 'ai' && m.src !== 'ai' ? '<p class="muted small">Answer chosen by AI (the book had no key on these pages).</p>' : ''}
+          ${revealed ? `<div class="expl ${a.ok ? 'ok' : 'bad'}"><b>${a.ok ? 'Correct' : 'Not quite — answer ' + letters(right)}</b>${md(m.expl)}${m.cite ? `<p class="muted small">Source: ${esc(m.cite)}</p>` : ''}${m.keyedBy === 'ai' && m.src !== 'ai' ? '<p class="muted small">Answer chosen by AI (the book had no key on these pages).</p>' : ''}
             <div class="row gap mt"><button class="btn sm" data-act="askQ">Ask AI about this</button><button class="btn sm ghost" data-act="flagQ">Flag bad question</button></div></div>` : ''}
           <div class="q-nav">
             <button class="btn" data-act="prevQ" ${s.idx ? '' : 'disabled'}>Back</button>
-            ${s.mode === 'tutor' && !revealed ? `<button class="btn primary" data-act="checkQ" ${chosen == null ? 'disabled' : ''}>Check answer</button>`
+            ${s.mode === 'tutor' && !revealed ? `<button class="btn primary" data-act="checkQ" ${chosenArr.length ? '' : 'disabled'}>Check answer</button>`
               : last ? `<button class="btn primary" data-act="endSession">See results</button>` : `<button class="btn primary" data-act="nextQ">Next</button>`}
           </div>
         </div>
@@ -354,9 +356,9 @@ async function renderResults(test, live = false) {
   const rows = [];
   for (const id of test.qs) {
     const m = await DB.get('mcqs', id); if (!m) continue;
-    const c = test.ans[id]; const ok = c === m.ans;
+    const c = test.ans[id]; const ok = c != null && isRight(m, c); const rs = correctSet(m), cs = c == null ? [] : Array.isArray(c) ? c : [c];
     rows.push(`<details class="rev ${c == null ? 'skip' : ok ? 'ok' : 'bad'}"><summary><span class="mark">${c == null ? '–' : ok ? '✓' : '✗'}</span><span class="rev-stem">${esc(m.stem.slice(0, 140))}${m.stem.length > 140 ? '…' : ''}</span></summary>
-      <div class="rev-body">${md(m.stem)}<ol type="A" class="rev-opts">${m.options.map((o, i) => `<li class="${i === m.ans ? 'right' : i === c ? 'wrong' : ''}">${esc(o)}</li>`).join('')}</ol>${md(m.expl)}</div></details>`);
+      <div class="rev-body">${md(m.stem)}<ol type="A" class="rev-opts">${m.options.map((o, i) => `<li class="${rs.includes(i) ? 'right' : cs.includes(i) ? 'wrong' : ''}">${esc(o)}</li>`).join('')}</ol>${md(m.expl)}</div></details>`);
   }
   const chip = (k, v) => `<span class="pill">${k}: ${v[0]}/${v[1]} (${pct(v[0], v[1])}%)</span>`;
   const wrong = test.qs.filter(id => test.ans[id] != null).length - test.correct;
@@ -399,7 +401,7 @@ Views.practice = async () => {
       <label>Type<select name="type">${[['ALL', 'All mixed'], ['AMC', 'AMC only'], ['MBBS', 'MBBS only'], ['IMG', 'Images only']].map(([v, l]) => `<option value="${v}" ${f.type === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label>Questions<select name="source">${[['all', 'Any'], ['due', 'Due for revision'], ['unseen', 'Unseen only'], ['mistakes', 'Mistakes only']].map(([v, l]) => `<option value="${v}" ${f.source === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label>How many<input type="number" name="count" min="5" max="150" value="${f.count || 20}"></label>
-      <label>Mode<select name="mode"><option value="tutor" ${f.mode !== 'exam' ? 'selected' : ''}>Tutor (explain each)</option><option value="exam" ${f.mode === 'exam' ? 'selected' : ''}>Exam (timed)</option></select></label>
+      <label>Mode<select name="mode">${Object.entries(MODES).map(([k, m]) => `<option value="${k}" ${(f.mode || 'tutor') === k ? 'selected' : ''}>${m.label}</option>`).join('')}</select></label>
     </div>
     <button class="btn primary mt">Start</button>
   </form>
@@ -519,6 +521,8 @@ Views.settings = async () => {
     <p class="muted small">${Sync.on() ? `Status: ${esc(Sync.msg || Sync.state)}${last ? ' · last sync ' + new Date(last).toLocaleString() : ''}` : 'Sync is off.'}</p></form>
   <section class="card mt"><h3>Backup</h3><p class="muted small">Download everything except the books as one file, or load a backup (merges into what's here).</p>
     <div class="row gap wrap"><button class="btn" data-act="exportData">Download backup</button><label class="btn">Load backup<input type="file" accept=".json,application/json" hidden data-change="importData"></label></div></section>
+  <section class="card mt"><h3>Test mode</h3><p class="muted small">When you start a topic test or practice set.</p>
+    <select data-change="setModePref" class="select-sm">${[['ask', 'Ask me every time'], ...Object.entries(MODES).map(([k, m]) => [k, m.label])].map(([v, l]) => `<option value="${v}" ${(localStorage.getItem('modePref') || 'ask') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></section>
   <section class="card mt"><h3>Appearance</h3><div class="seg">${['auto', 'light', 'dark'].map(k => `<button class="${(localStorage.getItem('theme') || 'auto') === k ? 'on' : ''}" data-act="theme" data-k="${k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}</div></section>
   </div>`;
 };

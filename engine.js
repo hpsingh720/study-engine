@@ -264,7 +264,7 @@ Return JSON: {"items":[{"box_2d":[0,0,1000,1000],"caption":"","topicId":"","stem
     const batch = [];
     for (const id of job.payload.ids) { const m = await DB.get('mcqs', id); if (m && !m.deleted && !m.merged && !m.flagged) batch.push(m); }
     if (batch.length < 2) return;
-    const list = batch.map((m, i) => `#${i}${m.img ? ' [HAS IMAGE]' : ''} (${m.type})\nQ: ${m.stem}\nOptions: ${m.options.map((o, k) => String.fromCharCode(65 + k) + '. ' + o).join(' | ')}\nAnswer: ${String.fromCharCode(65 + m.ans)}\nWhy: ${String(m.expl || '').slice(0, 500)}`).join('\n\n');
+    const list = batch.map((m, i) => `#${i}${m.img ? ' [HAS IMAGE]' : ''} (${m.type})\nQ: ${m.stem}\nOptions: ${m.options.map((o, k) => String.fromCharCode(65 + k) + '. ' + o).join(' | ')}\nAnswer: ${letters(correctSet(m))}\nWhy: ${String(m.expl || '').slice(0, 500)}`).join('\n\n');
     const prompt = `Topic: ${t.name}. Below are ${batch.length} MCQs from the student's bank. The student cannot do thousands of questions repeatedly, so shrink this set WITHOUT losing any examinable fact.
 
 TASK
@@ -314,6 +314,7 @@ const IMPORT_RULES = (first, last, ctxPage) => `Extract EVERY multiple-choice qu
 - If a question starts on page ${last} and continues onto ${ctxPage ? 'page ' + ctxPage : 'the next page'}, ${ctxPage ? 'finish it using page ' + ctxPage : 'include whatever is present'}. Do NOT include questions that start on ${ctxPage ? 'page ' + ctxPage : 'a later page'}, and do NOT include the tail end of a question that started before page ${first} (the previous batch has it).
 - Copy the stem and every option EXACTLY as written (fix only obvious OCR/spacing errors). Keep all options in their original order. Do not put A–E letters inside the option text.
 - Answer: use the book's answer ("keyedBy":"book"). Only if the book shows no answer, choose the best one yourself and set "keyedBy":"ai".
+- If MORE THAN ONE option is correct (old-style AMC \"could be due to / which are true\" questions, or the key lists several letters), give ALL of them in "answers" as 0-based indexes, e.g. "answers":[1,2,3], and set "answer" to the first.
 - Explanation: copy the book's explanation IN FULL, word for word, including the notes on each wrong option. Only if the book has none, write: "Answer: <text>", 1–3 lines why, and one short line per wrong option.
 - Assign each question to the ONE closest topic id from the list (or "" if none fits).
 - type: "AMC" for Australian / AMC / AMEDEX-style (usually 5 options), otherwise "MBBS".

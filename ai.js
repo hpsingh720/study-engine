@@ -25,6 +25,13 @@ const AI = {
   async call(opts) {
     try { return await this._call(opts); }
     catch (e) {
+      // 503 "busy": Google's servers are overloaded for that model. Wait a moment, then fall back to the lighter model.
+      if (e instanceof QuotaError && /busy/i.test(e.message || '') && (opts._busy || 0) < 2) {
+        await sleep(opts._busy ? 1500 : 2500);
+        const used = opts.model || this.model;
+        const alt = opts._busy && this.bulkModel !== used ? this.bulkModel : used;
+        return this.call({ ...opts, model: alt, _busy: (opts._busy || 0) + 1 });
+      }
       // Google retires models for new users and names the replacement — switch to it automatically and retry once.
       const m = /no longer available|not found|not supported|deprecated/i.test(e.message || '') && (e.message.match(/use (?:models\/)?(gemini-[\w.\-]+)/i) || [])[1];
       const used = opts.model || this.model;
@@ -79,7 +86,7 @@ const AI = {
         const daily = /PerDay|per_day|daily/i.test(det + ' ' + (err.message || ''));
         throw new QuotaError(err.message || 'Rate limit', daily, m ? +m[1] * 1000 + 1500 : 60000);
       }
-      if (res.status >= 500) throw new QuotaError('Gemini is busy (' + res.status + ')', false, 20000);
+      if (res.status >= 500) throw new QuotaError('Gemini is busy right now (' + res.status + ') — Google’s servers are overloaded; try again in a minute', false, 20000);
       throw new Error(err.message || 'Gemini error ' + res.status);
     }
     const cand = d.candidates?.[0];
@@ -257,11 +264,15 @@ Return JSON: {"mcqs":[{"type":"AMC","stem":"","options":["","","","",""],"answer
 function cleanMcq(m, topic, extra = {}) {
   const options = (m.options || []).map(o => String(o).replace(/^\s*[A-Ea-e][.)]\s+/, '').trim()).filter(Boolean);
   let ans = typeof m.answer === 'string' && /^[A-E]$/i.test(m.answer.trim()) ? m.answer.trim().toUpperCase().charCodeAt(0) - 65 : +m.answer;
+  const toIdx = a => typeof a === 'string' && /^[A-E]$/i.test(a.trim()) ? a.trim().toUpperCase().charCodeAt(0) - 65 : +a;
+  let multi = Array.isArray(m.answers) ? [...new Set(m.answers.map(toIdx))].filter(i => i >= 0 && i < options.length).sort() : null;
+  if (multi && multi.length > 1 && !(ans >= 0 && ans < options.length)) ans = multi[0];
+  if (!multi || multi.length < 2) multi = null;
   if (!m.stem || options.length < 3 || !(ans >= 0 && ans < options.length)) return null;
   const type = extra.type || (m.type === 'MBBS' ? 'MBBS' : m.type === 'IMG' ? 'IMG' : 'AMC');
   return {
     id: uid(), topicId: topic?.id || m.topicId || '', system: topic?.system || extra.system || '',
-    type, stem: String(m.stem).trim(), options, ans,
+    type, stem: String(m.stem).trim(), options, ans, ...(multi ? { multi } : {}),
     expl: asText(m.explanation || ''), cite: m.cite || '', difficulty: m.difficulty || 'medium',
     src: extra.src || 'ai', keyedBy: m.keyedBy || (extra.src ? 'book' : 'ai'), img: extra.img || null,
     flagged: 0, created: Date.now()

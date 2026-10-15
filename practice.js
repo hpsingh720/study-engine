@@ -1,5 +1,10 @@
 // MCQ sessions: topic tests (tutor mode), biweekly exams (timed), mistakes, custom.
 const AMC_SECONDS_PER_Q = 84; // AMC Part 1: 150 questions in 3.5 hours
+const MODES = {
+  tutor: { mode: 'tutor', timed: false, label: 'Tutor — no timer', hint: 'Explanation after every question. Best right after reading a topic.' },
+  timed: { mode: 'tutor', timed: true, label: 'Tutor + AMC timer', hint: '84 seconds per question on the clock, explanation after each.' },
+  exam: { mode: 'exam', timed: true, label: 'Exam — timed', hint: 'AMC pace, no answers until the end. Like the real thing.' }
+};
 
 const Practice = {
   s: null,
@@ -35,13 +40,25 @@ const Practice = {
     return [...out, ...img].map(m => m.id);
   },
 
+  // Ask how to take the test (unless it's the biweekly exam, a form that already chose, or a saved preference).
   async start(opts) {
+    if (opts.kind === 'biweekly' || opts.chosen) return this._start(opts);
+    const pref = localStorage.getItem('modePref') || 'ask';
+    if (pref !== 'ask') return this._start({ ...opts, ...MODES[pref] });
+    this._pending = opts;
+    openModal(`<h3>How do you want to do this?</h3><div class="menu">
+      ${Object.entries(MODES).map(([k, m]) => `<button class="btn full ${k === 'tutor' ? '' : ''}" data-act="pickMode" data-m="${k}"><span><b>${m.label}</b><br><small class="muted">${m.hint}</small></span></button>`).join('')}
+      <label class="inline small mt"><input type="checkbox" id="mode-remember"> Remember my choice (change it in Settings)</label></div>`);
+    return true;
+  },
+
+  async _start(opts) {
     const qs = await this.pool(opts);
     if (!qs.length) { toast('No questions here yet. Generate MCQs or upload a question bank first.'); return false; }
     this.s = {
       id: uid(), kind: opts.kind || 'custom', title: opts.title || 'Practice', mode: opts.mode || 'tutor',
       topicId: opts.topicId || null, qs, idx: 0, ans: {}, sel: null, start: Date.now(),
-      limit: opts.mode === 'exam' ? qs.length * AMC_SECONDS_PER_Q : 0, finished: false
+      limit: (opts.mode === 'exam' || opts.timed) ? qs.length * AMC_SECONDS_PER_Q : 0, finished: false
     };
     this.save();
     if (location.hash === '#/session') App.render(); else location.hash = '#/session';
@@ -49,13 +66,13 @@ const Practice = {
   },
 
   async record(m, choice) {
-    const a = { id: uid(), mcqId: m.id, topicId: m.topicId, system: m.system, type: m.type, choice, correct: choice === m.ans ? 1 : 0, ts: Date.now(), session: this.s.id };
+    const a = { id: uid(), mcqId: m.id, topicId: m.topicId, system: m.system, type: m.type, choice, correct: isRight(m, choice) ? 1 : 0, ts: Date.now(), session: this.s.id };
     await DB.put('attempts', a);
   },
 
   async answer(m, choice) {
     const s = this.s;
-    s.ans[m.id] = { c: choice, ok: choice === m.ans ? 1 : 0 };
+    s.ans[m.id] = { c: choice, ok: isRight(m, choice) ? 1 : 0 };
     if (s.mode === 'tutor') { s.ans[m.id].rec = 1; await this.record(m, choice); }
     this.save();
   },

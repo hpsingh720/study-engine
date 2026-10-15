@@ -3,6 +3,7 @@
 const PROVIDER_PRESETS = {
   groq: { name: 'Groq', base: 'https://api.groq.com/openai/v1', model: 'meta-llama/llama-4-scout-17b-16e-instruct', rpm: 25, vision: true, signup: 'https://console.groq.com/keys', note: 'Free, no card. About 1,000 requests a day.' },
   mistral: { name: 'Mistral', base: 'https://api.mistral.ai/v1', model: 'mistral-small-latest', rpm: 20, vision: true, signup: 'https://console.mistral.ai/api-keys', note: 'Free "Experiment" plan, no card (phone number needed). Large monthly allowance.' },
+  meta: { name: 'Meta Llama API', base: 'https://api.llama.com/compat/v1', model: 'Llama-4-Maverick-17B-128E-Instruct-FP8', rpm: 9, vision: true, signup: 'https://llama.developer.meta.com/', note: 'Meta’s own Llama API (preview). About 10 requests a minute with a big size allowance, so whole pages fit.' },
   github: { name: 'GitHub Models', base: 'https://models.github.ai/inference', model: 'openai/gpt-4.1-mini', rpm: 10, vision: true, signup: 'https://github.com/settings/personal-access-tokens', note: 'Free with your GitHub account. Token needs the “Models” read permission.' },
   openrouter: { name: 'OpenRouter', base: 'https://openrouter.ai/api/v1', model: '', rpm: 15, vision: false, signup: 'https://openrouter.ai/keys', note: 'Free “:free” models, about 50 requests a day. Text only here.' },
   cerebras: { name: 'Cerebras', base: 'https://api.cerebras.ai/v1', model: '', rpm: 25, vision: false, signup: 'https://cloud.cerebras.ai', note: 'Free, very fast. Text only.' }
