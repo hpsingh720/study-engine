@@ -349,3 +349,6 @@ a.topic-row:hover { background: var(--surface-2); }
   .counts .big span { display: block; font-size: .72rem; }
   .counts .muted { font-size: .7rem; }
 }
+
+.prov { border-top: 1px solid var(--line); padding: 12px 0; }
+.prov:first-of-type { border-top: 0; }

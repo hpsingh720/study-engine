@@ -150,10 +150,30 @@ const Handlers = {
     await DB.put('books', book);
   },
 
-  async ocr(job) {
+  async ocr(job, ctx) {
     const book = await DB.get('books', job.payload.bookId); if (!book) return;
-    const worker = await getOcrWorker();
     const done = job.payload.done || [];
+    if (ctx?.provider) {
+      // A free vision AI reads the scanned pages — much faster than OCR on the laptop.
+      const todo = job.payload.pages.filter(p => !done.includes(p));
+      for (let i = 0; i < todo.length; i += 3) {
+        const batch = todo.slice(i, i + 3);
+        Queue.setStatus(ctx.lane, `${ctx.provider.name}: reading ${book.short} — pages ${batch.join(', ')}`);
+        const images = []; for (const p of batch) images.push((await renderPage(book, p, 1700)).toDataURL('image/jpeg', 0.82));
+        const txt = await Providers.call(ctx.provider, { json: false, temperature: 0, images,
+          prompt: `Transcribe ALL text on these ${batch.length} scanned medical textbook pages, in reading order, keeping headings, bullet points, table rows and drug doses. No commentary. Output exactly:\n=== PAGE 1 ===\n<text>\n=== PAGE 2 ===\n<text> …` });
+        const parts = txt.split(/===\s*PAGE\s*(\d+)\s*===/i);
+        for (let k = 1; k < parts.length; k += 2) {
+          const idx = +parts[k] - 1, text = (parts[k + 1] || '').trim();
+          if (batch[idx] && text.length > 30) await DB.put('pages', { bookId: book.id, p: batch[idx], text, ocr: 2 });
+        }
+        if (parts.length < 3 && txt.trim().length > 30) await DB.put('pages', { bookId: book.id, p: batch[0], text: txt.trim(), ocr: 2 });
+        done.push(...batch); job.payload.done = done; await DB.put('queue', job);
+        await sleep(Math.max(0, 60000 / ctx.provider.rpm));
+      }
+      return;
+    }
+    const worker = await getOcrWorker();
     for (const p of job.payload.pages) {
       if (done.includes(p)) continue;
       Queue.status.local = `OCR ${book.short} — page ${p}`; Queue.emit();
@@ -167,7 +187,7 @@ const Handlers = {
     if (!left.length) { book.status = 'ready'; await DB.put('books', book); }
   },
 
-  async mcqtext(job) {
+  async mcqtext(job, ctx) {
     const book = await DB.get('books', job.payload.bookId); if (!book) return;
     const pages = [];
     for (const p of job.payload.pages) { const pg = await DB.get('pages', [book.id, p]); if (pg) pages.push(pg); }
@@ -188,11 +208,11 @@ PAGES:
 ${pages.map(pg => `--- page ${pg.p} ---\n${pg.text}`).join('\n').slice(0, 60000)}
 
 Return JSON: {"mcqs":[{"type":"MBBS","stem":"","options":[""],"answer":0,"explanation":"","topicId":"","keyedBy":"book"}]}`;
-    const out = await AI.call({ prompt, system: SYSTEM_TUTOR, temperature: 0.1, model: AI.bulkModel });
+    const out = await bulkCall(ctx, { prompt, system: SYSTEM_TUTOR, temperature: 0.1 });
     await saveImported(out.mcqs || [], book, pages[0].p);
   },
 
-  async mcqvision(job) {
+  async mcqvision(job, ctx) {
     const book = await DB.get('books', job.payload.bookId); if (!book) return;
     const canvases = [];
     for (const p of job.payload.pages) canvases.push(await renderPage(book, p, 1600));
@@ -211,11 +231,11 @@ TOPIC LIST (id|name):
 ${await topicListText()}
 
 Return JSON: {"mcqs":[{"type":"AMC","stem":"","options":[""],"answer":0,"explanation":"","topicId":"","keyedBy":"book","figure":null}]}`;
-    const out = await AI.call({ prompt, images, system: SYSTEM_TUTOR, temperature: 0.1, model: AI.bulkModel });
+    const out = await bulkCall(ctx, { prompt, images, system: SYSTEM_TUTOR, temperature: 0.1 });
     await saveImported(out.mcqs || [], book, job.payload.pages[0], canvases);
   },
 
-  async practical(job) {
+  async practical(job, ctx) {
     const book = await DB.get('books', job.payload.bookId); if (!book) return;
     const p = job.payload.page;
     const canvas = await renderPage(book, p, 1600);
@@ -231,7 +251,7 @@ TOPIC LIST (id|name):
 ${await topicListText()}
 
 Return JSON: {"items":[{"box_2d":[0,0,1000,1000],"caption":"","topicId":"","stem":"","options":["","","","",""],"answer":0,"explanation":""}]}  — or {"items":[]} if there is nothing useful.`;
-    const out = await AI.call({ prompt, images: [canvas.toDataURL('image/jpeg', 0.8)], system: SYSTEM_TUTOR, temperature: 0.3, model: AI.bulkModel });
+    const out = await bulkCall(ctx, { prompt, images: [canvas.toDataURL('image/jpeg', 0.8)], system: SYSTEM_TUTOR, temperature: 0.3 });
     const topics = Object.fromEntries((await DB.live('topics')).map(t => [t.id, t]));
     const list = [];
     for (const it of out.items || []) {
@@ -328,13 +348,17 @@ async function getOcrWorker() {
 }
 
 // ---------- Queue ----------
+const BULK_KINDS = ['mcqtext', 'mcqvision', 'practical'];
 const Queue = {
-  running: { local: false, ai: false },
-  status: { local: '', ai: '' },
-  pausedUntil: 0, pauseMsg: '', manualPause: false,
+  running: {}, status: {}, paused: {}, hits: {}, last: {},
+  pauseMsg: '', manualPause: false, claimed: new Set(),
   listeners: new Set(),
   wake: null,
   emit() { this.listeners.forEach(f => { try { f(); } catch (e) {} }); },
+  setStatus(lane, txt) { this.status[lane] = txt; this.emit(); },
+  get pausedUntil() { return this.paused.ai || 0; },
+  set pausedUntil(v) { this.paused.ai = v; },
+  set limitHits(v) { this.hits.ai = v; },
 
   async add(kind, payload, prio = 5) {
     const j = { id: uid(), kind, lane: LOCAL_KINDS.includes(kind) ? 'local' : 'ai', payload, prio, status: 'pending', tries: 0, created: Date.now() + Math.random() };
@@ -342,18 +366,30 @@ const Queue = {
     this.kick();
     return j;
   },
-  async next(lane) {
-    const pend = await DB.byIndex('queue', 'status', 'pending');
-    let c = pend.filter(j => j.lane === lane);
+  // Which jobs each lane may take: local = OCR/reading, ai = Gemini (everything AI), p:<id> = free providers (bulk + OCR if it can see images).
+  accepts(lane, j, prov) {
+    if (lane === 'local') return j.lane === 'local';
+    if (lane === 'ai') return j.lane === 'ai';
+    if (!prov) return false;
+    if (j.kind === 'mcqtext') return true;
+    if (prov.vision && (j.kind === 'mcqvision' || j.kind === 'practical' || j.kind === 'ocr')) return true;
+    return false;
+  },
+  providerOcr() { return Providers.active().some(p => p.vision); },
+  async next(lane, prov) {
+    const pend = (await DB.byIndex('queue', 'status', 'pending')).filter(j => !this.claimed.has(j.id));
+    let c = pend.filter(j => this.accepts(lane, j, prov));
     if (lane === 'ai') {
-      // Topic sheets need every book fully read first.
-      const localBusy = pend.some(j => j.lane === 'local') || this.running.local;
+      const localBusy = pend.some(j => j.lane === 'local') || (await DB.byIndex('queue', 'status', 'running')).some(j => j.lane === 'local');
       if (localBusy) c = c.filter(j => j.kind !== 'sheet' && j.kind !== 'mcqgen');
     }
+    // Providers help with OCR only when there is no import work for them.
+    if (lane.startsWith('p:')) { const bulk = c.filter(j => j.kind !== 'ocr'); if (bulk.length) c = bulk; }
     c.sort((a, b) => a.prio - b.prio || a.created - b.created);
     return c[0];
   },
-  kick() { this.loop('local'); this.loop('ai'); },
+  lanes() { return ['local', 'ai', ...Providers.active().map(p => 'p:' + p.id)]; },
+  kick() { this.lanes().forEach(l => this.loop(l)); },
   async holdWake(on) {
     try {
       if (on && !this.wake && navigator.wakeLock) { this.wake = await navigator.wakeLock.request('screen'); this.wake.addEventListener('release', () => { this.wake = null; }); }
@@ -362,53 +398,63 @@ const Queue = {
   },
   async loop(lane) {
     if (this.running[lane]) return;
+    const isAI = lane !== 'local';
     this.running[lane] = true; this.holdWake(true);
     try {
       while (true) {
-        if (lane === 'ai' && (this.manualPause || Date.now() < this.pausedUntil)) break;
-        const j = await this.next(lane);
+        const prov = lane.startsWith('p:') ? Providers.get(lane.slice(2)) : null;
+        if (lane.startsWith('p:') && !(prov && prov.key && prov.model && prov.on !== false)) break;
+        if (isAI && (this.manualPause || Date.now() < (this.paused[lane] || 0))) break;
+        if (lane === 'ai' && !AI.key) { this.pauseMsg = 'Add your Gemini API key in Settings to start AI jobs.'; break; }
+        const j = await this.next(lane, prov);
         if (!j) break;
-        if (lane === 'ai') {
-          if (!AI.key) { this.pauseMsg = 'Add your Gemini API key in Settings to start AI jobs.'; break; }
-          const wait = AI.lastCall + 60000 / AI.rpm - Date.now();
-          if (wait > 0) { this.status.ai = 'Waiting for rate limit…'; this.emit(); await sleep(wait); }
-        }
-        j.status = 'running'; await DB.put('queue', j);
-        const name = j.payload.topicId ? (await DB.get('topics', j.payload.topicId))?.name : (await DB.get('books', j.payload.bookId))?.short;
-        this.status[lane] = `${JOB_LABEL[j.kind]}${name ? ' — ' + name : ''}`; this.pauseMsg = ''; this.emit();
+        if (this.claimed.has(j.id)) { await sleep(30); continue; }
+        this.claimed.add(j.id);
         try {
-          await Handlers[j.kind](j);
-          if (j.lane === 'ai') this.limitHits = 0;
-          j.status = 'done'; j.finished = Date.now(); delete j.error;
-        } catch (e) {
-          console.warn('Job failed', j.kind, e);
-          if (e instanceof QuotaError) {
-            j.status = 'pending';
-            this.limitHits = (this.limitHits || 0) + 1;
-            this.lastLimit = String(e.message || '').slice(0, 220);
-            if (e.daily || this.limitHits >= 4) {
-              this.pausedUntil = Date.now() + 30 * 60 * 1000; this.limitHits = 0;
-              this.pauseMsg = 'Gemini limit reached — pausing 30 min, then it tries again by itself. Google says: ' + this.lastLimit;
-            } else { this.status[lane] = 'Rate limited — retrying shortly (' + this.limitHits + '/4)'; this.emit(); await sleep(Math.max(e.retryMs, 20000)); }
-          } else {
-            j.tries++; j.error = String(e.message || e).slice(0, 300);
-            j.status = j.tries >= 3 ? 'failed' : 'pending';
-            if (j.status === 'pending') await sleep(4000);
+          if (isAI) {
+            const rpm = prov ? prov.rpm : AI.rpm, lastT = prov ? (this.last[lane] || 0) : AI.lastCall;
+            const wait = lastT + 60000 / rpm - Date.now();
+            if (wait > 0) { this.setStatus(lane, `${prov ? prov.name : 'Gemini'}: waiting for rate limit…`); await sleep(wait); }
+            this.last[lane] = Date.now();
           }
-        }
-        await DB.put('queue', j);
-        if (j.status !== 'pending' && j.payload.bookId) await markBookIfFinished(j.payload.bookId);
-        this.emit();
-        if (j.status === 'done' && ['merge', 'sheet', 'mcqgen', 'mcqtext', 'mcqvision', 'practical'].includes(j.kind)) App.softRefresh();
+          j.status = 'running'; await DB.put('queue', j);
+          const name = j.payload.topicId ? (await DB.get('topics', j.payload.topicId))?.name : (await DB.get('books', j.payload.bookId))?.short;
+          this.setStatus(lane, `${prov ? prov.name + ': ' : lane === 'ai' ? 'Gemini: ' : ''}${JOB_LABEL[j.kind]}${name ? ' — ' + name : ''}`);
+          try {
+            await Handlers[j.kind](j, { lane, provider: prov });
+            this.hits[lane] = 0;
+            j.status = 'done'; j.finished = Date.now(); delete j.error;
+          } catch (e) {
+            console.warn('Job failed', lane, j.kind, e);
+            if (e instanceof QuotaError) {
+              j.status = 'pending';
+              this.hits[lane] = (this.hits[lane] || 0) + 1;
+              if (e.daily || this.hits[lane] >= 4) {
+                this.paused[lane] = Date.now() + 30 * 60 * 1000; this.hits[lane] = 0;
+                const msg = `${prov ? prov.name : 'Gemini'} limit reached — resting 30 min, the others keep working. (${String(e.message || '').slice(0, 160)})`;
+                if (lane === 'ai') this.pauseMsg = msg; else this.status[lane] = msg;
+                setTimeout(() => this.loop(lane), 30 * 60 * 1000 + 1000);
+              } else { this.setStatus(lane, `${prov ? prov.name : 'Gemini'}: rate limited — retrying shortly (${this.hits[lane]}/4)`); await sleep(Math.max(e.retryMs, 20000)); }
+            } else {
+              j.tries++; j.error = (prov ? prov.name + ': ' : '') + String(e.message || e).slice(0, 300);
+              j.status = j.tries >= 3 ? 'failed' : 'pending';
+              if (j.status === 'pending') await sleep(4000);
+            }
+          }
+          await DB.put('queue', j);
+          if (j.status !== 'pending' && j.payload.bookId) await markBookIfFinished(j.payload.bookId);
+          this.emit();
+          if (j.status === 'done' && ['merge', 'sheet', 'mcqgen', 'mcqtext', 'mcqvision', 'practical'].includes(j.kind)) App.softRefresh();
+        } finally { this.claimed.delete(j.id); }
       }
     } finally {
-      this.running[lane] = false; this.status[lane] = '';
-      if (!this.running.local && !this.running.ai) this.holdWake(false);
+      this.running[lane] = false;
+      if (!(this.paused[lane] > Date.now())) this.status[lane] = '';
+      if (!Object.values(this.running).some(Boolean)) this.holdWake(false);
       this.emit();
       if (lane === 'ai' && this.pausedUntil > Date.now() && !this.manualPause) {
         clearTimeout(this._retry); this._retry = setTimeout(() => this.kick(), this.pausedUntil - Date.now() + 1000);
       }
-      // Re-check: AI lane may have been waiting on local jobs.
       if (lane === 'local') setTimeout(() => this.loop('ai'), 500);
     }
   },

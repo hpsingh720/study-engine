@@ -422,8 +422,7 @@ Views.library = async () => {
 function statusText(s) { return { queued: 'waiting', reading: 'reading…', ocr: 'reading scanned pages…', importing: 'making questions…', ready: 'ready', partial: 'done, some pages failed — retry below' }[s] || s; }
 function queueLine() {
   const parts = [];
-  if (Queue.status.local) parts.push(`<span class="spin"></span>${esc(Queue.status.local)}`);
-  if (Queue.status.ai) parts.push(`<span class="spin"></span>${esc(Queue.status.ai)}`);
+  Object.entries(Queue.status).forEach(([lane, txt]) => { if (txt) parts.push(`<span class="spin"></span>${esc(txt)}`); });
   if (Queue.pauseMsg) parts.push(`<span class="warn-t">${esc(Queue.pauseMsg)}</span>`);
   if (Queue.manualPause) parts.push('<span class="warn-t">AI jobs paused.</span>');
   return parts.join('<br>') || '<span class="muted">Idle.</span>';
@@ -460,6 +459,16 @@ Views.settings = async () => {
     <p class="muted small">Importing thousands of questions is simple work, so it uses the cheaper "lite" model, which has much higher free limits. Sheets and new questions use the main model.</p>
     <div class="row gap mt"><button class="btn primary">Save</button><button type="button" class="btn" data-act="testKey">Test key & list models</button></div>
     <p class="muted small" id="key-msg"></p></form>
+  <form class="card mt" data-submit="saveProviders"><h3>Extra free AI — make it faster</h3>
+    <p class="muted small">Each free service you add works <b>at the same time</b> as Gemini on importing question banks, image questions and reading scanned pages, so the work finishes several times faster. Sign up (free), create an API key, paste it here and click Test. Topic sheets and new MCQs still use Gemini for best quality.</p>
+    ${Providers.list().map(p => `<div class="prov">
+      <div class="row between wrap gap"><b>${p.name}</b><a class="link small" href="${p.signup}" target="_blank" rel="noopener">Get a free key ›</a></div>
+      <p class="muted small">${p.note}${p.vision ? ' Reads images too.' : ''}</p>
+      <div class="form-row"><label>API key<input type="password" name="key_${p.id}" value="${esc(p.key || '')}" autocomplete="off"></label>
+      <label>Model<input name="model_${p.id}" list="pm_${p.id}" value="${esc(p.model || '')}" placeholder="click Test to choose"><datalist id="pm_${p.id}"></datalist></label></div>
+      <div class="row gap mt"><button type="button" class="btn sm" data-act="testProvider" data-id="${p.id}">Test</button><span class="muted small" id="pmsg_${p.id}">${p.key && p.model ? (p.on === false ? 'Off' : 'Active') : ''}</span></div>
+    </div>`).join('')}
+    <button class="btn primary mt">Save</button></form>
   <form class="card mt" data-submit="saveGoals"><h3>Targets</h3>
     ${prefs.exams.map((e, i) => `<div class="form-row"><label>Milestone<input name="en${i}" value="${esc(e.name)}"></label><label>Date<input type="date" name="ed${i}" value="${e.date}"></label></div>`).join('')}
     <div class="form-row"><label>Daily question goal<input type="number" name="daily" min="5" max="500" value="${prefs.daily}"></label>

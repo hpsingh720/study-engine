@@ -276,6 +276,24 @@ const A = {
     }
     catch (e) { msg.textContent = 'Problem: ' + e.message; }
   },
+  async testProvider(el) {
+    const id = el.dataset.id, msg = $('#pmsg_' + id);
+    const key = $(`input[name=key_${id}]`).value.trim(); let model = $(`input[name=model_${id}]`).value.trim();
+    Providers.save(id, { key }); msg.textContent = 'Checking…';
+    try {
+      const p = Providers.get(id);
+      let ms = []; try { ms = await Providers.models(p); } catch (e) {}
+      if (ms.length) $('#pm_' + id).innerHTML = ms.map(m => `<option value="${esc(m)}">`).join('');
+      if (!model || (ms.length && !ms.includes(model))) {
+        const pick = (p.vision ? ms.find(m => /scout|maverick|pixtral|mistral-small|vision|4\.1-mini|4o-mini/i.test(m)) : null) || ms.find(m => /:free$/.test(m) && /llama|qwen|gemma|mistral|deepseek/i.test(m)) || ms.find(m => /llama|qwen|gpt-oss/i.test(m)) || ms[0] || p.model;
+        model = pick || ''; $(`input[name=model_${id}]`).value = model;
+      }
+      Providers.save(id, { model, on: true });
+      const out = await Providers.call(Providers.get(id), { prompt: 'Reply with JSON {"ok":true}', json: true, maxTokens: 50 });
+      msg.textContent = out.ok ? `Works with ${model}. Saved — it will start helping now.` : 'Replied, but oddly — try another model.';
+      Queue.kick();
+    } catch (e) { msg.textContent = 'Problem: ' + e.message; }
+  },
   async copySql() { try { await navigator.clipboard.writeText(SYNC_SQL); toast('Setup script copied'); } catch (e) { openModal(`<h3>Setup script</h3><textarea rows="16" readonly>${esc(SYNC_SQL)}</textarea><div class="row end mt"><button class="btn" data-act="closeModal">Close</button></div>`); } },
   theme(el) { localStorage.setItem('theme', el.dataset.k); applyTheme(); App.render(true); },
   async exportData() {
@@ -329,6 +347,11 @@ const F = {
     const d = new FormData(form);
     localStorage.setItem('gem_key', d.get('key').trim()); localStorage.setItem('gem_model', d.get('model').trim() || 'gemini-2.5-flash'); localStorage.setItem('gem_rpm', d.get('rpm')); localStorage.setItem('gem_bulk', (d.get('bulk') || '').trim() || 'gemini-2.5-flash-lite'); Queue.pausedUntil = 0; Queue.limitHits = 0;
     Queue.pauseMsg = ''; Queue.kick(); toast('Saved');
+  },
+  async saveProviders(form) {
+    const d = new FormData(form);
+    Providers.list().forEach(p => Providers.save(p.id, { key: (d.get('key_' + p.id) || '').trim(), model: (d.get('model_' + p.id) || '').trim(), on: true }));
+    toast('Saved'); Queue.kick(); App.render(true);
   },
   async saveGoals(form) {
     const d = new FormData(form); const p = await Prefs.get();
