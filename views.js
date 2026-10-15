@@ -444,7 +444,8 @@ Views.library = async () => {
     <div class="qstatus" id="qstatus">${queueLine()}</div>
     ${kindTotals ? `<div class="qkinds">${kindTotals}</div>` : '<p class="muted">Nothing queued.</p>'}
     ${failed.length ? `<div class="failed"><p class="label">Recent failures</p>${failed.map(j => `<p class="small"><b>${JOB_LABEL[j.kind]}</b> — ${esc(j.error || '')}</p>`).join('')}</div>` : ''}
-    <p class="muted small mt">Keep this tab open while it works; the laptop screen is kept awake. If Gemini's daily limit is hit, it pauses and carries on by itself later.</p>
+    <label class="inline small mt"><input type="checkbox" data-change="keepAwake" ${localStorage.getItem('keepAwake') === '0' ? '' : 'checked'}> Keep the screen on while working (untick to let Windows turn the display off — set Windows “Sleep” to Never when plugged in)</label>
+    <p class="muted small">Keep this tab open while it works. If a daily limit is hit, it pauses and carries on by itself later.</p>
   </section>
   <section class="card mt flush"><div class="card-head pad"><h3>Your books</h3><span class="muted">${books.length}</span></div>
     <div class="list">${books.sort((a, b) => a.role.localeCompare(b.role)).map(b => `<div class="topic-row static">

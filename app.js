@@ -390,6 +390,7 @@ const F = {
 
 // Change / input handlers
 const C = {
+  keepAwake(el) { localStorage.setItem('keepAwake', el.checked ? '1' : '0'); if (!el.checked) Queue.holdWake(false); else Queue.holdWake(true); toast(el.checked ? 'Screen will stay on' : 'Windows can now turn the display off'); },
   setModePref(el) { localStorage.setItem('modePref', el.value); toast('Saved'); },
   async setFocus(el) { await Prefs.set({ focus: el.value }); App.render(true); },
   async setTarget(el) { const p = await Prefs.get(); p.targets = { ...(p.targets || {}), [el.dataset.sys]: el.value }; await DB.put('prefs', p); toast('Deadline saved — plan updated'); App.render(true); },

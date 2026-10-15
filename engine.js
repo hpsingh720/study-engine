@@ -406,6 +406,7 @@ const Queue = {
   kick() { this.lanes().forEach(l => this.loop(l)); },
   async holdWake(on) {
     try {
+      if (on && localStorage.getItem('keepAwake') === '0') on = false;
       if (on && !this.wake && navigator.wakeLock) { this.wake = await navigator.wakeLock.request('screen'); this.wake.addEventListener('release', () => { this.wake = null; }); }
       if (!on && this.wake) { await this.wake.release(); this.wake = null; }
     } catch (e) {}
