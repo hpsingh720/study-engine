@@ -321,7 +321,7 @@ const F = {
   },
   async saveAI(form) {
     const d = new FormData(form);
-    localStorage.setItem('gem_key', d.get('key').trim()); localStorage.setItem('gem_model', d.get('model').trim() || 'gemini-2.5-flash'); localStorage.setItem('gem_rpm', d.get('rpm'));
+    localStorage.setItem('gem_key', d.get('key').trim()); localStorage.setItem('gem_model', d.get('model').trim() || 'gemini-2.5-flash'); localStorage.setItem('gem_rpm', d.get('rpm')); localStorage.setItem('gem_bulk', (d.get('bulk') || '').trim() || 'gemini-2.5-flash-lite'); Queue.pausedUntil = 0; Queue.limitHits = 0;
     Queue.pauseMsg = ''; Queue.kick(); toast('Saved');
   },
   async saveGoals(form) {

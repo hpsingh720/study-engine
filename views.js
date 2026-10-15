@@ -456,6 +456,8 @@ Views.settings = async () => {
     <label>API key<input type="password" name="key" value="${esc(AI.key)}" autocomplete="off" placeholder="AIza…"></label>
     <div class="form-row"><label>Model<input name="model" list="models" value="${esc(AI.model)}"><datalist id="models"></datalist></label>
     <label>Requests per minute<input type="number" name="rpm" min="1" max="60" value="${AI.rpm}"></label></div>
+    <div class="form-row"><label>Bulk model (importing question banks & spotters)<input name="bulk" list="models" value="${esc(AI.bulkModel)}"></label></div>
+    <p class="muted small">Importing thousands of questions is simple work, so it uses the cheaper "lite" model, which has much higher free limits. Sheets and new questions use the main model.</p>
     <div class="row gap mt"><button class="btn primary">Save</button><button type="button" class="btn" data-act="testKey">Test key & list models</button></div>
     <p class="muted small" id="key-msg"></p></form>
   <form class="card mt" data-submit="saveGoals"><h3>Targets</h3>

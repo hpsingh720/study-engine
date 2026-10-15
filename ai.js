@@ -19,6 +19,7 @@ const AI = {
   lastCall: 0,
   get key() { return localStorage.getItem('gem_key') || ''; },
   get model() { return localStorage.getItem('gem_model') || 'gemini-2.5-flash'; },
+  get bulkModel() { return localStorage.getItem('gem_bulk') || 'gemini-2.5-flash-lite'; },
   get rpm() { return Math.max(1, +localStorage.getItem('gem_rpm') || 8); },
 
   async call({ prompt, images = [], system, json = true, temperature = 0.35, model }) {

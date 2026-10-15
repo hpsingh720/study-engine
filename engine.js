@@ -139,9 +139,9 @@ const Handlers = {
       const textPages = [];
       await DB.each('pages', 'bookId', book.id, pg => { if (!withImg.has(pg.p)) textPages.push(pg.p); });
       textPages.sort((a, b) => a - b);
-      for (const c of chunk(textPages, 5)) await Queue.add('mcqtext', { bookId: book.id, pages: c }, 4);
+      for (const c of chunk(textPages, 8)) await Queue.add('mcqtext', { bookId: book.id, pages: c }, 4);
       const visual = [...new Set([...imgPages, ...scanned])].sort((a, b) => a - b);
-      for (const c of chunk(visual, 2)) await Queue.add('mcqvision', { bookId: book.id, pages: c }, 4);
+      for (const c of chunk(visual, 4)) await Queue.add('mcqvision', { bookId: book.id, pages: c }, 4);
     } else if (book.role === 'practical') {
       const all = [...new Set([...imgPages, ...scanned])].sort((a, b) => a - b);
       for (const p of all) await Queue.add('practical', { bookId: book.id, page: p }, 5);
@@ -188,7 +188,7 @@ PAGES:
 ${pages.map(pg => `--- page ${pg.p} ---\n${pg.text}`).join('\n').slice(0, 60000)}
 
 Return JSON: {"mcqs":[{"type":"MBBS","stem":"","options":[""],"answer":0,"explanation":"","topicId":"","keyedBy":"book"}]}`;
-    const out = await AI.call({ prompt, system: SYSTEM_TUTOR, temperature: 0.1 });
+    const out = await AI.call({ prompt, system: SYSTEM_TUTOR, temperature: 0.1, model: AI.bulkModel });
     await saveImported(out.mcqs || [], book, pages[0].p);
   },
 
@@ -211,7 +211,7 @@ TOPIC LIST (id|name):
 ${await topicListText()}
 
 Return JSON: {"mcqs":[{"type":"AMC","stem":"","options":[""],"answer":0,"explanation":"","topicId":"","keyedBy":"book","figure":null}]}`;
-    const out = await AI.call({ prompt, images, system: SYSTEM_TUTOR, temperature: 0.1 });
+    const out = await AI.call({ prompt, images, system: SYSTEM_TUTOR, temperature: 0.1, model: AI.bulkModel });
     await saveImported(out.mcqs || [], book, job.payload.pages[0], canvases);
   },
 
@@ -231,7 +231,7 @@ TOPIC LIST (id|name):
 ${await topicListText()}
 
 Return JSON: {"items":[{"box_2d":[0,0,1000,1000],"caption":"","topicId":"","stem":"","options":["","","","",""],"answer":0,"explanation":""}]}  — or {"items":[]} if there is nothing useful.`;
-    const out = await AI.call({ prompt, images: [canvas.toDataURL('image/jpeg', 0.8)], system: SYSTEM_TUTOR, temperature: 0.3 });
+    const out = await AI.call({ prompt, images: [canvas.toDataURL('image/jpeg', 0.8)], system: SYSTEM_TUTOR, temperature: 0.3, model: AI.bulkModel });
     const topics = Object.fromEntries((await DB.live('topics')).map(t => [t.id, t]));
     const list = [];
     for (const it of out.items || []) {
@@ -378,13 +378,18 @@ const Queue = {
         this.status[lane] = `${JOB_LABEL[j.kind]}${name ? ' — ' + name : ''}`; this.pauseMsg = ''; this.emit();
         try {
           await Handlers[j.kind](j);
+          if (j.lane === 'ai') this.limitHits = 0;
           j.status = 'done'; j.finished = Date.now(); delete j.error;
         } catch (e) {
           console.warn('Job failed', j.kind, e);
           if (e instanceof QuotaError) {
             j.status = 'pending';
-            if (e.daily) { this.pausedUntil = Date.now() + 60 * 60 * 1000; this.pauseMsg = 'Gemini daily limit reached. Retrying every hour — keep this tab open, or come back tomorrow.'; }
-            else { this.status[lane] = 'Rate limited — retrying shortly'; this.emit(); await sleep(e.retryMs); }
+            this.limitHits = (this.limitHits || 0) + 1;
+            this.lastLimit = String(e.message || '').slice(0, 220);
+            if (e.daily || this.limitHits >= 4) {
+              this.pausedUntil = Date.now() + 30 * 60 * 1000; this.limitHits = 0;
+              this.pauseMsg = 'Gemini limit reached — pausing 30 min, then it tries again by itself. Google says: ' + this.lastLimit;
+            } else { this.status[lane] = 'Rate limited — retrying shortly (' + this.limitHits + '/4)'; this.emit(); await sleep(Math.max(e.retryMs, 20000)); }
           } else {
             j.tries++; j.error = String(e.message || e).slice(0, 300);
             j.status = j.tries >= 3 ? 'failed' : 'pending';
