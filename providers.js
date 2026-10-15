@@ -41,19 +41,22 @@ const Providers = {
   },
   get(id) { return this.list().find(p => p.id === id); },
 
-  async call(p, { prompt, images = [], system, json = true, temperature = 0.3, maxTokens = 8000 }) {
+  async call(p, { prompt, images = [], system, json = true, temperature = 0.3, maxTokens = 8000, _retried = false }) {
     const content = images.length
       ? [{ type: 'text', text: prompt }, ...images.map(url => ({ type: 'image_url', image_url: { url } }))]
       : prompt;
     const messages = [];
     if (system) messages.push({ role: 'system', content: system });
     messages.push({ role: 'user', content });
-    const body = { model: p.model, messages, temperature, max_tokens: maxTokens };
+    const body = { model: p.model, messages };
+    if (!p.noTemp) body.temperature = temperature;
+    if (p.newTokens) body.max_completion_tokens = maxTokens; else body.max_tokens = maxTokens;
+    if (_retried) body._retried = true;
     if (json) body.response_format = { type: 'json_object' };
     let res;
     try {
       res = await this.send(p, '/chat/completions', {
-        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + p.key }, body: JSON.stringify(body)
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + p.key }, body: JSON.stringify({ ...body, _retried: undefined })
       });
     } catch (e) { throw new QuotaError(`${p.name}: could not connect — ${this.relay() ? 'even through your relay (check the relay address)' : 'this service blocks browser apps. Set up the free relay (below) and Test again'}`, false, 60000); }
     const d = await res.json().catch(() => ({}));
@@ -64,16 +67,28 @@ const Providers = {
         throw new QuotaError(`${p.name}: ${msg}`, /day|daily|quota|tokens per/i.test(msg), ra * 1000 + 1000);
       }
       if (res.status >= 500) throw new QuotaError(`${p.name} busy (${res.status})`, false, 20000);
+      // Newer "thinking" models want max_completion_tokens and no temperature — remember that and retry.
+      if (/max_completion_tokens/i.test(msg) && !p.newTokens) { this.save(p.id, { newTokens: true }); return this.call({ ...p, newTokens: true }, { prompt, images, system, json, temperature, maxTokens, _retried }); }
+      if (/temperature/i.test(msg) && !p.noTemp) { this.save(p.id, { noTemp: true }); return this.call({ ...p, noTemp: true }, { prompt, images, system, json, temperature, maxTokens, _retried }); }
       // Some models reject JSON mode — retry once without it.
       if (json && /response_format|json/i.test(msg) && !body._noJson) return this.call(p, { prompt: prompt + '\n\nReply with JSON only.', images, system, json: false, temperature, maxTokens }).then(t => parseJSON(t));
       throw new Error(`${p.name}: ${msg}`);
     }
     const text = (d.choices?.[0]?.message?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-    if (!text) throw new Error(`${p.name}: empty reply`);
+    if (!text) {
+      // "Thinking" models (gpt-5, o-series…) can use up the whole allowance before answering — retry once with more room.
+      if (!body._retried && maxTokens < 16000) return this.call(p, { prompt, images, system, json, temperature, maxTokens: Math.max(4000, maxTokens * 8), _retried: true });
+      throw new Error(`${p.name}: empty reply from ${p.model} (finish: ${d.choices?.[0]?.finish_reason || 'unknown'}) — try another model, e.g. openai/gpt-4.1-mini`);
+    }
     return json ? parseJSON(text) : text;
   },
 
   async models(p) {
+    if (/models\.github\.ai/.test(p.base)) {
+      const r = await this.send({ ...p, base: 'https://models.github.ai' }, '/catalog/models', { headers: { Authorization: 'Bearer ' + p.key } });
+      const d = await r.json().catch(() => []);
+      return (Array.isArray(d) ? d : []).map(m => m.id).filter(Boolean);
+    }
     const r = await this.send(p, '/models', { headers: { Authorization: 'Bearer ' + p.key } });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.error?.message || d.message || 'HTTP ' + r.status);
