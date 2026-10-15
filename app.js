@@ -62,14 +62,25 @@ const App = {
   }
 };
 
-function stageFiles(files) {
-  const pdfs = files.filter(f => /pdf$/i.test(f.type || f.name));
+async function stageFiles(files) {
+  // Skip books already in the Library (same file = same size), so the whole folder can be selected safely.
+  const have = new Set((await DB.all('books')).filter(b => b.kind === 'pdf').map(b => b.size));
+  App.staged.forEach(e => { if (e.files.length === 1) have.add(e.files[0].size); });
+  const zips = files.filter(f => /\.(zip|rar|7z)$/i.test(f.name));
+  let pdfs = files.filter(f => /pdf$/i.test(f.type || f.name));
+  const dup = pdfs.filter(f => have.has(f.size));
+  pdfs = pdfs.filter(f => !have.has(f.size));
   const imgs = files.filter(f => /^image\//.test(f.type) || /\.(jpe?g|png|webp|heic)$/i.test(f.name));
   pdfs.forEach(f => App.staged.push({ files: [f], name: f.name.replace(/\.pdf$/i, ''), role: guessRole(f.name) }));
   if (imgs.length) {
     imgs.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
     App.staged.push({ files: imgs, name: imgs.length > 1 ? `Question bank photos (${imgs.length})` : imgs[0].name, role: 'mcq-amc' });
   }
+  const msg = [];
+  if (pdfs.length) msg.push(`${pdfs.length} new`);
+  if (dup.length) msg.push(`${dup.length} already in your Library — skipped`);
+  if (zips.length) msg.push(`${zips.length} zip file${zips.length > 1 ? 's' : ''} skipped — right-click it → “Extract All”, then add what’s inside`);
+  if (msg.length) toast(msg.join(' · '), 8000);
   App.render(true);
 }
 

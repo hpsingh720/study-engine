@@ -163,22 +163,34 @@ async function retrieve(topic, col, maxPages = 6, maxChars = 32000) {
   const books = (await DB.all('books')).filter(b => b.role === col);
   if (!books.length) return [];
   const terms = topicTerms(topic);
-  let top = [];
+  // Best few pages from EACH book, so every book of this role gets a say (not just the biggest one).
+  const per = [];
   for (const b of books) {
+    let top = [];
     await DB.each('pages', 'bookId', b.id, pg => {
       const s = scorePage(pg.text, terms);
       if (s > 0) {
         top.push({ s, bookId: b.id, p: pg.p, text: pg.text, book: b.short || b.name });
-        if (top.length > maxPages * 6) { top.sort((a, c) => c.s - a.s); top.length = maxPages * 3; }
+        if (top.length > 24) { top.sort((a, c) => c.s - a.s); top.length = 8; }
       }
     });
+    top.sort((a, c) => c.s - a.s);
+    if (top.length) per.push(top.slice(0, 8));
   }
-  top.sort((a, c) => c.s - a.s);
+  if (!per.length) return [];
+  const best = Math.max(...per.map(t => t[0].s));
+  // Books that genuinely cover this topic (e.g. Nelson for a paeds topic, not for MI).
+  const relevant = per.filter(t => t[0].s >= best * 0.35).sort((x, y) => y[0].s - x[0].s);
+  const limit = Math.min(10, maxPages + Math.max(0, relevant.length - 1) * 2), budget = maxChars + Math.max(0, relevant.length - 1) * 8000;
   const out = []; let chars = 0;
-  for (const x of top) {
-    if (out.length >= maxPages) break;
-    if (chars + x.text.length > maxChars && out.length) continue;
-    out.push(x); chars += x.text.length;
+  for (let round = 0; round < 8 && out.length < limit; round++) {
+    for (const t of relevant) {
+      const x = t[round];
+      if (!x || out.length >= limit) continue;
+      if (round > 0 && x.s < best * 0.25) continue;
+      if (chars + Math.min(x.text.length, 9000) > budget && out.length) continue;
+      out.push(x); chars += Math.min(x.text.length, 9000);
+    }
   }
   return out.sort((a, c) => a.book.localeCompare(c.book) || a.p - c.p);
 }
