@@ -469,6 +469,12 @@ function applyTheme() {
 
 async function init() {
   applyTheme();
+  window.addEventListener('online', () => {
+    // Internet is back: wake every helper that was resting because of the outage.
+    if (/Network error/i.test(Queue.pauseMsg || '')) { Queue.paused.ai = 0; Queue.pauseMsg = ''; }
+    Object.keys(Queue.status).forEach(l => { if (/Network error|could not connect/i.test(Queue.status[l] || '')) Queue.paused[l] = 0; });
+    Queue.kick();
+  });
   document.addEventListener('click', e => {
     if (Object.values(Queue.running).some(Boolean)) KeepAlive.start();
     const el = e.target.closest('[data-act]'); if (!el) return;

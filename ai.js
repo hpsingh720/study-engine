@@ -62,6 +62,18 @@ const AI = {
     return best;
   },
 
+  // Straight to Google; if this network blocks it (e.g. hostel WiFi), go through the user's Cloudflare relay instead.
+  async gfetch(url, init) {
+    const relay = Providers.relay();
+    const via = () => fetch(relay + '/?u=' + encodeURIComponent(url), init);
+    if (relay && this._viaRelay) { try { return await via(); } catch (e) { this._viaRelay = false; } }
+    try { return await fetch(url, init); }
+    catch (e) {
+      if (!relay) throw e;
+      const r = await via(); this._viaRelay = true; return r;
+    }
+  },
+
   async _call({ prompt, images = [], system, json = true, temperature = 0.35, model }) {
     if (!this.key) throw new Error('Add your Gemini API key in Settings first.');
     const parts = [{ text: prompt }];
@@ -74,8 +86,8 @@ const AI = {
     if (json) body.generationConfig.responseMimeType = 'application/json';
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model || this.model)}:generateContent?key=${encodeURIComponent(this.key)}`;
     let res;
-    try { res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
-    catch (e) { throw new QuotaError('Network error — offline?', false, 30000); }
+    try { res = await this.gfetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
+    catch (e) { const q = new QuotaError(Providers.relay() ? 'Network error — offline? (also tried your relay)' : 'Network error — offline? If this WiFi blocks Gemini, set up the relay in Settings', false, 30000); q.net = true; throw q; }
     this.lastCall = Date.now();
     const d = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -96,7 +108,7 @@ const AI = {
   },
 
   async listModels() {
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${encodeURIComponent(this.key)}`);
+    const r = await this.gfetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${encodeURIComponent(this.key)}`);
     const d = await r.json();
     if (!r.ok) throw new Error(d.error?.message || 'Could not list models');
     return (d.models || []).filter(m => (m.supportedGenerationMethods || []).includes('generateContent')).map(m => m.name.replace('models/', ''));

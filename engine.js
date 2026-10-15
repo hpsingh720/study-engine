@@ -467,7 +467,14 @@ const Queue = {
             j.status = 'done'; j.finished = Date.now(); delete j.error;
           } catch (e) {
             console.warn('Job failed', lane, j.kind, e);
-            if (e instanceof QuotaError) {
+            if (e instanceof QuotaError && (e.net || !navigator.onLine)) {
+              // No internet: not a limit. Just wait and carry on as soon as it is back.
+              j.status = 'pending';
+              this.setStatus(lane, `${prov ? prov.name : 'Gemini'}: no internet — will continue by itself when it is back`);
+              await DB.put('queue', j); this.claimed.delete(j.id);
+              await Promise.race([sleep(30000), new Promise(r => window.addEventListener('online', r, { once: true }))]);
+              continue;
+            } else if (e instanceof QuotaError) {
               j.status = 'pending';
               this.hits[lane] = (this.hits[lane] || 0) + 1;
               if (e.daily || this.hits[lane] >= 4) {

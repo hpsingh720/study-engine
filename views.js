@@ -510,7 +510,7 @@ Views.settings = async () => {
       <label>Requests / minute<input type="number" min="1" max="60" name="rpm_${p.id}" value="${p.rpm}"></label></div>
       <div class="row gap mt"><button type="button" class="btn sm" data-act="testProvider" data-id="${p.id}">Test</button><span class="muted small" id="pmsg_${p.id}">${p.key && p.model ? (p.on === false ? 'Off' : 'Active') : ''}</span></div>
     </div>`).join('')}
-    <div class="prov"><b>Relay — for services that block browser apps (NVIDIA, GitHub)</b>
+    <div class="prov"><b>Relay — for services that block browser apps (NVIDIA, GitHub), and WiFi that blocks Gemini</b>
       <p class="muted small">A tiny free helper on your own Cloudflare account that passes the messages through. One-time, 5 minutes, no card:<br>
       1. Sign up free at <a class="link" href="https://dash.cloudflare.com/sign-up" target="_blank" rel="noopener">dash.cloudflare.com</a>.<br>
       2. Left menu: <b>Compute (Workers)</b> → <b>Workers &amp; Pages</b> → <b>Create</b> → <b>Start with Hello World</b> → <b>Deploy</b>.<br>
