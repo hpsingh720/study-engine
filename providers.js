@@ -3,10 +3,14 @@
 const PROVIDER_PRESETS = {
   groq: { name: 'Groq', base: 'https://api.groq.com/openai/v1', model: 'meta-llama/llama-4-scout-17b-16e-instruct', rpm: 25, vision: true, signup: 'https://console.groq.com/keys', note: 'Free, no card. About 1,000 requests a day.' },
   mistral: { name: 'Mistral', base: 'https://api.mistral.ai/v1', model: 'mistral-small-latest', rpm: 20, vision: true, signup: 'https://console.mistral.ai/api-keys', note: 'Free "Experiment" plan, no card (phone number needed). Large monthly allowance.' },
-  meta: { name: 'Meta Llama API', base: 'https://api.llama.com/compat/v1', model: 'Llama-4-Maverick-17B-128E-Instruct-FP8', rpm: 9, vision: true, signup: 'https://llama.developer.meta.com/', note: 'Meta’s own Llama API (preview). About 10 requests a minute with a big size allowance, so whole pages fit.' },
-  github: { name: 'GitHub Models', base: 'https://models.github.ai/inference', model: 'openai/gpt-4.1-mini', rpm: 10, vision: true, signup: 'https://github.com/settings/personal-access-tokens', note: 'Free with your GitHub account. Token needs the “Models” read permission.' },
+  nvidia: { name: 'NVIDIA (build.nvidia.com)', base: 'https://integrate.api.nvidia.com/v1', model: 'meta/llama-3.2-90b-vision-instruct', rpm: 30, vision: true, signup: 'https://build.nvidia.com/settings/api-keys', note: 'Free, no card. Sign up with email, then "Get API Key". About 40 requests a minute on free credits.' },
+  siliconflow: { name: 'SiliconFlow', base: 'https://api.siliconflow.com/v1', model: 'Qwen/Qwen2.5-VL-72B-Instruct', rpm: 20, vision: true, signup: 'https://cloud.siliconflow.com/account/ak', note: 'Free models, no card. If the key does not work, try the China site: change the address to https://api.siliconflow.cn/v1.' },
+  zhipu: { name: 'Z.ai / Zhipu GLM', base: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4v-flash', rpm: 5, vision: true, signup: 'https://open.bigmodel.cn/usercenter/apikeys', note: 'GLM "Flash" models are free forever. Only one request at a time, so keep this low.' },
   openrouter: { name: 'OpenRouter', base: 'https://openrouter.ai/api/v1', model: '', rpm: 15, vision: false, signup: 'https://openrouter.ai/keys', note: 'Free “:free” models, about 50 requests a day. Text only here.' },
-  cerebras: { name: 'Cerebras', base: 'https://api.cerebras.ai/v1', model: '', rpm: 25, vision: false, signup: 'https://cloud.cerebras.ai', note: 'Free, very fast. Text only.' }
+  custom: { name: 'Any other (OpenAI-compatible)', base: '', model: '', rpm: 10, vision: false, custom: true, signup: 'https://github.com/cheahjs/free-llm-api-resources', note: 'Any service that says “OpenAI-compatible”: paste its address (ends in /v1), key and model.' },
+  cerebras: { name: 'Cerebras (paid now — skip)', base: 'https://api.cerebras.ai/v1', model: '', rpm: 25, vision: false, signup: 'https://cloud.cerebras.ai', note: 'Asks for payment. Skip.' },
+  meta: { name: 'Meta Llama API (paid — skip)', base: 'https://api.llama.com/compat/v1', model: 'Llama-4-Maverick-17B-128E-Instruct-FP8', rpm: 9, vision: true, signup: 'https://llama.developer.meta.com/', note: 'Asks for billing. Skip.' },
+  github: { name: 'GitHub Models (blocked — skip)', base: 'https://models.github.ai/inference', model: 'openai/gpt-4.1-mini', rpm: 10, vision: true, signup: 'https://github.com/settings/personal-access-tokens', note: 'Blocks browser apps. Skip.' }
 };
 
 const Providers = {
@@ -15,7 +19,7 @@ const Providers = {
     try { saved = JSON.parse(localStorage.getItem('providers') || '{}'); } catch (e) {}
     return Object.entries(PROVIDER_PRESETS).map(([id, p]) => ({ id, ...p, ...(saved[id] || {}) }));
   },
-  active() { return this.list().filter(p => p.key && p.model && p.on !== false); },
+  active() { return this.list().filter(p => p.key && p.model && p.base && p.on !== false); },
   save(id, patch) {
     let saved = {};
     try { saved = JSON.parse(localStorage.getItem('providers') || '{}'); } catch (e) {}

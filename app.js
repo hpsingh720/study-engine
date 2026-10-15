@@ -291,20 +291,23 @@ const A = {
   async testProvider(el) {
     const id = el.dataset.id, msg = $('#pmsg_' + id);
     const key = $(`input[name=key_${id}]`).value.trim(); let model = $(`input[name=model_${id}]`).value.trim();
-    Providers.save(id, { key }); msg.textContent = 'Checking…';
+    const baseIn = $(`input[name=base_${id}]`); const nameIn = $(`input[name=name_${id}]`);
+    Providers.save(id, { key, ...(baseIn ? { base: baseIn.value.trim() } : {}), ...(nameIn && nameIn.value.trim() ? { name: nameIn.value.trim() } : {}) });
+    if (baseIn && !baseIn.value.trim()) { msg.textContent = 'Paste the address first (it ends in /v1).'; return; }
+    msg.textContent = 'Checking…';
     try {
       const p = Providers.get(id);
       let ms = []; try { ms = await Providers.models(p); } catch (e) {}
       if (ms.length) $('#pm_' + id).innerHTML = ms.map(m => `<option value="${esc(m)}">`).join('');
       if (!model || (ms.length && !ms.includes(model))) {
-        const pick = (p.vision ? ms.find(m => /scout|maverick|pixtral|mistral-small|vision|4\.1-mini|4o-mini/i.test(m)) : null) || ms.find(m => /:free$/.test(m) && /llama|qwen|gemma|mistral|deepseek/i.test(m)) || ms.find(m => /llama|qwen|gpt-oss/i.test(m)) || ms[0] || p.model;
+        const pick = ((p.vision || p.custom) ? ms.find(m => /scout|maverick|pixtral|mistral-small|vision|-vl|glm-4v|4\.1-mini|4o-mini/i.test(m)) : null) || ms.find(m => /:free$/.test(m) && /llama|qwen|gemma|mistral|deepseek/i.test(m)) || ms.find(m => /llama|qwen|gpt-oss/i.test(m)) || ms[0] || p.model;
         model = pick || ''; $(`input[name=model_${id}]`).value = model;
       }
       Providers.save(id, { model, on: true });
       const out = await Providers.call(Providers.get(id), { prompt: 'Reply with JSON {"ok":true}', json: true, maxTokens: 50 });
       // Can this model see images? Send a tiny picture; if it refuses, it only gets text jobs.
       let vision = false;
-      if (PROVIDER_PRESETS[id].vision) {
+      if (PROVIDER_PRESETS[id].vision || PROVIDER_PRESETS[id].custom) {
         const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d'); x.fillStyle = '#c00'; x.fillRect(0, 0, 64, 64);
         try { const t = await Providers.call(Providers.get(id), { prompt: 'What colour is this square? One word.', images: [c.toDataURL('image/png')], json: false, maxTokens: 20 }); vision = /red/i.test(t); } catch (e) { vision = false; }
       }
@@ -369,7 +372,7 @@ const F = {
   },
   async saveProviders(form) {
     const d = new FormData(form);
-    Providers.list().forEach(p => Providers.save(p.id, { key: (d.get('key_' + p.id) || '').trim(), model: (d.get('model_' + p.id) || '').trim(), rpm: Math.max(1, +d.get('rpm_' + p.id) || p.rpm), on: true }));
+    Providers.list().forEach(p => Providers.save(p.id, { key: (d.get('key_' + p.id) || '').trim(), model: (d.get('model_' + p.id) || '').trim(), rpm: Math.max(1, +d.get('rpm_' + p.id) || p.rpm), on: true, ...(p.custom ? { base: (d.get('base_' + p.id) || '').trim(), name: (d.get('name_' + p.id) || '').trim() || p.name } : {}) }));
     Object.keys(Queue.paused).forEach(k => { if (k.startsWith('p:')) Queue.paused[k] = 0; });
     toast('Saved'); Queue.kick(); App.render(true);
   },

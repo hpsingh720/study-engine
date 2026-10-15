@@ -502,6 +502,7 @@ Views.settings = async () => {
     ${Providers.list().map(p => `<div class="prov">
       <div class="row between wrap gap"><b>${p.name}</b><a class="link small" href="${p.signup}" target="_blank" rel="noopener">Get a free key ›</a></div>
       <p class="muted small">${p.note}${p.vision ? ' Reads images too.' : ''}</p>
+      ${p.custom ? `<div class="form-row"><label>Name<input name="name_${p.id}" value="${esc(p.name)}"></label><label>Address (base URL)<input name="base_${p.id}" value="${esc(p.base || '')}" placeholder="https://…/v1"></label></div>` : ''}
       <div class="form-row"><label>API key<input type="password" name="key_${p.id}" value="${esc(p.key || '')}" autocomplete="off"></label>
       <label>Model<input name="model_${p.id}" list="pm_${p.id}" value="${esc(p.model || '')}" placeholder="click Test to choose"><datalist id="pm_${p.id}"></datalist></label>
       <label>Requests / minute<input type="number" min="1" max="60" name="rpm_${p.id}" value="${p.rpm}"></label></div>
