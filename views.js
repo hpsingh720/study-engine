@@ -446,6 +446,7 @@ Views.library = async () => {
     ${failed.length ? `<div class="failed"><p class="label">Recent failures</p>${failed.map(j => `<p class="small"><b>${JOB_LABEL[j.kind]}</b> — ${esc(j.error || '')}</p>`).join('')}</div>` : ''}
     <label class="inline small mt">Page readers on this laptop <select class="select-sm" data-change="ocrWorkers">${[[1, '1 — quiet'], [2, '2 — balanced'], [3, '3 — fastest (loud fan)']].map(([v, l]) => `<option value="${v}" ${(+localStorage.getItem('ocrWorkers') || 3) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label><br>
     <label class="inline small mt"><input type="checkbox" data-change="keepAwake" ${localStorage.getItem('keepAwake') === '0' ? '' : 'checked'}> Keep the screen on while working (untick to let Windows turn the display off — set Windows “Sleep” to Never when plugged in)</label>
+    <label class="inline small"><input type="checkbox" data-change="bgRun" ${localStorage.getItem('bgRun') === '0' ? '' : 'checked'}> Keep working when Chrome is minimised (the tab shows a speaker icon, but makes no sound)</label>
     <p class="muted small">Keep this tab open while it works. If a daily limit is hit, it pauses and carries on by itself later.</p>
   </section>
   <section class="card mt flush"><div class="card-head pad"><h3>Your books</h3><span class="muted">${books.length}</span></div>
@@ -463,6 +464,7 @@ function queueLine() {
   Object.entries(Queue.status).forEach(([lane, txt]) => { if (txt) parts.push(`<span class="spin"></span>${esc(txt)}`); });
   if (Queue.pauseMsg) parts.push(`<span class="warn-t">${esc(Queue.pauseMsg)}</span>`);
   if (Queue.manualPause) parts.push('<span class="warn-t">AI jobs paused.</span>');
+  if (parts.length && KeepAlive.wanted() && !(KeepAlive.ctx && KeepAlive.ctx.state === 'running')) parts.push('<span class="warn-t">Click anywhere on this page once, so it keeps working when Chrome is minimised.</span>');
   return parts.join('<br>') || '<span class="muted">Idle.</span>';
 }
 
@@ -508,6 +510,15 @@ Views.settings = async () => {
       <label>Requests / minute<input type="number" min="1" max="60" name="rpm_${p.id}" value="${p.rpm}"></label></div>
       <div class="row gap mt"><button type="button" class="btn sm" data-act="testProvider" data-id="${p.id}">Test</button><span class="muted small" id="pmsg_${p.id}">${p.key && p.model ? (p.on === false ? 'Off' : 'Active') : ''}</span></div>
     </div>`).join('')}
+    <div class="prov"><b>Relay — for services that block browser apps (NVIDIA, GitHub)</b>
+      <p class="muted small">A tiny free helper on your own Cloudflare account that passes the messages through. One-time, 5 minutes, no card:<br>
+      1. Sign up free at <a class="link" href="https://dash.cloudflare.com/sign-up" target="_blank" rel="noopener">dash.cloudflare.com</a>.<br>
+      2. Left menu: <b>Compute (Workers)</b> → <b>Workers &amp; Pages</b> → <b>Create</b> → <b>Start with Hello World</b> → <b>Deploy</b>.<br>
+      3. Click <b>Edit code</b>, delete everything in the box, click <b>Copy relay code</b> here and paste it there, then <b>Deploy</b>.<br>
+      4. Copy the address it shows (ends in <i>.workers.dev</i>), paste it below, click <b>Test relay</b>, then Save and Test NVIDIA again.</p>
+      <div class="form-row"><label>Relay address<input name="relay" value="${esc(localStorage.getItem('relay') || '')}" placeholder="https://something.yourname.workers.dev"></label></div>
+      <div class="row gap mt"><button type="button" class="btn sm" data-act="copyRelay">Copy relay code</button><button type="button" class="btn sm" data-act="testRelay">Test relay</button><span class="muted small" id="relay-msg"></span></div>
+    </div>
     <button class="btn primary mt">Save</button></form>
   <form class="card mt" data-submit="saveGoals"><h3>Targets</h3>
     ${prefs.exams.map((e, i) => `<div class="form-row"><label>Milestone<input name="en${i}" value="${esc(e.name)}"></label><label>Date<input type="date" name="ed${i}" value="${e.date}"></label></div>`).join('')}

@@ -316,6 +316,23 @@ const A = {
       Queue.kick();
     } catch (e) { msg.textContent = 'Problem: ' + e.message; }
   },
+  async copyRelay() {
+    let code = '';
+    try { code = await (await fetch('relay-worker.js', { cache: 'no-store' })).text(); } catch (e) {}
+    if (!code) return toast('Could not load the relay code — are you online?');
+    try { await navigator.clipboard.writeText(code); toast('Relay code copied — paste it in Cloudflare'); }
+    catch (e) { openModal(`<h3>Relay code</h3><textarea rows="16" readonly>${esc(code)}</textarea><div class="row end mt"><button class="btn" data-act="closeModal">Close</button></div>`); }
+  },
+  async testRelay() {
+    const msg = $('#relay-msg'); const url = ($('input[name=relay]').value || '').trim().replace(/\/$/, '');
+    if (!/^https:\/\//.test(url)) { msg.textContent = 'Paste the address first (starts with https://).'; return; }
+    msg.textContent = 'Checking…';
+    try {
+      const t = await (await fetch(url + '/')).text();
+      if (/Relay is working/.test(t)) { localStorage.setItem('relay', url); msg.textContent = 'Relay works. Saved — now Test NVIDIA again.'; }
+      else msg.textContent = 'That address answered, but not with the relay code. Paste the code again in Cloudflare and Deploy.';
+    } catch (e) { msg.textContent = 'Could not reach it. Check the address, and that you clicked Deploy.'; }
+  },
   async copySql() { try { await navigator.clipboard.writeText(SYNC_SQL); toast('Setup script copied'); } catch (e) { openModal(`<h3>Setup script</h3><textarea rows="16" readonly>${esc(SYNC_SQL)}</textarea><div class="row end mt"><button class="btn" data-act="closeModal">Close</button></div>`); } },
   theme(el) { localStorage.setItem('theme', el.dataset.k); applyTheme(); App.render(true); },
   async exportData() {
@@ -372,6 +389,7 @@ const F = {
   },
   async saveProviders(form) {
     const d = new FormData(form);
+    localStorage.setItem('relay', (d.get('relay') || '').trim());
     Providers.list().forEach(p => Providers.save(p.id, { key: (d.get('key_' + p.id) || '').trim(), model: (d.get('model_' + p.id) || '').trim(), rpm: Math.max(1, +d.get('rpm_' + p.id) || p.rpm), on: true, ...(p.custom ? { base: (d.get('base_' + p.id) || '').trim(), name: (d.get('name_' + p.id) || '').trim() || p.name } : {}) }));
     Object.keys(Queue.paused).forEach(k => { if (k.startsWith('p:')) Queue.paused[k] = 0; });
     toast('Saved'); Queue.kick(); App.render(true);
@@ -394,6 +412,7 @@ const F = {
 // Change / input handlers
 const C = {
   ocrWorkers(el) { localStorage.setItem('ocrWorkers', el.value); toast('Saved — takes effect after the current pages (or reload the page)'); },
+  bgRun(el) { localStorage.setItem('bgRun', el.checked ? '1' : '0'); if (el.checked && Object.values(Queue.running).some(Boolean)) KeepAlive.start(); else if (!el.checked) KeepAlive.stop(); toast(el.checked ? 'Will keep working when Chrome is minimised' : 'Off'); },
   keepAwake(el) { localStorage.setItem('keepAwake', el.checked ? '1' : '0'); if (!el.checked) Queue.holdWake(false); else Queue.holdWake(true); toast(el.checked ? 'Screen will stay on' : 'Windows can now turn the display off'); },
   setModePref(el) { localStorage.setItem('modePref', el.value); toast('Saved'); },
   async setFocus(el) { await Prefs.set({ focus: el.value }); App.render(true); },
@@ -437,6 +456,7 @@ function applyTheme() {
 async function init() {
   applyTheme();
   document.addEventListener('click', e => {
+    if (Object.values(Queue.running).some(Boolean)) KeepAlive.start();
     const el = e.target.closest('[data-act]'); if (!el) return;
     const f = A[el.dataset.act]; if (!f) return;
     if (el.tagName === 'BUTTON' && el.type !== 'submit' || el.tagName !== 'BUTTON') e.preventDefault();

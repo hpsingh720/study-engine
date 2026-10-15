@@ -428,6 +428,7 @@ const Queue = {
   lanes() { return [...this.localLanes(), 'ai', ...Providers.active().map(p => 'p:' + p.id)]; },
   kick() { this.lanes().forEach(l => this.loop(l)); },
   async holdWake(on) {
+    if (on) KeepAlive.start(); else KeepAlive.stop();
     try {
       if (on && localStorage.getItem('keepAwake') === '0') on = false;
       if (on && !this.wake && navigator.wakeLock) { this.wake = await navigator.wakeLock.request('screen'); this.wake.addEventListener('release', () => { this.wake = null; }); }

@@ -1,7 +1,34 @@
 // Small helpers shared across the app.
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+// Timers run inside a small worker, because Chrome slows page timers to once a minute when the window is minimised.
+const _tw = (() => {
+  try {
+    const w = new Worker(URL.createObjectURL(new Blob(['onmessage=e=>setTimeout(()=>postMessage(e.data[0]),e.data[1])'], { type: 'text/javascript' })));
+    const cbs = new Map(); let n = 0;
+    w.onmessage = e => { const f = cbs.get(e.data); cbs.delete(e.data); f && f(); };
+    return (f, ms) => { const id = ++n; cbs.set(id, f); w.postMessage([id, ms]); };
+  } catch (e) { return null; }
+})();
+const sleep = ms => new Promise(r => (_tw && ms > 50) ? _tw(r, ms) : setTimeout(r, ms));
+// A tone too low for any speaker to play (8 Hz). Chrome treats the tab as "playing sound", so it keeps it running at full speed when minimised.
+const KeepAlive = {
+  ctx: null,
+  wanted() { return localStorage.getItem('bgRun') !== '0'; },
+  start() {
+    if (!this.wanted()) return;
+    try {
+      if (!this.ctx) {
+        const C = window.AudioContext || window.webkitAudioContext; if (!C) return;
+        const ctx = new C(), o = ctx.createOscillator(), g = ctx.createGain();
+        o.frequency.value = 8; g.gain.value = 0.02; o.connect(g).connect(ctx.destination); o.start();
+        this.ctx = ctx;
+      }
+      if (this.ctx.state === 'suspended') this.ctx.resume();
+    } catch (e) {}
+  },
+  stop() { try { if (this.ctx) { this.ctx.close(); this.ctx = null; } } catch (e) {} }
+};
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
