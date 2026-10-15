@@ -197,8 +197,7 @@ const Handlers = {
     const prompt = `Below is text from pages ${first}–${last} of the question book "${book.name}"${extra ? `, plus page ${last + 1} for context` : ''}.
 ${IMPORT_RULES(first, last, extra ? last + 1 : null)}
 
-TOPIC LIST (id|name):
-${await topicListText()}
+${ctx?.provider ? 'Leave "topicId" as "" (it is assigned later).' : 'TOPIC LIST (id|name):\n' + await topicListText()}
 
 PAGES:
 ${pages.map(pg => `--- page ${pg.p} ---\n${pg.text}`).join('\n').slice(0, 70000)}
@@ -214,17 +213,17 @@ Return JSON: {"mcqs":[{"type":"AMC","stem":"","options":[""],"answer":0,"explana
     const pgs = job.payload.pages, first = pgs[0], last = pgs[pgs.length - 1];
     const hasNext = last + 1 <= (book.pages || 0);
     const canvases = [];
-    for (const p of pgs) canvases.push(await renderPage(book, p, 1600));
-    if (hasNext) canvases.push(await renderPage(book, last + 1, 1200));
+    const px = ctx?.provider ? 1150 : 1600;
+    for (const p of pgs) canvases.push(await renderPage(book, p, px));
+    if (hasNext) canvases.push(await renderPage(book, last + 1, ctx?.provider ? 900 : 1200));
     const images = canvases.map(c => c.toDataURL('image/jpeg', 0.8));
     const texts = [];
-    for (const p of [...pgs, ...(hasNext ? [last + 1] : [])]) { const pg = await DB.get('pages', [book.id, p]); if (pg) texts.push(`--- page ${p} text ---\n${pg.text.slice(0, 7000)}`); }
+    if (!ctx?.provider) for (const p of [...pgs, ...(hasNext ? [last + 1] : [])]) { const pg = await DB.get('pages', [book.id, p]); if (pg) texts.push(`--- page ${p} text ---\n${pg.text.slice(0, 7000)}`); }
     const prompt = `${texts.length ? 'Extracted page text (use it for exact wording; the images show pictures and layout):\n' + texts.join('\n') + '\n\n' : ''}The images are pages of the question bank "${book.name}": images 0–${pgs.length - 1} are pages ${pgs.join(', ')}${hasNext ? `, and the LAST image is page ${last + 1} (CONTEXT ONLY, to finish a question cut off at the end of page ${last})` : ''}. They may be photos of a computer screen — read through glare and skew.
 ${IMPORT_RULES(first, last, hasNext ? last + 1 : null)}
 - If a question has a clinical image (ECG, X-ray, CT, photo, slide), give "figure":{"image":<0-based image index>,"box_2d":[ymin,xmin,ymax,xmax]} normalised 0–1000 within that image. Otherwise "figure":null.
 
-TOPIC LIST (id|name):
-${await topicListText()}
+${ctx?.provider ? 'Leave "topicId" as "" (it is assigned later).' : 'TOPIC LIST (id|name):\n' + await topicListText()}
 
 Return JSON: {"mcqs":[{"type":"AMC","stem":"","options":[""],"answer":0,"explanation":"","topicId":"","keyedBy":"book","figure":null}]}`;
     const out = await bulkCall(ctx, { prompt, images, system: SYSTEM_IMPORT, temperature: 0 });
@@ -234,7 +233,7 @@ Return JSON: {"mcqs":[{"type":"AMC","stem":"","options":[""],"answer":0,"explana
   async practical(job, ctx) {
     const book = await DB.get('books', job.payload.bookId); if (!book) return;
     const p = job.payload.page;
-    const canvas = await renderPage(book, p, 1600);
+    const canvas = await renderPage(book, p, ctx?.provider ? 1150 : 1600);
     const pg = await DB.get('pages', [book.id, p]);
     const prompt = `This is page ${p} of the practical / spotter book "${book.name}".${pg ? '\nPage text (ground truth for captions):\n' + pg.text.slice(0, 4000) : ''}
 
@@ -243,8 +242,7 @@ For each image (max 4) write ONE exam spotter MCQ in AMC style: short clinical v
 Give its bounding box as box_2d [ymin,xmin,ymax,xmax] normalised 0–1000. Explanation: "Answer: <text>", why, the key visual signs to recognise, one short line per wrong option.
 Assign the ONE closest topic id from the list (or "").
 
-TOPIC LIST (id|name):
-${await topicListText()}
+${ctx?.provider ? 'Leave "topicId" as "" (it is assigned later).' : 'TOPIC LIST (id|name):\n' + await topicListText()}
 
 Return JSON: {"items":[{"box_2d":[0,0,1000,1000],"caption":"","topicId":"","stem":"","options":["","","","",""],"answer":0,"explanation":""}]}  — or {"items":[]} if there is nothing useful.`;
     const out = await bulkCall(ctx, { prompt, images: [canvas.toDataURL('image/jpeg', 0.8)], system: SYSTEM_TUTOR, temperature: 0.3 });
@@ -254,7 +252,7 @@ Return JSON: {"items":[{"box_2d":[0,0,1000,1000],"caption":"","topicId":"","stem
       const crop = cropBox(canvas, it.box_2d); if (!crop) continue;
       const mediaId = 'img-' + uid();
       await DB.put('media', { id: mediaId, data: await compressImage(crop, 1200, 0.8), kind: 'spotter', caption: it.caption || '' });
-      const t = topics[it.topicId];
+      const t = topics[it.topicId] || await matchTopic(`${it.caption || ''} ${it.stem} ${(it.options || []).join(' ')} ${it.explanation || ''}`);
       const m = cleanMcq(it, t, { type: 'IMG', src: `${book.short} p.${p}`, img: mediaId, system: t?.system || '' });
       if (m) list.push(m);
     }
@@ -321,11 +319,18 @@ const IMPORT_RULES = (first, last, ctxPage) => `Extract EVERY multiple-choice qu
 - type: "AMC" for Australian / AMC / AMEDEX-style (usually 5 options), otherwise "MBBS".
 - Ignore headers, footers, page numbers, adverts and answer-key-only pages.`;
 
+let _termCache = null;
+async function matchTopic(text) {
+  if (!_termCache) _termCache = (await DB.live('topics')).map(t => ({ t, terms: topicTerms(t) }));
+  let best = null, bs = 0;
+  for (const x of _termCache) { const sc = scorePage(text, x.terms); if (sc > bs) { bs = sc; best = x.t; } }
+  return bs >= 2 ? best : null;
+}
 async function saveImported(raw, book, firstPage, canvases) {
   const topics = Object.fromEntries((await DB.live('topics')).map(t => [t.id, t]));
   const list = [];
   for (const m of raw) {
-    const t = topics[m.topicId];
+    const t = topics[m.topicId] || await matchTopic(`${m.stem} ${(m.options || []).join(' ')} ${m.explanation || ''}`);
     let img = null;
     if (m.figure && canvases && canvases[m.figure.image]) {
       const crop = cropBox(canvases[m.figure.image], m.figure.box_2d);
@@ -376,7 +381,7 @@ const Queue = {
   accepts(lane, j, prov) {
     if (lane.startsWith('local')) return j.lane === 'local';
     if (lane === 'ai') return j.lane === 'ai' && !j.noGemini;
-    if (!prov) return false;
+    if (!prov || j.noProv) return false;
     if (j.kind === 'mcqtext') return true;
     if (prov.vision && (j.kind === 'mcqvision' || j.kind === 'practical' || j.kind === 'ocr')) return true;
     return false;
@@ -449,6 +454,9 @@ const Queue = {
                 j.noGemini = 1; j.status = 'pending'; j.error = 'Blocked by Gemini’s copyright filter — handing it to ' + Providers.active().map(p => p.name).join(' / ');
                 await DB.put('queue', j); this.emit(); continue;
               }
+              if (prov && /too large|reduce your message|context length|maximum context|too many tokens|payload/i.test(e.message || '')) {
+                j.noProv = 1; j.status = 'pending'; delete j.error; await DB.put('queue', j); this.emit(); continue;
+              }
               j.tries++; j.error = (prov ? prov.name + ': ' : '') + String(e.message || e).slice(0, 300);
               if (/RECITATION/i.test(e.message || '')) j.error = 'Gemini’s copyright filter blocked these pages. Add a free Groq/Mistral/GitHub key in Settings, then press Retry — they can import them.';
               j.status = j.tries >= 3 ? 'failed' : 'pending';
@@ -483,7 +491,7 @@ const Queue = {
     for (const j of await DB.byIndex('queue', 'status', 'running')) { j.status = 'pending'; await DB.put('queue', j); }
   },
   async retryFailed() {
-    for (const j of await DB.byIndex('queue', 'status', 'failed')) { j.status = 'pending'; j.tries = 0; await DB.put('queue', j); }
+    for (const j of await DB.byIndex('queue', 'status', 'failed')) { j.status = 'pending'; j.tries = 0; if (/too large|reduce your message/i.test(j.error || '')) j.noProv = 1; await DB.put('queue', j); }
     this.kick();
   },
   async clearDone() { for (const j of await DB.byIndex('queue', 'status', 'done')) await DB.del('queue', j.id); }

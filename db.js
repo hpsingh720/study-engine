@@ -89,7 +89,7 @@ const DB = {
 
 // Preferences (synced): exam dates, daily goal, per-system targets.
 const DEFAULT_PREFS = {
-  id: 'main', daily: 30, biweeklyCount: 40, focus: 'CVS', targets: {},
+  id: 'main', daily: 30, biweeklyCount: 40, studyDays: 6, focus: 'CVS', targets: {}, starts: {},
   exams: [
     { name: 'MBBS final exams', date: '2027-04-01' },
     { name: 'AMC portfolio & EPIC', date: '2027-05-01' },

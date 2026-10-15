@@ -41,10 +41,16 @@ Views.today = async () => {
   const weak = topics.map(t => ({ t, b: st.by[t.id] })).filter(x => x.b && x.b.n >= 5).sort((a, b) => a.b.ok / a.b.n - b.b.ok / b.b.n).slice(0, 5);
   const qc = books ? await Queue.counts() : null;
   const due = (await dueSet()).size;
+  const plans = await plansForToday();
+  const todays = plans.filter(p => p.today);
 
   return `<div class="page">
   <header class="page-head"><div><p class="eyebrow">${d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}</p><h1>Today</h1></div></header>
   <section class="grid-3 counts">${exams}</section>
+  ${plans.length ? `<section class="card mt"><div class="card-head"><h3>Today's plan</h3><a class="link small" href="#/systems">All systems ›</a></div>
+    ${todays.length ? `<div class="plan">${todays.map(p => planDayRow(p.today, p.code)).join('')}</div>` : '<p class="muted">Nothing scheduled today.</p>'}
+    <p class="muted small">${plans.map(p => `${sysName(p.code)}: ${p.plan.overdue ? '<span class="warn-t">deadline passed</span>' : `${p.plan.left} left, ${p.plan.pace.toFixed(1)}/day until ${new Date(p.plan.target + 'T00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`}`).join(' · ')}</p></section>`
+  : `<section class="card mt soft"><h3>Plan your systems</h3><p class="muted">Open a system (e.g. <a class="link" href="#/system/CVS">Cardiology</a>) and set a deadline — the app splits its topics into a daily plan around your biweekly tests.</p></section>`}
   <section class="grid-2">
     <div class="card">
       <div class="card-head"><h3>Daily questions</h3><span class="muted">${st.todayN ? pct(st.todayOk, st.todayN) + '% correct' : ''}</span></div>
@@ -103,8 +109,34 @@ Views.systems = async () => {
   return `<div class="page"><header class="page-head"><div><p class="eyebrow">${done} of ${all} topics done</p><h1>Systems</h1></div></header>${bar(pct(done, all), 'thick')}<section class="grid-3 mt">${cards}</section></div>`;
 };
 
+function planDayRow(d, showSys) {
+  const date = new Date(d.date + 'T00:00:00');
+  const label = d.date === todayStr() ? 'Today' : date.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+  const body = d.kind === 'biweekly' ? '<span class="pill warn">Biweekly test + revise mistakes</span>'
+    : d.kind === 'revision' ? '<span class="pill">Deadline — revise the system & take a full system test</span>'
+    : d.kind === 'off' ? '<span class="muted small">Day off</span>'
+    : d.topics.length ? d.topics.map(t => `<a class="chip ${t.done ? 'on' : ''}" href="#/topic/${t.id}">${t.done ? '✓ ' : ''}${esc(t.name)}</a>`).join('') : '<span class="muted small">Catch-up / revision</span>';
+  return `<div class="plan-day ${d.date === todayStr() ? 'today' : ''}"><div class="pd-date">${label}${showSys ? `<small>${sysName(showSys)}</small>` : ''}</div><div class="chips">${body}</div></div>`;
+}
+
+function planCard(code, plan, prefs) {
+  const head = `<div class="card-head"><h3>Study plan</h3><div class="row gap wrap">
+      <label class="inline small">Start <input type="date" value="${prefs.starts?.[code] || ''}" data-change="setStart" data-sys="${code}"></label>
+      <label class="inline small">Deadline <input type="date" value="${prefs.targets?.[code] || ''}" data-change="setTarget" data-sys="${code}"></label></div></div>`;
+  if (!plan) return `<section class="card mt">${head}<p class="muted">Set a deadline and the app spreads this system's topics over the days until then — keeping biweekly test days and a final revision day free.</p></section>`;
+  const showAll = sessionStorage.getItem('planAll') === code;
+  const days = showAll ? plan.days : plan.days.slice(0, 14);
+  const summary = plan.overdue ? `<span class="warn-t">Deadline passed with ${plan.left} topics left — pick a new date.</span>`
+    : `${plan.left} topics left · ${plan.studyDays} study days · <b>${plan.pace.toFixed(1)} topics a day</b>${plan.pace > 3 ? ' — that is heavy; consider a later deadline.' : ''}`;
+  return `<section class="card mt">${head}<p class="muted">${summary}</p>
+    <div class="plan">${days.map(d => planDayRow(d)).join('')}</div>
+    ${plan.days.length > 14 ? `<button class="btn ghost full" data-act="planAll" data-sys="${code}">${showAll ? 'Show less' : `Show all ${plan.days.length} days`}</button>` : ''}
+    <p class="muted small mt">The plan re-balances itself every day: if you fall behind or get ahead, the remaining topics are spread over the days left. Days off: Settings → Targets.</p></section>`;
+}
+
 Views.system = async (code) => {
   const [topics, st, prefs, books, sheets] = await Promise.all([DB.live('topics'), loadStats(), Prefs.get(), hasBooks(), DB.all('sheets')]);
+  const plan = await buildPlan(code, prefs, topics);
   const sheetSet = new Set(sheets.map(s => s.id));
   const filter = sessionStorage.getItem('tfilter') || 'all';
   const ts = topics.filter(t => t.system === code).sort((a, b) => a.order - b.order);
@@ -120,8 +152,8 @@ Views.system = async (code) => {
   ${bar(pct(done, ts.length), 'thick')}
   <div class="row gap wrap mt between">
     <div class="chips">${[['all', 'All'], ['left', 'Leftover'], ['done', 'Done']].map(([k, l]) => `<button class="chip ${filter === k ? 'on' : ''}" data-act="topicFilter" data-f="${k}">${l}</button>`).join('')}</div>
-    <label class="inline">Target date <input type="date" value="${prefs.targets?.[code] || ''}" data-change="setTarget" data-sys="${code}"></label>
   </div>
+  ${planCard(code, plan, prefs)}
   <section class="card flush mt"><div class="list">${shown.map(t => topicRow(t, st, sheetSet)).join('') || '<p class="muted pad">Nothing here.</p>'}</div>
   <button class="btn ghost full" data-act="addTopic" data-sys="${code}">+ Add a topic</button></section>
   </div>`;
@@ -475,7 +507,8 @@ Views.settings = async () => {
   <form class="card mt" data-submit="saveGoals"><h3>Targets</h3>
     ${prefs.exams.map((e, i) => `<div class="form-row"><label>Milestone<input name="en${i}" value="${esc(e.name)}"></label><label>Date<input type="date" name="ed${i}" value="${e.date}"></label></div>`).join('')}
     <div class="form-row"><label>Daily question goal<input type="number" name="daily" min="5" max="500" value="${prefs.daily}"></label>
-    <label>Biweekly test length<input type="number" name="bw" min="10" max="150" value="${prefs.biweeklyCount}"></label></div>
+    <label>Biweekly test length<input type="number" name="bw" min="10" max="150" value="${prefs.biweeklyCount}"></label>
+    <label>Study days per week<select name="sd">${[[7, '7 — no days off'], [6, '6 — Sundays off'], [5, '5 — weekends off']].map(([v, l]) => `<option value="${v}" ${(+prefs.studyDays || 6) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div>
     <p class="muted small">Per-system target dates are set on each system's page.</p>
     <button class="btn primary mt">Save</button></form>
   <form class="card mt" data-submit="saveSync"><h3>Sync across laptop, iPad and phone</h3>

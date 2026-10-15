@@ -100,6 +100,7 @@ const A = {
     const n = await queueTopics(ids, { prio: 3 });
     toast(n ? `Queued ${n} jobs — see Library for progress.` : 'Already queued.'); App.render(true);
   },
+  planAll(el) { sessionStorage.setItem('planAll', sessionStorage.getItem('planAll') === el.dataset.sys ? '' : el.dataset.sys); App.render(true); },
   topicFilter(el) { sessionStorage.setItem('tfilter', el.dataset.f); App.render(true); },
   async addTopic(el) {
     openModal(`<form data-submit="addTopicSave" data-sys="${el.dataset.sys}"><h3>New topic in ${sysName(el.dataset.sys)}</h3>
@@ -369,7 +370,7 @@ const F = {
   async saveGoals(form) {
     const d = new FormData(form); const p = await Prefs.get();
     p.exams = p.exams.map((e, i) => ({ name: d.get('en' + i) || e.name, date: d.get('ed' + i) || '' }));
-    p.daily = +d.get('daily') || 30; p.biweeklyCount = +d.get('bw') || 40;
+    p.daily = +d.get('daily') || 30; p.biweeklyCount = +d.get('bw') || 40; p.studyDays = +d.get('sd') || 6;
     await DB.put('prefs', p); toast('Saved');
   },
   async saveSync(form) {
@@ -384,7 +385,8 @@ const F = {
 // Change / input handlers
 const C = {
   async setFocus(el) { await Prefs.set({ focus: el.value }); App.render(true); },
-  async setTarget(el) { const p = await Prefs.get(); p.targets = { ...(p.targets || {}), [el.dataset.sys]: el.value }; await DB.put('prefs', p); toast('Target saved'); },
+  async setTarget(el) { const p = await Prefs.get(); p.targets = { ...(p.targets || {}), [el.dataset.sys]: el.value }; await DB.put('prefs', p); toast('Deadline saved — plan updated'); App.render(true); },
+  async setStart(el) { const p = await Prefs.get(); p.starts = { ...(p.starts || {}), [el.dataset.sys]: el.value }; await DB.put('prefs', p); App.render(true); },
   async addPhotos(el) {
     const n = await getNote(el.dataset.id);
     for (const f of el.files) { const id = 'note-' + uid(); await DB.put('media', { id, data: await compressImage(f, 1800, 0.82), kind: 'photo' }); (n.items ||= []).push({ type: 'photo', mediaId: id, ts: Date.now() }); }

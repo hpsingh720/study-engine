@@ -352,3 +352,13 @@ a.topic-row:hover { background: var(--surface-2); }
 
 .prov { border-top: 1px solid var(--line); padding: 12px 0; }
 .prov:first-of-type { border-top: 0; }
+
+/* Planner */
+.plan { display: flex; flex-direction: column; margin-top: 8px; }
+.plan-day { display: grid; grid-template-columns: 110px 1fr; gap: 12px; padding: 9px 4px; border-top: 1px solid var(--line); align-items: start; }
+.plan-day:first-child { border-top: 0; }
+.plan-day.today { background: var(--accent-soft); border-radius: 8px; padding: 9px 10px; }
+.pd-date { font-weight: 600; font-size: .9rem; }
+.pd-date small { display: block; color: var(--muted); font-weight: 500; }
+.plan .chip { text-decoration: none; }
+@media (max-width: 600px) { .plan-day { grid-template-columns: 1fr; gap: 4px; } }
