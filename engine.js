@@ -536,6 +536,17 @@ const Queue = {
             j.status = 'done'; j.finished = Date.now(); delete j.error;
           } catch (e) {
             console.warn('Job failed', lane, j.kind, e);
+            // The SERVICE is broken (no credit, bad key, odd reply through the relay) — not the job.
+            // Rest that service and give the job back to the others without counting a failed try.
+            const svcBroken = prov && !(e instanceof QuotaError) && /balance|insufficient|billing|payment|credit|unexpected reply|unauthori[sz]ed|invalid api key|forbidden|\b40[13]\b|could not connect/i.test(e.message || '');
+            if (svcBroken) {
+              const long = /balance|insufficient|billing|payment|credit|invalid api key|unauthori/i.test(e.message || '');
+              this.paused[lane] = Date.now() + (long ? 6 * 3600 : 30 * 60) * 1000;
+              this.status[lane] = `${prov.name} has a problem — resting ${long ? '6 hours' : '30 min'}, the others keep working. (${String(e.message || '').slice(0, 140)}) Fix it in Settings → ${prov.name} → Test.`;
+              j.status = 'pending'; delete j.error; await DB.put('queue', j); this.claimed.delete(j.id); this.emit();
+              setTimeout(() => this.loop(lane), this.paused[lane] - Date.now() + 1000);
+              break;
+            }
             if (e instanceof QuotaError && (e.net || !navigator.onLine)) {
               // No internet: not a limit. Just wait and carry on as soon as it is back.
               j.status = 'pending';
