@@ -1,7 +1,8 @@
 // Book ingestion + background job queue.
 // Two lanes run side by side: "local" (text extraction, OCR — free, no AI) and "ai" (Gemini calls, rate-limited).
-const LOCAL_KINDS = ['extract', 'ocr'];
+const LOCAL_KINDS = ['extract', 'ocr', 'refs'];
 const JOB_LABEL = {
+  refs: 'Linking questions to book pages',
   extract: 'Reading book', ocr: 'OCR scanned pages', mcqtext: 'Importing MCQs', mcqvision: 'Importing MCQs from photos',
   practical: 'Making image spotters', figure: 'Attaching question pictures', sheet: 'Writing topic sheet', mcqgen: 'Writing MCQs', merge: 'Combining questions'
 };
@@ -21,15 +22,28 @@ function shortName(name) {
 
 // ---------- PDF helpers ----------
 const PdfCache = new Map();
+const _pdfUsed = new Map();
 async function getPdf(bookId) {
+  _pdfUsed.set(bookId, Date.now());
   if (PdfCache.has(bookId)) return PdfCache.get(bookId);
   const f = await DB.get('files', bookId);
   if (!f) throw new Error('Original file missing on this device');
   const pdf = await pdfjsLib.getDocument({ data: await f.blob.arrayBuffer() }).promise;
-  if (PdfCache.size >= 2) { const [k, v] = PdfCache.entries().next().value; v.destroy?.(); PdfCache.delete(k); }
+  // Keep a few books open. Close the least-recently-used one only after a delay,
+  // so a worker still reading it can finish (closing it straight away froze that worker for ever).
+  if (PdfCache.size >= 5) {
+    const old = [...PdfCache.keys()].filter(k => k !== bookId).sort((a, b) => (_pdfUsed.get(a) || 0) - (_pdfUsed.get(b) || 0))[0];
+    const v = PdfCache.get(old); PdfCache.delete(old);
+    setTimeout(() => { if (!PdfCache.has(old)) v.destroy?.(); }, 5 * 60 * 1000);
+  }
   PdfCache.set(bookId, pdf);
   return pdf;
 }
+// Give up on one PDF step after `ms` instead of waiting for ever.
+function withTimeout(promise, ms, what) {
+  return Promise.race([promise, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout: ' + what)), ms))]);
+}
+function dropPdf(bookId) { const v = PdfCache.get(bookId); PdfCache.delete(bookId); if (v) setTimeout(() => v.destroy?.(), 60000); }
 
 // Render a page (PDF page or image file) to a canvas, long side ≈ target px.
 async function renderPage(book, p, target = 1600) {
@@ -45,13 +59,15 @@ async function renderPage(book, p, target = 1600) {
     URL.revokeObjectURL(url);
     return c;
   }
-  const pdf = await getPdf(book.id);
-  const page = await pdf.getPage(p);
+  let pdf = await getPdf(book.id), page;
+  try { page = await withTimeout(pdf.getPage(p), 60000, 'open page'); }
+  catch (e) { dropPdf(book.id); pdf = await getPdf(book.id); page = await withTimeout(pdf.getPage(p), 60000, 'open page'); }
   const v1 = page.getViewport({ scale: 1 });
   const vp = page.getViewport({ scale: Math.min(3, target / Math.max(v1.width, v1.height)) });
   c.width = Math.round(vp.width); c.height = Math.round(vp.height);
   const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
-  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+  const task = page.render({ canvasContext: ctx, viewport: vp });
+  try { await withTimeout(task.promise, 120000, 'draw page ' + p); } catch (e) { try { task.cancel(); } catch (x) {} dropPdf(book.id); throw e; }
   page.cleanup();
   return c;
 }
@@ -81,6 +97,7 @@ async function addBooks(entries) {
       textPages: 0, scannedPages: 0, status: 'queued', added: Date.now()
     };
     await DB.put('files', isPdf ? { id, blob: e.files[0] } : { id, blobs: e.files });
+    if (e.role === 'reader') { book.status = 'ready'; await DB.put('books', book); continue; } // just for opening pages on this device
     await DB.put('books', book);
     await Queue.add('extract', { bookId: id }, 1);
   }
@@ -97,6 +114,36 @@ async function deleteBook(id) {
 
 // ---------- Job handlers ----------
 const Handlers = {
+  // Link each question of one topic to the best pages in your books, so phones can show "Read first" even when the laptop is off.
+  async refs(job) {
+    const topic = await DB.get('topics', job.payload.topicId); if (!topic) return;
+    const pagesNow = await DB.count('pages');
+    // Redo links when many new book pages have been read since (e.g. a scanned book finished).
+    const qs = (await DB.byIndex('mcqs', 'topicId', topic.id)).filter(m => !m.deleted && (!m.refs || (m.refsN || 0) < pagesNow * 0.9));
+    if (!qs.length) return;
+    const books = (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc'].includes(b.role));
+    const tTerms = topicTerms(topic);
+    // Candidate pages for the topic (read once), then score each question against just those.
+    const cand = [];
+    for (const b of books) {
+      const best = [];
+      await DB.each('pages', 'bookId', b.id, pg => { const sc = scorePage(pg.text, tTerms); if (sc > 0) { best.push({ s: sc, bookId: b.id, size: b.size, p: pg.p, book: b.short || b.name, text: pg.text }); if (best.length > 60) { best.sort((x, y) => y.s - x.s); best.length = 25; } } });
+      best.sort((x, y) => y.s - x.s); cand.push(...best.slice(0, 25));
+    }
+    let n = 0;
+    for (const m of qs) {
+      const correct = correctSet(m).map(i => m.options[i]).join(' ');
+      const words = ((m.stem + ' ' + correct).toLowerCase().match(/[a-z][a-z-]{5,}/g) || []).filter(w => !STOP.has(w));
+      const kw = [...new Set(words)].sort((x, y) => y.length - x.length).slice(0, 8);
+      const qTerms = topicTerms({ name: '', kw: [...kw, ...correct.toLowerCase().split(/[,;/]/).map(x => x.trim()).filter(x => x.length > 3)] });
+      const scored = cand.map(c => ({ ...c, q: qTerms.length ? scorePage(c.text, qTerms) : 0 })).filter(c => c.q > 0).sort((x, y) => (y.q + y.s * 0.2) - (x.q + x.s * 0.2));
+      const seen = new Set(), refs = [];
+      for (const c of scored) { if (seen.has(c.bookId)) continue; seen.add(c.bookId); refs.push({ book: c.book, bookId: c.bookId, size: c.size, p: c.p }); if (refs.length >= 3) break; }
+      m.refs = refs; m.refsN = pagesNow; await DB.put('mcqs', m); n++;
+      if (n % 25 === 0) Queue.setStatus(Queue._laneOf?.[job.id] || 'local', `Linking questions to book pages — ${topic.name} (${n}/${qs.length})`);
+    }
+  },
+
   async extract(job) {
     const book = await DB.get('books', job.payload.bookId);
     if (!book) return;
@@ -105,18 +152,27 @@ const Handlers = {
     if (book.kind === 'images') {
       for (let i = 1; i <= book.pages; i++) scanned.push(i);
     } else {
-      const pdf = await getPdf(book.id);
+      let pdf = await withTimeout(getPdf(book.id), 10 * 60000, 'open book');
       book.pages = pdf.numPages;
       let batch = [];
       const start = job.payload.from || 1;
       const OPS = pdfjsLib.OPS;
       for (let i = start; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        const tc = await page.getTextContent();
+        let page, tc;
+        try {
+          page = await withTimeout(pdf.getPage(i), 60000, 'page ' + i);
+          tc = await withTimeout(page.getTextContent(), 60000, 'text of page ' + i);
+        } catch (e) {
+          // A page that hangs: reopen the book once and retry; if it hangs again, read it later by OCR.
+          dropPdf(book.id); pdf = await withTimeout(getPdf(book.id), 10 * 60000, 'reopen book');
+          try { page = await withTimeout(pdf.getPage(i), 60000, 'page ' + i); tc = await withTimeout(page.getTextContent(), 60000, 'text of page ' + i); }
+          catch (e2) { scanned.push(i); dropPdf(book.id); pdf = await getPdf(book.id); continue; }
+        }
+        if (i % 5 === 0) Queue.setStatus(Queue._laneOf?.[job.id] || 'local', `Reading ${book.short} — page ${i}/${pdf.numPages}`);
         const text = tc.items.map(it => it.str + (it.hasEOL ? '\n' : ' ')).join('').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
         if (text.length >= 80) batch.push({ bookId: book.id, p: i, text }); else scanned.push(i);
         if ((book.role === 'practical' || book.role.startsWith('mcq')) && text.length >= 80) {
-          const ops = await page.getOperatorList();
+          let ops = { fnArray: [] }; try { ops = await withTimeout(page.getOperatorList(), 60000, 'pictures on page ' + i); } catch (e) { imgPages.push(i); }
           if (ops.fnArray.some(f => f === OPS.paintImageXObject || f === OPS.paintJpegXObject || f === OPS.paintInlineImageXObject)) imgPages.push(i);
         }
         page.cleanup();
@@ -127,6 +183,7 @@ const Handlers = {
           Queue.setStatus(Queue._laneOf?.[job.id] || 'local', `Reading ${book.short} — page ${i}/${pdf.numPages}`);
         }
       }
+      if (batch.length) await DB.putMany('pages', batch);
     }
     book.textPages = book.pages - scanned.length; book.scannedPages = scanned.length;
     // Follow-up jobs depend on what kind of book this is.
@@ -139,7 +196,7 @@ const Handlers = {
       const textPages = [];
       await DB.each('pages', 'bookId', book.id, pg => { if (!withImg.has(pg.p)) textPages.push(pg.p); });
       textPages.sort((a, b) => a - b);
-      for (const c of chunk(textPages, 8)) await Queue.add('mcqtext', { bookId: book.id, pages: c }, 4);
+      await addMcqText(book.id, textPages, 0);
       // Scanned PDF pages: read them on the laptop (free), then import as text — far fewer AI tokens than page pictures.
       // Photo sets (screen photos) and text pages with embedded pictures still go to vision.
       if (book.kind === 'pdf') for (const c of chunk(scanned, 4)) await Queue.add('ocr', { bookId: book.id, pages: c, then: 'mcqtext' }, 3);
@@ -174,7 +231,7 @@ const Handlers = {
         done.push(...batch); job.payload.done = done; await DB.put('queue', job);
         await sleep(Math.max(0, 60000 / ctx.provider.rpm));
       }
-      if (job.payload.then === 'mcqtext') await Queue.add('mcqtext', { bookId: book.id, pages: job.payload.pages, ocr: 1 }, 4);
+      if (job.payload.then === 'mcqtext') await addMcqText(book.id, job.payload.pages, 1);
       return;
     }
     const worker = await getOcrWorker(ctx?.lane || 'local');
@@ -187,7 +244,7 @@ const Handlers = {
       if (text.length > 30) await DB.put('pages', { bookId: book.id, p, text, ocr: 1 });
       done.push(p); job.payload.done = done; await DB.put('queue', job);
     }
-    if (job.payload.then === 'mcqtext') { await Queue.add('mcqtext', { bookId: book.id, pages: job.payload.pages, ocr: 1 }, 4); return; }
+    if (job.payload.then === 'mcqtext') { await addMcqText(book.id, job.payload.pages, 1); return; }
     const left = (await DB.all('queue')).filter(j => j.kind === 'ocr' && j.payload.bookId === book.id && j.id !== job.id && j.status !== 'done');
     if (!left.length) { book.status = 'ready'; await DB.put('books', book); }
   },
@@ -382,6 +439,11 @@ async function getOcrWorker(lane = 'local') {
   return _ocrWorkers[lane];
 }
 
+// Text imports in small pieces (2 pages) so every free AI can take them, not only Gemini.
+async function addMcqText(bookId, pages, ocr) {
+  for (let i = 0; i < pages.length; i += 2) await Queue.add('mcqtext', ocr ? { bookId, pages: pages.slice(i, i + 2), ocr: 1 } : { bookId, pages: pages.slice(i, i + 2) }, 4);
+}
+
 // ---------- Queue ----------
 const BULK_KINDS = ['mcqtext', 'mcqvision', 'practical'];
 const Queue = {
@@ -420,7 +482,13 @@ const Queue = {
       if (localBusy) c = c.filter(j => (j.kind !== 'sheet' && j.kind !== 'mcqgen') || j.prio < 6);
     }
     // Providers help with OCR only when there is no import work for them.
-    if (lane.startsWith('p:')) { const bulk = c.filter(j => j.kind !== 'ocr'); if (bulk.length) c = bulk; }
+    if (lane.startsWith('p:')) {
+      const bulk = c.filter(j => j.kind !== 'ocr'); if (bulk.length) c = bulk;
+      // Cheap text imports first; picture jobs are slow and hit limits sooner.
+      const w = { mcqtext: 0, practical: 1, figure: 2, mcqvision: 3 };
+      c.sort((a, b) => (w[a.kind] ?? 1) - (w[b.kind] ?? 1) || a.prio - b.prio || a.created - b.created);
+      return c[0];
+    }
     c.sort((a, b) => a.prio - b.prio || a.created - b.created);
     return c[0];
   },
@@ -489,6 +557,11 @@ const Queue = {
                 await DB.put('queue', j); this.emit(); continue;
               }
               if (prov && /too large|reduce your message|context length|maximum context|too many tokens|payload/i.test(e.message || '')) {
+                if (j.kind === 'mcqtext' && j.payload.pages.length > 1) {
+                  // Split into single pages that fit, instead of leaving it all for Gemini.
+                  for (const pg of j.payload.pages) await Queue.add('mcqtext', { ...j.payload, pages: [pg] }, j.prio);
+                  j.status = 'done'; j.error = 'split into single pages'; await DB.put('queue', j); this.emit(); continue;
+                }
                 j.noProv = 1; j.status = 'pending'; delete j.error; await DB.put('queue', j); this.emit(); continue;
               }
               j.tries++; j.error = (prov ? prov.name + ': ' : '') + String(e.message || e).slice(0, 300);
@@ -540,6 +613,18 @@ const Queue = {
     if (n) console.log('Converted', n, 'vision jobs to OCR→text');
     return n;
   },
+  // One-time: break big pending text-import jobs into 2-page pieces so the free AIs can take them too.
+  async splitTextJobs() {
+    if (localStorage.getItem('splitV3')) return 0;
+    let n = 0;
+    for (const j of await DB.byIndex('queue', 'status', 'pending')) {
+      if (j.kind !== 'mcqtext' || j.payload.pages.length <= 2) { if (j.kind === 'mcqtext' && j.noProv) { delete j.noProv; await DB.put('queue', j); } continue; }
+      for (let i = 0; i < j.payload.pages.length; i += 2) await DB.put('queue', { ...j, id: uid(), noProv: undefined, created: j.created + i / 1000, payload: { ...j.payload, pages: j.payload.pages.slice(i, i + 2) } });
+      await DB.del('queue', j.id); n++;
+    }
+    localStorage.setItem('splitV3', '1');
+    return n;
+  },
   async recover() {
     for (const j of await DB.byIndex('queue', 'status', 'running')) { j.status = 'pending'; await DB.put('queue', j); }
   },
@@ -549,6 +634,15 @@ const Queue = {
   },
   async clearDone() { for (const j of await DB.byIndex('queue', 'status', 'done')) await DB.del('queue', j.id); }
 };
+
+async function queueRefs() {
+  if (!(await DB.count('books'))) return 0;
+  const queued = new Set((await DB.all('queue')).filter(j => j.kind === 'refs' && j.status !== 'done').map(j => j.payload.topicId));
+  const pagesNow = await DB.count('pages');
+  const need = new Set(); for (const m of await DB.all('mcqs')) if (!m.deleted && m.topicId && (!m.refs || (m.refsN || 0) < pagesNow * 0.9)) need.add(m.topicId);
+  let n = 0; for (const t of need) if (!queued.has(t)) { await Queue.add('refs', { topicId: t }, 1.5); n++; }
+  return n;
+}
 
 async function markBookIfFinished(bookId) {
   const b = await DB.get('books', bookId); if (!b || b.status === 'ready') return;

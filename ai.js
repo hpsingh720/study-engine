@@ -8,7 +8,7 @@ const COLS = {
 };
 const ROLES = {
   ref: 'Reference textbook', mbbs: 'MBBS textbook', amc: 'AMC / Australian source',
-  'mcq-mbbs': 'MCQ book (MBBS)', 'mcq-amc': 'Question bank (AMC / AMEDEX)', practical: 'Practical / spotter book'
+  'mcq-mbbs': 'MCQ book (MBBS)', 'mcq-amc': 'Question bank (AMC / AMEDEX)', practical: 'Practical / spotter book', reader: 'Reading copy only (phone / iPad)'
 };
 const SECTIONS = {
   patho: 'Pathophysiology', clinical: 'Clinical features', investigations: 'Investigations',
@@ -22,9 +22,20 @@ const AI = {
   get bulkModel() { return localStorage.getItem('gem_bulk') || 'gemini-2.5-flash-lite'; },
   get rpm() { return Math.max(1, +localStorage.getItem('gem_rpm') || 8); },
 
+  // Models that ran out of their free daily allowance (checked again after a few hours).
+  isOut(m) { return +(localStorage.getItem('gem_out_' + m) || 0) > Date.now(); },
+  markOut(m) { localStorage.setItem('gem_out_' + m, String(Date.now() + 3 * 3600 * 1000)); },
   async call(opts) {
+    const want = opts.model || this.model;
+    // Main model used up for today → sheets and questions carry on with the lighter model instead of waiting.
+    if (this.isOut(want) && want !== this.bulkModel && !this.isOut(this.bulkModel)) opts = { ...opts, model: this.bulkModel, _fellBack: true };
     try { return await this._call(opts); }
     catch (e) {
+      const used0 = opts.model || this.model;
+      if (e instanceof QuotaError && (e.daily || /exceeded your current quota/i.test(e.message || '')) && !opts._quotaFallback) {
+        if (e.daily) this.markOut(used0);
+        if (used0 !== this.bulkModel && !this.isOut(this.bulkModel)) return this.call({ ...opts, model: this.bulkModel, _quotaFallback: true });
+      }
       // 503 "busy": Google's servers are overloaded for that model. Wait a moment, then fall back to the lighter model.
       if (e instanceof QuotaError && /busy/i.test(e.message || '') && (opts._busy || 0) < 2) {
         await sleep(opts._busy ? 1500 : 2500);
@@ -232,6 +243,7 @@ RULES
 - Each column must reflect its own sources. Cite inline like [Harrison p.2045] using the bracket labels above.
 - If a column has no excerpts, or they don't cover a point, you may use standard knowledge of that kind of source, but begin that cell with "(general knowledge)". For the amc column use current Australian practice (eTG, Murtagh, RACGP Red Book, Austroads, Australian Immunisation Handbook, RCH guidelines).
 - High-yield only: what examiners ask. Bullets that start with "- ", at most 8 per cell, short lines. Keep doses, cut-offs and criteria when the source gives them. Use **bold** for the single most-tested fact in a cell.
+- pearls: include the small bedside concepts and examination tricks that separate look-alikes (e.g. direction of visible peristalsis: stomach left → right vs transverse colon right → left), plus red flags.
 - comparison.rows: ONLY real differences between the Indian MBBS answer and the Australian/AMC answer — first-line drugs and doses, investigation of choice, thresholds and targets, setting (GP, rural, retrieval, referral), screening and prevention programs, legal duties (driving, notification, consent, mandatory reporting), Aboriginal and Torres Strait Islander considerations. 4–10 rows. "trap" = how the AMC exam typically tests that difference.
 - comparison.same: one or two lines on what is the same, so the student can skip it.
 - comparison.mustKnow: Australia-only facts with no Indian equivalent (programs, laws, local epidemiology, brand-specific practice).
@@ -271,13 +283,15 @@ MBBS style: Indian university / NEET-PG clinical style, EXACTLY 4 options.
 
 QUALITY RULES
 - Test only high-yield, examinable decisions: diagnosis, next step, investigation of choice, first-line treatment, complication, contraindication, the AMC-specific differences. No trivia, no eponyms for their own sake.
+- About 1 in 5 questions should test a small bedside concept that separates look-alike answers — an examination trick or sign that changes the diagnosis (e.g. direction of visible peristalsis: gastric outlet obstruction moves left → right, transverse colon right → left; whether you can get above a swelling; dullness that shifts). Build a real vignette around it. Mark these with "pearl": true.
+- "master": one short line — the exact fact a student must know to never miss this question.
 - No "all of the above"/"none of the above". Options parallel and similar length. Distractors must be plausible (what a weaker student would pick). Exactly one defensible answer.
 - Spread the correct letter evenly across positions.
 - explanation: first line "Answer: <option text>" then 1–3 lines why, then one short line per wrong option ("B — ...").
 - Do not repeat these existing questions:
 ${existing || '(none yet)'}
 
-Return JSON: {"mcqs":[{"type":"AMC","stem":"","options":["","","","",""],"answer":0,"explanation":"","difficulty":"medium","cite":""}]}`;
+Return JSON: {"mcqs":[{"type":"AMC","stem":"","options":["","","","",""],"answer":0,"explanation":"","difficulty":"medium","cite":"","pearl":false,"master":""}]}`;
     const out = await AI.call({ prompt, system: SYSTEM_TUTOR, temperature: 0.55 });
     const list = (out.mcqs || []).map(m => cleanMcq(m, topic)).filter(Boolean);
     await DB.putMany('mcqs', list);
@@ -298,9 +312,60 @@ function cleanMcq(m, topic, extra = {}) {
     id: uid(), topicId: topic?.id || m.topicId || '', system: topic?.system || extra.system || '',
     type, stem: String(m.stem).trim(), options, ans, ...(multi ? { multi } : {}),
     expl: asText(m.explanation || ''), cite: m.cite || '', difficulty: m.difficulty || 'medium',
+    ...(m.pearl ? { pearl: 1 } : {}), ...(m.master ? { masterLine: asText(m.master) } : {}),
     src: extra.src || 'ai', keyedBy: m.keyedBy || (extra.src ? 'book' : 'ai'), img: extra.img || null,
     flagged: 0, created: Date.now()
   };
+}
+
+// After a wrong answer: which pages of YOUR books to read first, and exactly what to master.
+async function findRefs(m, max = 4) {
+  const topic = m.topicId ? await DB.get('topics', m.topicId) : null;
+  const correct = correctSet(m).map(i => m.options[i]).join(' ');
+  const words = (m.stem + ' ' + correct).toLowerCase().match(/[a-z][a-z-]{5,}/g) || [];
+  const freq = {}; words.forEach(w => { if (!STOP.has(w)) freq[w] = (freq[w] || 0) + 1; });
+  const kw = Object.keys(freq).sort((x, y) => y.length - x.length).slice(0, 8);
+  const terms = topicTerms({ name: topic?.name || '', kw: [...(topic?.kw || []), ...kw, ...correct.toLowerCase().split(/[,;/]/).map(x => x.trim()).filter(x => x.length > 3)] });
+  if (!terms.length) return [];
+  const books = (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc'].includes(b.role));
+  const per = [];
+  for (const b of books) {
+    let best = [];
+    await DB.each('pages', 'bookId', b.id, pg => {
+      const sc = scorePage(pg.text, terms);
+      if (sc > 0) { best.push({ s: sc, bookId: b.id, size: b.size, p: pg.p, book: b.short || b.name, role: b.role, text: pg.text }); if (best.length > 12) { best.sort((x, y) => y.s - x.s); best.length = 3; } }
+    });
+    best.sort((x, y) => y.s - x.s); per.push(...best.slice(0, 2));
+  }
+  per.sort((x, y) => y.s - x.s);
+  // AMC source first when it is close, because that is the exam's answer.
+  return per.slice(0, max);
+}
+
+async function masterQuestion(m, chosen) {
+  let refs = await findRefs(m).catch(() => []);
+  // No books on this device: use the page links the laptop prepared earlier (no page text, just where to read).
+  if (!refs.length && m.refs?.length) refs = m.refs.map(r => ({ ...r, text: '' }));
+  const topic = m.topicId ? await DB.get('topics', m.topicId) : null;
+  const L = i => String.fromCharCode(65 + i);
+  const ch = chosen == null ? [] : Array.isArray(chosen) ? chosen : [chosen];
+  const prompt = `A student preparing for the AMC MCQ exam got this question wrong.
+${topic ? 'Topic: ' + topic.name + '\n' : ''}Question: ${m.stem}
+Options: ${m.options.map((o, i) => L(i) + '. ' + o).join(' | ')}
+Correct: ${letters(correctSet(m))}${ch.length ? '   Student chose: ' + ch.map(L).join(', ') : ''}
+Explanation given: ${String(m.expl || '').slice(0, 1500)}
+
+Pages from the student's own books (labels in brackets):
+${refs.map(r => `[${r.book} p.${r.p}]\n${(r.text || '(page text not on this device — judge from the book and page)').slice(0, 3500)}`).join('\n\n') || '(no matching pages on this device)'}
+
+Return JSON {"read":[{"ref":"[Book p.N]","why":"what to read there, in a few words"}],"master":["3–5 short bullets: the exact facts, numbers, discriminating features or bedside signs to master so this trap never catches them again"],"trap":"one line: why the wrong choice was tempting and how to tell them apart"}
+"read": 1–3 entries, ONLY from the bracket labels above and only if they really cover this; best first; empty array if none fit.`;
+  const out = await AI.call({ prompt, system: SYSTEM_TUTOR, temperature: 0.2 });
+  const read = (out.read || []).map(r => { const mm = String(r.ref || '').match(/\[?(.+?) p\.(\d+)\]?/); const hit = mm && refs.find(x => x.book === mm[1].trim() && x.p === +mm[2]); return hit ? { book: hit.book, bookId: hit.bookId, size: hit.size, p: hit.p, why: asText(r.why || '') } : null; }).filter(Boolean);
+  if (!read.length) refs.slice(0, 2).forEach(r => read.push({ book: r.book, bookId: r.bookId, size: r.size, p: r.p, why: '' }));
+  m.master = { read, points: (out.master || []).map(asText).filter(Boolean).slice(0, 6), trap: asText(out.trap || ''), at: Date.now() };
+  await DB.put('mcqs', m);
+  return m.master;
 }
 
 async function askTutor(topic, question, context = '') {

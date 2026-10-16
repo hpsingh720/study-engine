@@ -122,7 +122,8 @@ function planDayRow(d, showSys) {
 function planCard(code, plan, prefs) {
   const head = `<div class="card-head"><h3>Study plan</h3><div class="row gap wrap">
       <label class="inline small">Start <input type="date" value="${prefs.starts?.[code] || ''}" data-change="setStart" data-sys="${code}"></label>
-      <label class="inline small">Deadline <input type="date" value="${prefs.targets?.[code] || ''}" data-change="setTarget" data-sys="${code}"></label></div></div>`;
+      <label class="inline small">Deadline <input type="date" value="${prefs.targets?.[code] || ''}" data-change="setTarget" data-sys="${code}"></label>
+      <label class="inline small">Order <select data-change="setPlanOrder" data-sys="${code}"><option value="book" ${prefs.planOrder?.[code] === 'weight' ? '' : 'selected'}>Book order</option><option value="weight" ${prefs.planOrder?.[code] === 'weight' ? 'selected' : ''}>Most important first</option></select></label></div></div>`;
   if (!plan) return `<section class="card mt">${head}<p class="muted">Set a deadline and the app spreads this system's topics over the days until then — keeping biweekly test days and a final revision day free.</p></section>`;
   const showAll = sessionStorage.getItem('planAll') === code;
   const days = showAll ? plan.days : plan.days.slice(0, 14);
@@ -134,9 +135,28 @@ function planCard(code, plan, prefs) {
     <p class="muted small mt">The plan re-balances itself every day: if you fall behind or get ahead, the remaining topics are spread over the days left. Days off: Settings → Targets.</p></section>`;
 }
 
+// Which topics the question banks (AMC recalls, AMEDEX — the past-paper trend) ask about most.
+async function topicWeights(code) {
+  const all = await DB.all('mcqs'); const w = {};
+  all.forEach(m => { if (m.deleted || m.merged || m.src === 'ai' || !m.topicId || (code && m.system !== code)) return; w[m.topicId] = (w[m.topicId] || 0) + 1; });
+  return w;
+}
+function weightCard(ts, w, st) {
+  const rows = ts.map(t => ({ t, n: w[t.id] || 0 })).filter(x => x.n).sort((a, b) => b.n - a.n);
+  if (!rows.length) return `<section class="card mt"><h3>What to master first</h3><p class="muted">Appears once question-bank questions have been imported for this system.</p></section>`;
+  const max = rows[0].n, showAll = sessionStorage.getItem('wAll') === '1', list = showAll ? rows : rows.slice(0, 12);
+  return `<section class="card mt"><div class="card-head"><h3>What to master first</h3><span class="muted small">by number of past-exam-style questions</span></div>
+    <div class="wlist">${list.map(({ t, n }, i) => { const b = st?.by[t.id]; const acc = b ? pct(b.ok, b.n) : null;
+      return `<a class="wrow" href="#/topic/${t.id}"><span class="wrank">${i + 1}</span><span class="wname">${esc(t.name)} <b>(${n})</b>${t.done ? ' <span class="dotlabel ok">done</span>' : ''}</span>
+        <span class="wbar"><i style="width:${Math.max(4, Math.round(n / max * 100))}%"></i></span><span class="wacc ${acc == null ? '' : acc >= 60 ? 'good' : 'low'}">${acc == null ? '—' : acc + '%'}</span></a>`; }).join('')}</div>
+    ${rows.length > 12 ? `<button class="btn ghost full" data-act="wAll">${showAll ? 'Show top 12' : `Show all ${rows.length} topics`}</button>` : ''}
+    <p class="muted small mt">Counts come from your question banks (AMEDEX, AMC recalls), which follow past-paper trends. The % is your accuracy on that topic.</p></section>`;
+}
+
 Views.system = async (code) => {
   const [topics, st, prefs, books, sheets] = await Promise.all([DB.live('topics'), loadStats(), Prefs.get(), hasBooks(), DB.all('sheets')]);
   const plan = await buildPlan(code, prefs, topics);
+  const weights = await topicWeights(code);
   const sheetSet = new Set(sheets.map(s => s.id));
   const filter = sessionStorage.getItem('tfilter') || 'all';
   const ts = topics.filter(t => t.system === code).sort((a, b) => a.order - b.order);
@@ -153,6 +173,7 @@ Views.system = async (code) => {
   <div class="row gap wrap mt between">
     <div class="chips">${[['all', 'All'], ['left', 'Leftover'], ['done', 'Done']].map(([k, l]) => `<button class="chip ${filter === k ? 'on' : ''}" data-act="topicFilter" data-f="${k}">${l}</button>`).join('')}</div>
   </div>
+  ${weightCard(ts, weights, st)}
   ${planCard(code, plan, prefs)}
   <section class="card flush mt"><div class="list">${shown.map(t => topicRow(t, st, sheetSet)).join('') || '<p class="muted pad">Nothing here.</p>'}</div>
   <button class="btn ghost full" data-act="addTopic" data-sys="${code}">+ Add a topic</button></section>
@@ -332,7 +353,7 @@ Views.session = async () => {
           <div class="q-stem">${md(m.stem)}</div>
           ${multi ? '<p class="pill warn">More than one answer — select all that apply</p>' : ''}
           <div class="opts">${opts}</div>
-          ${revealed ? `<div class="expl ${a.ok ? 'ok' : 'bad'}"><b>${a.ok ? 'Correct' : 'Not quite — answer ' + letters(right)}</b>${md(m.expl)}${m.cite ? `<p class="muted small">Source: ${esc(m.cite)}</p>` : ''}${m.keyedBy === 'ai' && m.src !== 'ai' ? '<p class="muted small">Answer chosen by AI (the book had no key on these pages).</p>' : ''}
+          ${revealed ? `<div class="expl ${a.ok ? 'ok' : 'bad'}"><b>${a.ok ? 'Correct' : 'Not quite — answer ' + letters(right)}</b>${md(m.expl)}${m.cite ? `<p class="muted small">Source: ${esc(m.cite)}</p>` : ''}${!a.ok ? masterBlock(m, a.c) : ''}${m.keyedBy === 'ai' && m.src !== 'ai' ? '<p class="muted small">Answer chosen by AI (the book had no key on these pages).</p>' : ''}
             <div class="row gap mt"><button class="btn sm" data-act="askQ">Ask AI about this</button><button class="btn sm ghost" data-act="flagQ">Flag bad question</button></div></div>` : ''}
           <div class="q-nav">
             <button class="btn" data-act="prevQ" ${s.idx ? '' : 'disabled'}>Back</button>
@@ -344,6 +365,18 @@ Views.session = async () => {
       </main>
     </div></div>`;
 };
+
+// "Where to master this" box shown under a wrong answer.
+function masterBlock(m, chosen) {
+  const ms = m.master;
+  const c = chosen == null ? '' : JSON.stringify(Array.isArray(chosen) ? chosen : [chosen]);
+  const link = r => `<button class="linkbtn" data-act="openRef" data-book="${r.bookId}" data-size="${r.size || ''}" data-p="${r.p}">${esc(r.book)} p.${r.p}</button>`;
+  if (!ms) return `<div class="master" id="master-${m.id}">${m.masterLine ? `<p><b>Master this:</b> ${esc(m.masterLine)}</p>` : ''}${m.refs?.length ? `<p class="small"><b>Read first:</b> ${m.refs.map(link).join(' · ')}</p>` : ''}<button class="btn sm primary" data-act="masterQ" data-id="${m.id}" data-ch='${c}'>Where do I master this?</button></div>`;
+  return `<div class="master" id="master-${m.id}"><p class="eyebrow">Master this so it can’t trap you again</p>
+    ${ms.points?.length ? `<ul>${ms.points.map(p => `<li>${esc(p)}</li>`).join('')}</ul>` : ''}
+    ${ms.trap ? `<p class="small"><b>The trap:</b> ${esc(ms.trap)}</p>` : ''}
+    ${ms.read?.length ? `<p class="small"><b>Read first:</b> ${ms.read.map(r => `${link(r)}${r.why ? ` <span class="muted">— ${esc(r.why)}</span>` : ''}`).join(' · ')}</p>` : ''}</div>`;
+}
 
 async function resultsView(s) {
   const test = await DB.get('tests', s.testId);
@@ -358,7 +391,7 @@ async function renderResults(test, live = false) {
     const m = await DB.get('mcqs', id); if (!m) continue;
     const c = test.ans[id]; const ok = c != null && isRight(m, c); const rs = correctSet(m), cs = c == null ? [] : Array.isArray(c) ? c : [c];
     rows.push(`<details class="rev ${c == null ? 'skip' : ok ? 'ok' : 'bad'}"><summary><span class="mark">${c == null ? '–' : ok ? '✓' : '✗'}</span><span class="rev-stem">${esc(m.stem.slice(0, 140))}${m.stem.length > 140 ? '…' : ''}</span></summary>
-      <div class="rev-body">${md(m.stem)}<ol type="A" class="rev-opts">${m.options.map((o, i) => `<li class="${rs.includes(i) ? 'right' : cs.includes(i) ? 'wrong' : ''}">${esc(o)}</li>`).join('')}</ol>${md(m.expl)}</div></details>`);
+      <div class="rev-body">${md(m.stem)}<ol type="A" class="rev-opts">${m.options.map((o, i) => `<li class="${rs.includes(i) ? 'right' : cs.includes(i) ? 'wrong' : ''}">${esc(o)}</li>`).join('')}</ol>${md(m.expl)}${c != null && !ok ? masterBlock(m, c) : ''}</div></details>`);
   }
   const chip = (k, v) => `<span class="pill">${k}: ${v[0]}/${v[1]} (${pct(v[0], v[1])}%)</span>`;
   const wrong = test.qs.filter(id => test.ans[id] != null).length - test.correct;

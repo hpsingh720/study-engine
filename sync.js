@@ -90,3 +90,60 @@ const Sync = {
   }
 };
 window.Sync = Sync;
+
+// Phone ↔ laptop: the phone asks for a book page (or a "where to master this" search); the laptop,
+// which has the books, answers through the same Supabase table within ~15 seconds.
+const PageRelay = {
+  busy: false,
+  pid(b, p) { return `page:${b}:${p}`; },
+  rid(b, p) { return `pagereq:${b}:${p}`; },
+  async upsert(rows) {
+    const { url } = Sync.cfg();
+    const r = await fetch(url + '/rest/v1/records', { method: 'POST', headers: { ...Sync.headers(), Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify(rows) });
+    if (!r.ok) throw new Error('Could not reach your sync (' + r.status + ')');
+  },
+  row(data) { return { id: 'media:' + data.id, store: 'media', data, updated: Date.now(), deleted: false }; },
+  async getRecord(id) {
+    const { url } = Sync.cfg();
+    const r = await fetch(`${url}/rest/v1/records?select=data&id=eq.${encodeURIComponent(id)}`, { headers: Sync.headers() });
+    if (!r.ok) return null;
+    return (await r.json())[0]?.data || null;
+  },
+  async askPage(bookId, p, book) { await this.upsert([this.row({ id: this.rid(bookId, p), kind: 'pagereq', bookId, p, book, status: 'pending', at: Date.now() })]); },
+  async askMaster(mcqId, chosen) { await this.upsert([this.row({ id: 'masterreq:' + mcqId, kind: 'masterreq', mcqId, chosen, status: 'pending', at: Date.now() })]); },
+  // Wait for an answer, checking every few seconds.
+  async waitFor(id, test, ms = 90000) {
+    const end = Date.now() + ms;
+    while (Date.now() < end) { const d = await this.getRecord(id).catch(() => null); if (d && test(d)) return d; await sleep(4000); }
+    return null;
+  },
+  // Runs on the laptop (the device that has the books).
+  async serve() {
+    if (!Sync.on() || this.busy || !navigator.onLine) return;
+    const books = await DB.all('books'); if (!books.length) return;
+    this.busy = true;
+    try {
+      const { url } = Sync.cfg();
+      const r = await fetch(`${url}/rest/v1/records?select=data&store=eq.media&data->>status=eq.pending&order=updated.asc&limit=4`, { headers: Sync.headers() });
+      if (!r.ok) return;
+      for (const { data: q } of await r.json()) {
+        if (Date.now() - (q.at || 0) > 24 * 3600 * 1000) { await this.upsert([this.row({ ...q, status: 'expired' })]); continue; }
+        if (q.kind === 'pagereq') {
+          const book = books.find(b => b.id === q.bookId); const file = book && await DB.get('files', book.id);
+          if (!file) continue;
+          const c = await renderPage(book, q.p, 1500);
+          const pg = await DB.get('pages', [book.id, q.p]);
+          await this.upsert([
+            this.row({ id: this.pid(book.id, q.p), kind: 'page', bookId: book.id, p: q.p, book: book.short || book.name, data: c.toDataURL('image/jpeg', 0.72), text: (pg?.text || '').slice(0, 20000) }),
+            this.row({ ...q, status: 'done' })
+          ]);
+        } else if (q.kind === 'masterreq') {
+          const m = await DB.get('mcqs', q.mcqId); if (!m) { await this.upsert([this.row({ ...q, status: 'done' })]); continue; }
+          if (!m.master?.read?.length) await masterQuestion(m, q.chosen);
+          await Sync.run();
+          await this.upsert([this.row({ ...q, status: 'done' })]);
+        }
+      }
+    } catch (e) { console.warn('page relay', e); } finally { this.busy = false; }
+  }
+};

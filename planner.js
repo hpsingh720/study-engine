@@ -21,6 +21,10 @@ async function buildPlan(code, prefs, topics) {
   const perWeek = +prefs.studyDays || 6;
   const off = new Set(perWeek <= 5 ? [0, 6] : perWeek === 6 ? [0] : []); // Sunday (and Saturday) off
   const ts = topics.filter(t => t.system === code).sort((a, b) => a.order - b.order);
+  if (prefs.planOrder?.[code] === 'weight') {
+    const w = await topicWeights(code);
+    ts.sort((a, b) => (w[b.id] || 0) - (w[a.id] || 0) || a.order - b.order);
+  }
   const doneToday = ts.filter(t => t.done && t.doneAt && todayStr(new Date(t.doneAt)) === today);
   const todo = [...doneToday, ...ts.filter(t => !t.done)];
   const bw = await biweeklyDates(target);

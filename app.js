@@ -266,6 +266,34 @@ const A = {
     openModal(`<form data-submit="askQSend"><h3>Ask about this question</h3><textarea name="q" rows="3">Why is ${letters(correctSet(m))} correct and not ${letters(s.ans[m.id]?.c ?? 0)}?</textarea>
       <div id="askq-out" class="read mt"></div><div class="row gap mt end"><button type="button" class="btn" data-act="closeModal">Close</button><button class="btn primary">Ask</button></div></form>`);
   },
+  async masterQ(el) {
+    const m = await DB.get('mcqs', el.dataset.id); if (!m) return;
+    let ch = null; try { ch = JSON.parse(el.dataset.ch || 'null'); } catch (e) {}
+    el.disabled = true; el.innerHTML = '<span class="spin"></span>Finding the right pages in your books…';
+    try {
+      if (!(await hasBooks()) && Sync.on()) {
+        // Books live on the laptop: let it search them, then pull the answer back.
+        el.innerHTML = '<span class="spin"></span>Asking your laptop to search your books…';
+        await Sync.run(); await PageRelay.askMaster(m.id, ch);
+        const d = await PageRelay.waitFor('mcqs:' + m.id, x => x.master?.at, 30000);
+        if (d) { Object.assign(m, { master: d.master }); await DB.put('mcqs', { ...m, _dirty: 0 }, { fromSync: true }); }
+        else { el.innerHTML = '<span class="spin"></span>Laptop didn’t answer — working it out here (without page numbers)…'; await masterQuestion(m, ch); }
+      } else await masterQuestion(m, ch);
+      const box = $('#master-' + m.id); if (box) box.outerHTML = masterBlock(m, ch);
+    } catch (e) { el.disabled = false; el.textContent = 'Where do I master this?'; toast(e.message, 6000); }
+  },
+  async openRef(el) {
+    let bookId = el.dataset.book; const p = +el.dataset.p, size = +el.dataset.size || 0;
+    let book = await DB.get('books', bookId);
+    // Not this exact book here? Use a reading copy of the same file (same size) if you added one to this device.
+    if (!book && size) { book = (await DB.all('books')).find(b => b.size === size) || null; if (book) bookId = book.id; }
+    const [pg, file] = await Promise.all([DB.get('pages', [bookId, p]), book ? DB.get('files', bookId) : null]);
+    if (!book || !file) return openRemotePage(el.dataset.book, p, el.textContent.trim());
+    openModal(`<h3>${esc(book.short || book.name)} — page ${p}</h3><div id="ref-img" class="mt"></div>${pg ? `<details class="mt"><summary class="small">Page text</summary><div class="read small">${esc(pg.text).replace(/\n/g, '<br>')}</div></details>` : ''}<div class="row end mt"><button class="btn" data-act="closeModal">Close</button></div>`);
+    if (file) { try { const c = await renderPage(book, p, 1400); c.style.width = '100%'; c.style.height = 'auto'; $('#ref-img').appendChild(c); } catch (e) {} }
+    else if (!pg) $('#ref-img').innerHTML = '<p class="muted">This book’s pages are only on your laptop.</p>';
+  },
+  wAll() { sessionStorage.setItem('wAll', sessionStorage.getItem('wAll') === '1' ? '' : '1'); App.render(true); },
   async flagQ() {
     const s = Practice.s; const m = await DB.get('mcqs', s.qs[s.idx]); m.flagged = 1; await DB.put('mcqs', m);
     toast('Flagged — it won’t appear in practice again.');
@@ -398,6 +426,25 @@ const A = {
   }
 };
 
+// Phone: show a page the laptop sends over (kept on the phone afterwards, so it opens instantly next time).
+async function openRemotePage(bookId, p, label) {
+  const show = d => { const box = $('#ref-img'); if (!box) return; box.innerHTML = `<img src="${d.data}" alt="${esc(label)}" style="width:100%;height:auto">${d.text ? `<details class="mt"><summary class="small">Page text</summary><div class="read small">${esc(d.text).replace(/\n/g, '<br>')}</div></details>` : ''}`; };
+  openModal(`<h3>${esc(label)}</h3><div id="ref-img" class="mt"><p class="muted"><span class="spin"></span>Asking your laptop for this page…</p></div><div class="row end mt"><button class="btn" data-act="closeModal">Close</button></div>`);
+  const cached = await DB.get('media', PageRelay.pid(bookId, p));
+  if (cached?.data) return show(cached);
+  if (!Sync.on()) { $('#ref-img').innerHTML = '<p class="muted">This book is on your laptop. Turn on Sync (Settings) so the laptop can send pages to this device.</p>'; return; }
+  try {
+    let d = await PageRelay.getRecord('media:' + PageRelay.pid(bookId, p));
+    if (!d) {
+      await PageRelay.askPage(bookId, p, label);
+      const box = $('#ref-img'); if (box) box.innerHTML = '<p class="muted"><span class="spin"></span>Asking your laptop for this page… (it needs to be on, with the app open — usually 10–20 seconds)</p>';
+      d = await PageRelay.waitFor('media:' + PageRelay.pid(bookId, p), x => !!x.data);
+    }
+    if (d) { await DB.put('media', { ...d, _dirty: 0 }, { fromSync: true }); show(d); }
+    else { const box = $('#ref-img'); if (box) box.innerHTML = '<p class="muted">Your laptop didn’t answer yet. Check it is on with the app open. Your request is saved — the page will be here next time you tap.</p>'; }
+  } catch (e) { const box = $('#ref-img'); if (box) box.innerHTML = `<p class="warn-t">${esc(e.message)}</p>`; }
+}
+
 // Form submits
 const F = {
   async addTopicSave(form) {
@@ -471,6 +518,7 @@ const C = {
   keepAwake(el) { localStorage.setItem('keepAwake', el.checked ? '1' : '0'); if (!el.checked) Queue.holdWake(false); else Queue.holdWake(true); toast(el.checked ? 'Screen will stay on' : 'Windows can now turn the display off'); },
   setModePref(el) { localStorage.setItem('modePref', el.value); toast('Saved'); },
   async setFocus(el) { await Prefs.set({ focus: el.value }); App.render(true); },
+  async setPlanOrder(el) { const p = await Prefs.get(); p.planOrder = { ...(p.planOrder || {}), [el.dataset.sys]: el.value }; await DB.put('prefs', p); toast(el.value === 'weight' ? 'Plan now starts with the most-asked topics' : 'Plan follows book order'); App.render(true); },
   async setTarget(el) { const p = await Prefs.get(); p.targets = { ...(p.targets || {}), [el.dataset.sys]: el.value }; await DB.put('prefs', p); toast('Deadline saved — plan updated'); App.render(true); },
   async setStart(el) { const p = await Prefs.get(); p.starts = { ...(p.starts || {}), [el.dataset.sys]: el.value }; await DB.put('prefs', p); App.render(true); },
   async addPhotos(el) {
@@ -553,11 +601,14 @@ async function init() {
   }
   Practice.load();
   await Queue.recover();
+  try { await Queue.splitTextJobs(); } catch (e) { console.warn(e); }
   try { const n = await Queue.convertVisionToOcr(); if (n) setTimeout(() => toast(`Switched ${n} scanned question-bank jobs to the faster read-then-import route`, 6000), 1500); } catch (e) { console.warn(e); }
   if (AI.key && !localStorage.getItem('gem_picked')) { try { await AI.autoPick(); localStorage.setItem('gem_picked', '1'); } catch (e) {} }
   Queue.listeners.add(() => { const q = $('#qstatus'); if (q) q.innerHTML = queueLine(); const nb = $('#nav-q'); if (nb) nb.hidden = !(Queue.running.local || Queue.running.ai); });
   await App.render();
   Queue.kick();
+  if (Sync.on()) { setInterval(() => PageRelay.serve(), 15000); setTimeout(() => PageRelay.serve(), 5000); }
+  setTimeout(() => queueRefs().catch(console.warn), 20000); setInterval(() => queueRefs().catch(console.warn), 3600000);
   if (Sync.on()) { Sync.run(); setInterval(() => Sync.run(), 120000); document.addEventListener('visibilitychange', () => { if (!document.hidden) Sync.run(); }); }
   else Sync.set('off');
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});

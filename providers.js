@@ -21,10 +21,16 @@ const Providers = {
     return p.viaRelay && this.relay() ? this.relay() + '/?u=' + encodeURIComponent(target) : target;
   },
   async send(p, path, init) {
-    try { return await fetch(this.url(p, path), init); }
+    const direct = p.base.replace(/\/$/, '') + path;
+    const relayed = this.relay() ? this.relay() + '/?u=' + encodeURIComponent(direct) : null;
+    const first = p.viaRelay && relayed ? relayed : direct, second = first === direct ? relayed : direct;
+    try { return await fetch(first, init); }
     catch (e) {
-      if (!p.viaRelay && this.relay()) { this.save(p.id, { viaRelay: true }); p.viaRelay = true; return fetch(this.url(p, path), init); }
-      throw e;
+      if (!second) throw e;
+      // Remember whichever way works (a short network blip shouldn't lock a service onto the relay for ever).
+      const r = await fetch(second, init);
+      const via = second === relayed; if (!!p.viaRelay !== via) { this.save(p.id, { viaRelay: via }); p.viaRelay = via; }
+      return r;
     }
   },
   list() {
@@ -59,7 +65,9 @@ const Providers = {
         method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + p.key }, body: JSON.stringify({ ...body, _retried: undefined })
       });
     } catch (e) { throw new QuotaError(`${p.name}: could not connect — ${this.relay() ? 'even through your relay (check the relay address)' : 'this service blocks browser apps. Set up the free relay (below) and Test again'}`, false, 60000); }
-    const d = await res.json().catch(() => ({}));
+    const raw = await res.text().catch(() => '');
+    let d = {}; try { d = JSON.parse(raw); } catch (e) {}
+    if (res.ok && !d.choices) throw new Error(`${p.name}: unexpected reply — "${raw.replace(/\s+/g, ' ').slice(0, 120)}"${p.viaRelay ? ' (through your relay — click Test relay)' : ''}`);
     if (!res.ok) {
       const msg = d.error?.message || d.message || d.detail || ('HTTP ' + res.status);
       if (res.status === 429) {

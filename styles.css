@@ -364,3 +364,22 @@ a.topic-row:hover { background: var(--surface-2); }
 @media (max-width: 600px) { .plan-day { grid-template-columns: 1fr; gap: 4px; } }
 
 .menu .btn { justify-content: flex-start; text-align: left; white-space: normal; padding: 12px 14px; }
+
+/* Where to master a missed question */
+.master { margin-top: 12px; padding: 12px 14px; border-radius: 10px; background: var(--accent-soft); display: grid; gap: 6px; }
+.master ul { margin: 0; padding-left: 18px; display: grid; gap: 3px; }
+.master p { margin: 0; }
+.linkbtn { background: none; border: 0; padding: 0; color: var(--accent); font: inherit; font-weight: 600; text-decoration: underline; cursor: pointer; }
+
+/* What to master first (topic weightage) */
+.wlist { display: grid; gap: 2px; }
+.wrow { display: grid; grid-template-columns: 28px minmax(0, 1.4fr) minmax(80px, 1fr) 48px; gap: 12px; align-items: center; padding: 7px 4px; border-top: 1px solid var(--line); color: inherit; text-decoration: none; border-radius: 6px; }
+.wrow:first-child { border-top: 0; }
+.wrow:hover { background: var(--accent-soft); }
+.wrank { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; font-size: .85rem; }
+.wname { min-width: 0; overflow-wrap: anywhere; }
+.wbar { height: 8px; background: var(--sunk); border-radius: 99px; overflow: hidden; }
+.wbar i { display: block; height: 100%; background: var(--accent); border-radius: 99px; }
+.wacc { font-variant-numeric: tabular-nums; text-align: right; font-size: .85rem; color: var(--muted); }
+.wacc.good { color: var(--ok); } .wacc.low { color: var(--bad); }
+@media (max-width: 640px) { .wrow { grid-template-columns: 22px minmax(0, 1fr) 44px; } .wbar { grid-column: 2 / 3; grid-row: 2; } }
