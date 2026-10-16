@@ -64,7 +64,18 @@ const App = {
 
 async function stageFiles(files) {
   // Skip books already in the Library (same file = same size), so the whole folder can be selected safely.
-  const have = new Set((await DB.all('books')).filter(b => b.kind === 'pdf').map(b => b.size));
+  const allBooks = await DB.all('books');
+  // A book whose saved copy can't be read: adding the same PDF again repairs it (keeps all its progress).
+  const lost = new Map(allBooks.filter(b => b.fileLost).map(b => [b.size, b]));
+  let repaired = 0;
+  for (const f of files) {
+    const b = lost.get(f.size); if (!b || !/pdf$/i.test(f.type || f.name)) continue;
+    await DB.put('files', { id: b.id, blob: f }); delete b.fileLost; b.status = 'ocr'; await DB.put('books', b); PdfCache.delete(b.id);
+    for (const j of await DB.all('queue')) if (j.payload?.bookId === b.id && j.status === 'failed') { j.status = 'pending'; j.tries = 0; await DB.put('queue', j); }
+    lost.delete(f.size); repaired++;
+  }
+  if (repaired) { toast(`Repaired ${repaired} book${repaired > 1 ? 's' : ''} — carrying on where it stopped`, 6000); Queue.kick(); }
+  const have = new Set(allBooks.filter(b => b.kind === 'pdf').map(b => b.size));
   App.staged.forEach(e => { if (e.files.length === 1) have.add(e.files[0].size); });
   const pathOf = f => (f._path || f.webkitRelativePath || f.name).replace(/\\/g, '/');
   // Subfolder name (e.g. "CVS" in AMC/CVS/file.pdf) — not the top folder you picked.
@@ -608,6 +619,7 @@ async function init() {
   await App.render();
   Queue.kick();
   if (Sync.on()) { setInterval(() => PageRelay.serve(), 15000); setTimeout(() => PageRelay.serve(), 5000); }
+  setTimeout(() => Queue.autoRetry().catch(console.warn), 60000); setInterval(() => Queue.autoRetry().catch(console.warn), 2 * 3600000);
   setTimeout(() => queueRefs().catch(console.warn), 20000); setInterval(() => queueRefs().catch(console.warn), 3600000);
   if (Sync.on()) { Sync.run(); setInterval(() => Sync.run(), 120000); document.addEventListener('visibilitychange', () => { if (!document.hidden) Sync.run(); }); }
   else Sync.set('off');

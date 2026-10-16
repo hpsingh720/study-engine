@@ -486,7 +486,7 @@ Views.library = async () => {
   <section class="card mt flush"><div class="card-head pad"><h3>Your books</h3><span class="muted">${books.length}</span></div>
     <div class="list">${books.sort((a, b) => a.role.localeCompare(b.role)).map(b => `<div class="topic-row static">
       <span class="role role-${b.role}">${ROLES[b.role]}</span>
-      <div class="tr-main"><div class="tr-name">${esc(b.name)}</div><div class="tr-meta">${b.pages} pages${b.scannedPages ? ` · ${b.scannedPages} scanned` : ''}${qByBook[b.short] ? ` · <b>${qByBook[b.short]} questions imported</b>` : ''} · ${statusText(b.status)}</div></div>
+      <div class="tr-main"><div class="tr-name">${esc(b.name)}</div><div class="tr-meta">${b.pages} pages${b.scannedPages ? ` · ${b.scannedPages} scanned` : ''}${qByBook[b.short] ? ` · <b>${qByBook[b.short]} questions imported</b>` : ''} · ${statusText(b.status)}${b.fileLost ? ' · <b class="warn-t">saved copy unreadable — add this PDF again to repair it</b>' : ''}</div></div>
       <select class="select-sm" data-change="bookRole" data-id="${b.id}">${Object.entries(ROLES).map(([k, l]) => `<option value="${k}" ${b.role === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
       ${['ready', 'partial'].includes(b.status) ? '' : `<button class="btn sm" data-act="bookFirst" data-id="${b.id}">Do this first</button>`}
       <button class="btn sm ghost" data-act="delBook" data-id="${b.id}">Delete</button></div>`).join('') || '<p class="muted pad">No books yet.</p>'}</div></section>

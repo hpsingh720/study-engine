@@ -28,7 +28,25 @@ async function getPdf(bookId) {
   if (PdfCache.has(bookId)) return PdfCache.get(bookId);
   const f = await DB.get('files', bookId);
   if (!f) throw new Error('Original file missing on this device');
-  const pdf = await pdfjsLib.getDocument({ data: await f.blob.arrayBuffer() }).promise;
+  // Read the book in 1 MB pieces only when needed, instead of loading a 1–2 GB scan into memory at once
+  // (that is what made Chrome say "the requested file could not be read").
+  let pdf;
+  try {
+    const blob = f.blob;
+    class BlobRange extends pdfjsLib.PDFDataRangeTransport {
+      requestDataRange(begin, end) {
+        blob.slice(begin, end).arrayBuffer().then(b => this.onDataRange(begin, new Uint8Array(b))).catch(err => console.warn('range read', err));
+      }
+    }
+    const head = new Uint8Array(await blob.slice(0, Math.min(blob.size, 65536)).arrayBuffer());
+    pdf = await pdfjsLib.getDocument({ range: new BlobRange(blob.size, head), rangeChunkSize: 1 << 20, disableAutoFetch: true, disableStream: true }).promise;
+  } catch (e) {
+    if (/NotReadable|could not be read/i.test((e && (e.name + ' ' + e.message)) || '')) {
+      const b = await DB.get('books', bookId); if (b) { b.fileLost = 1; b.status = 'partial'; await DB.put('books', b); }
+      throw new Error('This book’s saved copy can’t be read. In Library, add the same PDF again — it will repair this book and carry on.');
+    }
+    throw e;
+  }
   // Keep a few books open. Close the least-recently-used one only after a delay,
   // so a worker still reading it can finish (closing it straight away froze that worker for ever).
   if (PdfCache.size >= 5) {
@@ -67,7 +85,7 @@ async function renderPage(book, p, target = 1600) {
   c.width = Math.round(vp.width); c.height = Math.round(vp.height);
   const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
   const task = page.render({ canvasContext: ctx, viewport: vp });
-  try { await withTimeout(task.promise, 120000, 'draw page ' + p); } catch (e) { try { task.cancel(); } catch (x) {} dropPdf(book.id); throw e; }
+  try { await withTimeout(task.promise, 300000, 'draw page ' + p); } catch (e) { try { task.cancel(); } catch (x) {} dropPdf(book.id); throw e; }
   page.cleanup();
   return c;
 }
@@ -650,6 +668,17 @@ const Queue = {
       j.status = 'pending'; j.tries = 0; delete j.noProv; delete j.error; await DB.put('queue', j);
     }
     this.kick();
+  },
+  // Every 2 hours: give failed jobs another go (up to 3 extra rounds each), so you don't have to press Retry.
+  async autoRetry() {
+    let n = 0;
+    for (const j of await DB.byIndex('queue', 'status', 'failed')) {
+      if ((j.rounds || 0) >= 3) continue;
+      if (j.payload?.bookId) { const b = await DB.get('books', j.payload.bookId); if (b?.fileLost) continue; }
+      j.rounds = (j.rounds || 0) + 1; j.status = 'pending'; j.tries = 0; delete j.noProv; await DB.put('queue', j); n++;
+    }
+    if (n) this.kick();
+    return n;
   },
   async clearDone() { for (const j of await DB.byIndex('queue', 'status', 'done')) await DB.del('queue', j.id); }
 };
