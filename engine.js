@@ -465,7 +465,8 @@ const Queue = {
   },
   // Which jobs each lane may take: local = OCR/reading, ai = Gemini (everything AI), p:<id> = free providers (bulk + OCR if it can see images).
   accepts(lane, j, prov) {
-    if (lane.startsWith('local')) return j.lane === 'local';
+    // Linking questions to pages is light work: only the first page reader does it, the others keep reading scanned pages.
+    if (lane.startsWith('local')) return j.lane === 'local' && (j.kind !== 'refs' || lane === 'local');
     if (lane === 'ai') return j.lane === 'ai' && !j.noGemini;
     if (!prov || j.noProv) return false;
     if (j.kind === 'mcqtext') return true;
@@ -629,7 +630,14 @@ const Queue = {
     for (const j of await DB.byIndex('queue', 'status', 'running')) { j.status = 'pending'; await DB.put('queue', j); }
   },
   async retryFailed() {
-    for (const j of await DB.byIndex('queue', 'status', 'failed')) { j.status = 'pending'; j.tries = 0; if (/too large|reduce your message/i.test(j.error || '')) j.noProv = 1; await DB.put('queue', j); }
+    for (const j of await DB.byIndex('queue', 'status', 'failed')) {
+      // Big text imports: retry as 2-page pieces that every free AI can take (instead of waiting for Gemini only).
+      if (j.kind === 'mcqtext' && j.payload.pages.length > 2) {
+        await addMcqText(j.payload.bookId, j.payload.pages, j.payload.ocr ? 1 : 0);
+        await DB.del('queue', j.id); continue;
+      }
+      j.status = 'pending'; j.tries = 0; delete j.noProv; delete j.error; await DB.put('queue', j);
+    }
     this.kick();
   },
   async clearDone() { for (const j of await DB.byIndex('queue', 'status', 'done')) await DB.del('queue', j.id); }
