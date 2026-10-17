@@ -38,8 +38,13 @@ async function getPdf(bookId) {
         blob.slice(begin, end).arrayBuffer().then(b => this.onDataRange(begin, new Uint8Array(b))).catch(err => console.warn('range read', err));
       }
     }
-    const head = new Uint8Array(await blob.slice(0, Math.min(blob.size, 65536)).arrayBuffer());
-    pdf = await pdfjsLib.getDocument({ range: new BlobRange(blob.size, head), rangeChunkSize: 1 << 20, disableAutoFetch: true, disableStream: true }).promise;
+    let whole = null;
+    if (blob.size < 700 * 1024 * 1024) { try { whole = await blob.arrayBuffer(); } catch (e) { whole = null; } }
+    if (whole) pdf = await pdfjsLib.getDocument({ data: whole }).promise;
+    else {
+      const head = new Uint8Array(await blob.slice(0, Math.min(blob.size, 65536)).arrayBuffer());
+      pdf = await pdfjsLib.getDocument({ range: new BlobRange(blob.size, head), rangeChunkSize: 4 << 20, disableAutoFetch: false, disableStream: true }).promise;
+    }
   } catch (e) {
     if (/NotReadable|could not be read/i.test((e && (e.name + ' ' + e.message)) || '')) {
       const b = await DB.get('books', bookId); if (b) { b.fileLost = 1; b.status = 'partial'; await DB.put('books', b); }
@@ -61,7 +66,7 @@ async function getPdf(bookId) {
 function withTimeout(promise, ms, what) {
   return Promise.race([promise, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout: ' + what)), ms))]);
 }
-function dropPdf(bookId) { const v = PdfCache.get(bookId); PdfCache.delete(bookId); if (v) setTimeout(() => v.destroy?.(), 60000); }
+function dropPdf(bookId) { const v = PdfCache.get(bookId); PdfCache.delete(bookId); if (v) setTimeout(() => { if (!PdfCache.has(bookId) || PdfCache.get(bookId) !== v) v.destroy?.(); }, 10 * 60000); }
 
 // Render a page (PDF page or image file) to a canvas, long side ≈ target px.
 async function renderPage(book, p, target = 1600) {
@@ -85,7 +90,7 @@ async function renderPage(book, p, target = 1600) {
   c.width = Math.round(vp.width); c.height = Math.round(vp.height);
   const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
   const task = page.render({ canvasContext: ctx, viewport: vp });
-  try { await withTimeout(task.promise, 300000, 'draw page ' + p); } catch (e) { try { task.cancel(); } catch (x) {} dropPdf(book.id); throw e; }
+  try { await withTimeout(task.promise, 300000, 'draw page ' + p); } catch (e) { try { task.cancel(); } catch (x) {} throw e; }
   page.cleanup();
   return c;
 }
@@ -260,6 +265,7 @@ const Handlers = {
       const { data } = await worker.recognize(canvas);
       const text = (data.text || '').replace(/[ \t]+/g, ' ').trim();
       if (text.length > 30) await DB.put('pages', { bookId: book.id, p, text, ocr: 1 });
+      (Queue.ocrTimes ||= []).push(Date.now());
       done.push(p); job.payload.done = done; await DB.put('queue', job);
     }
     if (job.payload.then === 'mcqtext') { await addMcqText(book.id, job.payload.pages, 1); return; }
@@ -395,13 +401,13 @@ Return JSON: {"duplicates":[{"keep":0,"drop":[3]}],"combined":[{"from":[1,4],"im
     m.img = id; m.type = 'IMG'; await DB.put('mcqs', m);
   },
 
-  async sheet(job) {
+  async sheet(job, ctx) {
     const t = await DB.get('topics', job.payload.topicId); if (!t) return;
-    await Gen.sheet(t);
+    await Gen.sheet(t, ctx);
   },
-  async mcqgen(job) {
+  async mcqgen(job, ctx) {
     const t = await DB.get('topics', job.payload.topicId); if (!t) return;
-    await Gen.mcqs(t, job.payload.amc ?? 10, job.payload.mbbs ?? 8);
+    await Gen.mcqs(t, job.payload.amc ?? 10, job.payload.mbbs ?? 8, ctx);
   }
 };
 
@@ -487,6 +493,8 @@ const Queue = {
     if (lane.startsWith('local')) return j.lane === 'local' && (j.kind !== 'refs' || lane === 'local');
     if (lane === 'ai') return j.lane === 'ai' && !j.noGemini;
     if (!prov || j.noProv) return false;
+    // Topic sheets and new MCQs need a big, careful model: Gemini first; Mistral takes over while Gemini is out for the day.
+    if (j.kind === 'sheet' || j.kind === 'mcqgen') return prov.id === 'mistral' && Date.now() < (this.paused.ai || 0) && (j.kind === 'mcqgen' || j.prio < 6 || !this._localBusy);
     if (j.kind === 'mcqtext') return true;
     if (prov.vision && (j.kind === 'mcqvision' || j.kind === 'practical' || j.kind === 'ocr' || j.kind === 'figure')) return true;
     return false;
@@ -495,6 +503,7 @@ const Queue = {
   async next(lane, prov) {
     const pend = (await DB.byIndex('queue', 'status', 'pending')).filter(j => !this.claimed.has(j.id));
     let c = pend.filter(j => this.accepts(lane, j, prov));
+    this._localBusy = pend.some(j => j.lane === 'local');
     if (lane === 'ai') {
       const localBusy = pend.some(j => j.lane === 'local') || (await DB.byIndex('queue', 'status', 'running')).some(j => j.lane === 'local');
       // Only the big "every topic" batch waits for the scanned books; topics you asked for yourself go first.
@@ -504,7 +513,7 @@ const Queue = {
     if (lane.startsWith('p:')) {
       const bulk = c.filter(j => j.kind !== 'ocr'); if (bulk.length) c = bulk;
       // Cheap text imports first; picture jobs are slow and hit limits sooner.
-      const w = { mcqtext: 0, practical: 1, figure: 2, mcqvision: 3 };
+      const w = { sheet: -2, mcqgen: -1, mcqtext: 0, practical: 1, figure: 2, mcqvision: 3 };
       c.sort((a, b) => (w[a.kind] ?? 1) - (w[b.kind] ?? 1) || a.prio - b.prio || a.created - b.created);
       return c[0];
     }

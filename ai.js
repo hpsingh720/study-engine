@@ -219,7 +219,7 @@ const SYSTEM_TUTOR = 'You are an expert medical educator. Your student is an Ind
 
 // ---------- Generators ----------
 const Gen = {
-  async sheet(topic) {
+  async sheet(topic, ctx) {
     const sysName = SEED.systems.find(s => s.code === topic.system)?.name || topic.system;
     const src = {};
     src.ref = await retrieve(topic, 'ref', 6, 30000);
@@ -251,16 +251,16 @@ RULES
 Return JSON exactly in this shape:
 {"sections":{"patho":{"ref":"","mbbs":"","amc":""},"clinical":{"ref":"","mbbs":"","amc":""},"investigations":{"ref":"","mbbs":"","amc":""},"management":{"ref":"","mbbs":"","amc":""},"pearls":{"ref":"","mbbs":"","amc":""}},
 "comparison":{"bottomLine":"","rows":[{"aspect":"","india":"","australia":"","trap":"","cite":""}],"same":"","mustKnow":[""]}}`;
-    const out = await AI.call({ prompt, system: SYSTEM_TUTOR, temperature: 0.25 });
+    const out = ctx?.provider ? await Providers.call(ctx.provider, { prompt, system: SYSTEM_TUTOR, temperature: 0.25, maxTokens: 12000 }) : await AI.call({ prompt, system: SYSTEM_TUTOR, temperature: 0.25 });
     if (!out.sections) throw new Error('AI reply missing sections');
     const sources = [];
     Object.entries(src).forEach(([col, arr]) => arr.forEach(x => sources.push({ col, bookId: x.bookId, p: x.p, book: x.book })));
-    const sheet = { id: topic.id, topicId: topic.id, sections: out.sections, comparison: out.comparison || {}, sources, model: AI.model, created: Date.now() };
+    const sheet = { id: topic.id, topicId: topic.id, sections: out.sections, comparison: out.comparison || {}, sources, model: ctx?.provider ? ctx.provider.name + ' ' + ctx.provider.model : AI.model, created: Date.now() };
     await DB.put('sheets', sheet);
     return sheet;
   },
 
-  async mcqs(topic, nAmc = 10, nMbbs = 8) {
+  async mcqs(topic, nAmc = 10, nMbbs = 8, ctx) {
     const sheet = await DB.get('sheets', topic.id);
     let pages = [];
     if (sheet?.sources?.length) {
@@ -292,7 +292,7 @@ QUALITY RULES
 ${existing || '(none yet)'}
 
 Return JSON: {"mcqs":[{"type":"AMC","stem":"","options":["","","","",""],"answer":0,"explanation":"","difficulty":"medium","cite":"","pearl":false,"master":""}]}`;
-    const out = await AI.call({ prompt, system: SYSTEM_TUTOR, temperature: 0.55 });
+    const out = ctx?.provider ? await Providers.call(ctx.provider, { prompt, system: SYSTEM_TUTOR, temperature: 0.55, maxTokens: 12000 }) : await AI.call({ prompt, system: SYSTEM_TUTOR, temperature: 0.55 });
     const list = (out.mcqs || []).map(m => cleanMcq(m, topic)).filter(Boolean);
     await DB.putMany('mcqs', list);
     return list.length;

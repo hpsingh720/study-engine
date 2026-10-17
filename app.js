@@ -612,6 +612,7 @@ async function init() {
   }
   Practice.load();
   await Queue.recover();
+  Queue.startedAt = Date.now();
   try { await Queue.splitTextJobs(); } catch (e) { console.warn(e); }
   try { const n = await Queue.convertVisionToOcr(); if (n) setTimeout(() => toast(`Switched ${n} scanned question-bank jobs to the faster read-then-import route`, 6000), 1500); } catch (e) { console.warn(e); }
   if (AI.key && !localStorage.getItem('gem_picked')) { try { await AI.autoPick(); localStorage.setItem('gem_picked', '1'); } catch (e) {} }

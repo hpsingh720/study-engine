@@ -498,6 +498,8 @@ function queueLine() {
   Object.entries(Queue.status).forEach(([lane, txt]) => { if (txt) parts.push(`<span class="spin"></span>${esc(txt)}`); });
   if (Queue.pauseMsg) parts.push(`<span class="warn-t">${esc(Queue.pauseMsg)}</span>`);
   if (Queue.manualPause) parts.push('<span class="warn-t">AI jobs paused.</span>');
+  const hr = (Queue.ocrTimes || []).filter(t => t > Date.now() - 3600e3).length, since = Queue.startedAt ? Math.round((Date.now() - Queue.startedAt) / 60000) : 0;
+  if (parts.length) parts.push(`<span class="muted small">Scanned pages read in the last hour: <b>${hr}</b>${since < 60 ? ` (app opened ${since} min ago)` : ''} · app ${APP_VERSION}</span>`);
   if (parts.length && KeepAlive.wanted() && !(KeepAlive.ctx && KeepAlive.ctx.state === 'running')) parts.push('<span class="warn-t">Click anywhere on this page once, so it keeps working when Chrome is minimised.</span>');
   return parts.join('<br>') || '<span class="muted">Idle.</span>';
 }
@@ -521,6 +523,7 @@ Views.progress = async () => {
 
 // ---------------- Settings ----------------
 Views.settings = async () => {
+  setTimeout(() => { const h = document.querySelector('.page-head h1'); if (h && !h.dataset.v) { h.dataset.v = 1; h.insertAdjacentHTML('beforeend', ` <small class="muted small">${APP_VERSION}</small>`); } }, 0);
   const prefs = await Prefs.get();
   const last = +localStorage.getItem('sb_last') || 0;
   return `<div class="page"><header class="page-head"><div><h1>Settings</h1></div><a class="btn" href="#/library">Library & background jobs ›</a></header>
@@ -534,7 +537,7 @@ Views.settings = async () => {
     <div class="row gap mt"><button class="btn primary">Save</button><button type="button" class="btn" data-act="testKey">Test key & list models</button></div>
     <p class="muted small" id="key-msg"></p></form>
   <form class="card mt" data-submit="saveProviders"><h3>Extra free AI — make it faster</h3>
-    <p class="muted small">Each free service you add works <b>at the same time</b> as Gemini on importing question banks, image questions and reading scanned pages, so the work finishes several times faster. Sign up (free), create an API key, paste it here and click Test. Topic sheets and new MCQs still use Gemini for best quality.</p>
+    <p class="muted small">Each free service you add works <b>at the same time</b> as Gemini on importing question banks, image questions and reading scanned pages, so the work finishes several times faster. Sign up (free), create an API key, paste it here and click Test. Topic sheets and new MCQs use Gemini for best quality; when Gemini’s free allowance runs out for the day, Mistral takes over.</p>
     ${Providers.list().map(p => `<div class="prov">
       <div class="row between wrap gap"><b>${p.name}</b><a class="link small" href="${p.signup}" target="_blank" rel="noopener">Get a free key ›</a></div>
       <p class="muted small">${p.note}${p.vision ? ' Reads images too.' : ''}</p>
