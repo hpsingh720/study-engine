@@ -192,7 +192,7 @@ Views.topic = async (id, tab) => {
   localStorage.setItem('lastTab', tab);
   const [sheet, books, mcqs, st, queue] = await Promise.all([DB.get('sheets', id), hasBooks(), DB.byIndex('mcqs', 'topicId', id), loadStats(), DB.all('queue')]);
   const live = mcqs.filter(m => !m.deleted && !m.flagged && !m.merged);
-  const inQueue = queue.filter(j => j.payload?.topicId === id && j.status !== 'done' && j.status !== 'failed');
+  const inQueue = queue.filter(j => j.payload?.topicId === id && j.status !== 'done');
   let body = '';
   if (SECTIONS[tab]) body = sectionTab(t, sheet, tab, books, inQueue);
   else if (tab === 'compare') body = compareTab(t, sheet, books, inQueue);
@@ -210,8 +210,25 @@ Views.topic = async (id, tab) => {
   <div class="tab-body">${body}</div></div>`;
 };
 
+// Honest status of this topic's background jobs: writing, waiting (and why), or failed (with the reason).
+function jobStatusBox(jobs) {
+  const j = jobs.find(x => x.kind === 'sheet') || jobs[0];
+  const what = j.kind === 'sheet' ? 'This topic’s sheet' : 'New questions for this topic';
+  let title, msg;
+  if (j.status === 'failed') { title = 'Writing failed'; msg = `${what} couldn’t be written: ${esc(j.error || 'unknown error')}`; }
+  else if (j.status === 'running') { title = 'Being written now'; msg = `${what} is being written right now — it appears here in a minute or two.`; }
+  else {
+    const until = Queue.paused.ai || 0, mistral = Providers.active().some(p => p.id === 'mistral');
+    title = 'Waiting in line';
+    msg = Date.now() < until
+      ? `Gemini has used today’s free allowance (back around ${new Date(until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}).${mistral ? ' Mistral is taking over and will write it as soon as it’s free.' : ' Add a free Mistral key in Settings so it can take over.'}`
+      : `${what} is next in line for Gemini.`;
+  }
+  return empty(title, msg, `<div class="row gap center"><button class="btn primary" data-act="retryTopicJobs" data-ids="${jobs.map(x => x.id).join(',')}">Try again now</button><a class="btn" href="#/library">See queue</a></div>`);
+}
+
 function noSheet(t, books, inQueue) {
-  if (inQueue.length) return empty('Being written now', 'This topic is in the background queue. It will appear here automatically.', '<a class="btn" href="#/library">See queue</a>');
+  if (inQueue.length) return jobStatusBox(inQueue);
   return books
     ? empty('No sheet yet', 'Generate it from your uploaded books. It takes about a minute.', `<button class="btn primary" data-act="genTopic" data-id="${t.id}">Generate sheet & MCQs</button>`)
     : empty('No sheet yet', 'Your books live on your laptop. Generate this topic there and it will sync here.', '');
@@ -274,8 +291,8 @@ function mcqTab(t, live, all, st, books, inQueue) {
       <div class="row gap wrap">${AI.key ? `<button class="btn" data-act="mergeTopic" data-id="${t.id}" ${live.length >= 4 && !inQueue.some(j => j.kind === 'merge') ? '' : 'disabled'}>${inQueue.some(j => j.kind === 'merge') ? 'Combining…' : 'Combine overlapping questions'}</button>` : '<span class="muted small">Add your Gemini key in Settings to use this.</span>'}
       ${merged.length ? `<button class="btn ghost" data-act="unmergeTopic" data-id="${t.id}">Undo combining</button>` : ''}</div></div>
     <div class="card"><h3>More questions</h3>
-      <p class="muted">${inQueue.length ? 'Questions for this topic are being written in the background.' : books ? 'Write 10 new AMC + 8 MBBS questions from your books (no repeats).' : 'Generate more on your laptop — they sync here.'}</p>
-      ${books ? `<button class="btn" data-act="moreMcqs" data-id="${t.id}" ${inQueue.length ? 'disabled' : ''}>+ Write more MCQs</button>` : ''}
+      ${inQueue.length ? `<div class="mt">${jobStatusBox(inQueue)}</div>` : `<p class="muted">${books ? 'Write 10 new AMC + 8 MBBS questions from your books (no repeats).' : 'Generate more on your laptop — they sync here.'}</p>`}
+      ${books && !inQueue.length ? `<button class="btn" data-act="moreMcqs" data-id="${t.id}">+ Write more MCQs</button>` : ''}
       ${flagged ? `<p class="muted small mt">${flagged} flagged question${flagged === 1 ? '' : 's'} hidden from practice. <button class="link" data-act="unflagAll" data-id="${t.id}">Restore</button></p>` : ''}
     </div></div>`;
 }
@@ -512,6 +529,24 @@ function queueLine() {
   if (parts.length) parts.push(`<span class="muted small">Scanned pages read in the last hour: <b>${hr}</b>${since < 60 ? ` (app opened ${since} min ago)` : ''} · app ${APP_VERSION}</span>`);
   if (parts.length && KeepAlive.wanted() && !(KeepAlive.ctx && KeepAlive.ctx.state === 'running')) parts.push('<span class="warn-t">Click anywhere on this page once, so it keeps working when Chrome is minimised.</span>');
   return parts.join('<br>') || '<span class="muted">Idle.</span>';
+}
+
+// ---------------- Ask your books ----------------
+Views.search = async () => {
+  let recent = []; try { recent = JSON.parse(localStorage.getItem('recentSearch') || '[]'); } catch (e) {}
+  const last = Views._lastSearch;
+  return `<div class="page"><header class="page-head"><div><p class="eyebrow">Exact lines from your own books</p><h1>Ask your books</h1></div></header>
+    <form class="card" data-submit="doSearch"><div class="row gap wrap"><input id="search-q" name="q" placeholder="e.g. define normal labour · stages of labour · Bishop score" value="${esc(last?.q || '')}" style="flex:1;min-width:0" autocomplete="off"><button class="btn primary">Search</button></div>
+    ${recent.length ? `<div class="chips mt">${recent.map(r => `<button type="button" class="chip" data-act="searchAgain" data-q="${esc(r)}">${esc(r)}</button>`).join('')}</div>` : ''}</form>
+    <div id="search-out" class="mt">${last ? searchResultsHtml(last) : '<p class="muted">Type what the teacher asked. You get the book’s own words with the page number, then an optional simple explanation.</p>'}</div></div>`;
+};
+function searchResultsHtml(r) {
+  if (r.waiting) return `<p class="muted"><span class="spin"></span>${esc(r.waiting)}</p>`;
+  if (!r.results?.length) return `<div class="card"><p>Nothing found for “${esc(r.q)}” in ${r.where === 'laptop' ? 'your laptop’s books' : 'the books on this device'}.</p><p class="muted small">Try fewer, simpler words (e.g. “normal labour”), or ask the AI.</p><button class="btn" data-act="explainSearch">Ask the AI anyway</button></div>`;
+  return `${r.results.map(x => `<article class="card mt quote-card"><div class="row between wrap gap"><button class="linkbtn" data-act="openRef" data-book="${x.bookId}" data-size="${x.size || ''}" data-p="${x.p}">${esc(x.book)} — page ${x.p}</button><span class="role role-${x.role}">${esc(ROLES[x.role] || '')}</span></div>
+      <blockquote class="bookquote">${esc(x.passage)}</blockquote>
+      <button class="btn sm ghost" data-act="copyQuote" data-t="${esc(`${x.passage} (${x.book}, p.${x.p})`)}">Copy with reference</button></article>`).join('')}
+    <section class="card mt"><div class="row between wrap gap"><h3>In simple words</h3><button class="btn primary sm" data-act="explainSearch">Explain with AI</button></div><div id="search-ai" class="read">${r.ai ? md(r.ai) : '<p class="muted small">Gives the exact book line first, then a simple explanation and the points examiners expect.</p>'}</div></section>`;
 }
 
 // ---------------- Progress ----------------

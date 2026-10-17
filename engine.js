@@ -120,7 +120,6 @@ async function addBooks(entries) {
       textPages: 0, scannedPages: 0, status: 'queued', added: Date.now()
     };
     await DB.put('files', isPdf ? { id, blob: e.files[0] } : { id, blobs: e.files });
-    if (e.role === 'reader') { book.status = 'ready'; await DB.put('books', book); continue; } // just for opening pages on this device
     await DB.put('books', book);
     await Queue.add('extract', { bookId: id }, 1);
   }
@@ -145,6 +144,7 @@ const Handlers = {
     const qs = (await DB.byIndex('mcqs', 'topicId', topic.id)).filter(m => !m.deleted && (!m.refs || (m.refsN || 0) < pagesNow * 0.9));
     if (!qs.length) return;
     const books = (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc'].includes(b.role));
+    if (!books.length) return; // e.g. a phone with only reading copies: leave the laptop's links alone
     const tTerms = topicTerms(topic);
     // Candidate pages for the topic (read once), then score each question against just those.
     const cand = [];
@@ -498,7 +498,7 @@ const Queue = {
     if (lane === 'ai') return j.lane === 'ai' && !j.noGemini;
     if (!prov || j.noProv) return false;
     // Topic sheets and new MCQs need a big, careful model: Gemini first; Mistral takes over while Gemini is out for the day.
-    if (j.kind === 'sheet' || j.kind === 'mcqgen') return prov.id === 'mistral' && Date.now() < (this.paused.ai || 0) && (j.kind === 'mcqgen' || j.prio < 6 || !this._localBusy);
+    if (j.kind === 'sheet' || j.kind === 'mcqgen') return prov.id === 'mistral' && (j.noGemini || Date.now() < (this.paused.ai || 0)) && (j.kind === 'mcqgen' || j.prio < 6 || !this._localBusy);
     if (j.kind === 'mcqtext') return true;
     if (prov.vision && (j.kind === 'mcqvision' || j.kind === 'practical' || j.kind === 'ocr' || j.kind === 'figure')) return true;
     return false;
@@ -698,7 +698,7 @@ const Queue = {
 };
 
 async function queueRefs() {
-  if (!(await DB.count('books'))) return 0;
+  if (!(await DB.all('books')).some(b => ['ref', 'mbbs', 'amc'].includes(b.role))) return 0;
   const queued = new Set((await DB.all('queue')).filter(j => j.kind === 'refs' && j.status !== 'done').map(j => j.payload.topicId));
   const pagesNow = await DB.count('pages');
   const need = new Set(); for (const m of await DB.all('mcqs')) if (!m.deleted && m.topicId && (!m.refs || (m.refsN || 0) < pagesNow * 0.9)) need.add(m.topicId);

@@ -9,7 +9,8 @@ const ROUTES = [
   [/^#\/result\/([\w-]+)$/, m => Views.result(m[1])],
   [/^#\/library$/, () => Views.library()],
   [/^#\/progress$/, () => Views.progress()],
-  [/^#\/settings$/, () => Views.settings()]
+  [/^#\/settings$/, () => Views.settings()],
+  [/^#\/search$/, () => Views.search()]
 ];
 
 const App = {
@@ -309,6 +310,22 @@ const A = {
     openModal(`<h3>Skip reading “${esc(b.short || b.name)}”?</h3><p>The pages already read stay and are used in your sheets. The rest of this scanned book won’t be read, which frees the laptop for your other books.</p><div class="row gap end mt"><button class="btn" data-act="closeModal">Keep reading</button><button class="btn primary" data-act="skipOcrYes" data-id="${b.id}">Skip reading</button></div>`);
   },
   async skipOcrYes(el) { const n = await skipOcr(el.dataset.id); closeModal(); toast(`Stopped reading that book (${n} batches removed)`); App.render(true); },
+  async retryTopicJobs(el) {
+    for (const id of (el.dataset.ids || '').split(',')) {
+      const j = await DB.get('queue', id); if (!j) continue;
+      j.status = 'pending'; j.tries = 0; j.prio = 0; delete j.error; await DB.put('queue', j);
+    }
+    Queue.paused.ai = 0; Queue.pauseMsg = ''; Queue.kick(); toast('Moved to the front of the line'); App.render(true);
+  },
+  searchAgain(el) { const i = $('#search-q'); if (i) i.value = el.dataset.q; runSearch(el.dataset.q); },
+  async explainSearch(el) {
+    const st = Views._lastSearch; if (!st) return;
+    const box = $('#search-ai'); el.disabled = true;
+    if (box) box.innerHTML = '<p class="muted"><span class="spin"></span>Explaining…</p>';
+    try { st.ai = await explainFromBooks(st.q, st.results || []); if ($('#search-out')) $('#search-out').innerHTML = searchResultsHtml(st); }
+    catch (e) { if (box) box.innerHTML = `<p class="warn-t">${esc(e.message)}</p>`; el.disabled = false; }
+  },
+  async copyQuote(el) { try { await navigator.clipboard.writeText(el.dataset.t); toast('Copied'); } catch (e) { toast('Could not copy — select the text instead'); } },
   wAll() { sessionStorage.setItem('wAll', sessionStorage.getItem('wAll') === '1' ? '' : '1'); App.render(true); },
   async flagQ() {
     const s = Practice.s; const m = await DB.get('mcqs', s.qs[s.idx]); m.flagged = 1; await DB.put('mcqs', m);
@@ -461,8 +478,25 @@ async function openRemotePage(bookId, p, label) {
   } catch (e) { const box = $('#ref-img'); if (box) box.innerHTML = `<p class="warn-t">${esc(e.message)}</p>`; }
 }
 
+async function runSearch(q) {
+  q = (q || '').trim(); if (!q) return;
+  try { const r = JSON.parse(localStorage.getItem('recentSearch') || '[]').filter(x => x !== q); r.unshift(q); localStorage.setItem('recentSearch', JSON.stringify(r.slice(0, 8))); } catch (e) {}
+  const out = () => $('#search-out');
+  const show = st => { Views._lastSearch = st; if (out()) out().innerHTML = searchResultsHtml(st); };
+  show({ q, waiting: 'Searching your books…' });
+  let results = await searchBooks(q).catch(() => []), where = 'here';
+  if (!results.length && Sync.on() && !(await DB.all('books')).some(b => ['ref', 'mbbs', 'amc'].includes(b.role))) {
+    // Books live on the laptop: ask it to search.
+    show({ q, waiting: 'Asking your laptop to search your books… (10–20 seconds; it needs to be on with the app open)' });
+    try { const id = await PageRelay.askSearch(q); const d = await PageRelay.waitFor(id, x => Array.isArray(x.results), 60000); results = d?.results || []; where = 'laptop'; if (!d) toast('Your laptop didn’t answer — is it on with the app open?', 6000); }
+    catch (e) { toast(e.message, 6000); }
+  }
+  show({ q, results, where });
+}
+
 // Form submits
 const F = {
+  async doSearch(form) { await runSearch(new FormData(form).get('q')); },
   async addTopicSave(form) {
     const d = new FormData(form); const sys = form.dataset.sys;
     const count = (await DB.byIndex('topics', 'system', sys)).length;

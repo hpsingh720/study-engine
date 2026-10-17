@@ -368,6 +368,57 @@ Return JSON {"read":[{"ref":"[Book p.N]","why":"what to read there, in a few wor
   return m.master;
 }
 
+// "Ask your books": find the exact lines in your own books that answer a question (e.g. "define normal labour").
+const SEARCH_STOP = new Set(['what', 'is', 'are', 'the', 'of', 'a', 'an', 'in', 'on', 'for', 'and', 'or', 'to', 'define', 'definition', 'defined', 'meaning', 'explain', 'describe', 'about', 'tell', 'me', 'give', 'with', 'its', 'how', 'why', 'which', 'when']);
+async function searchBooks(query, max = 6) {
+  const q = query.toLowerCase().replace(/[^a-z0-9\s'-]/g, ' ');
+  const wantDef = /defin|what is|what are|meaning|means/.test(q);
+  const words = q.split(/\s+/).filter(w => w.length > 2 && !SEARCH_STOP.has(w));
+  if (!words.length) return [];
+  const phrase = words.join(' ');
+  const terms = topicTerms({ name: '', kw: [...new Set([...(words.length > 1 ? [phrase] : []), ...words])] });
+  const books = (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc', 'reader'].includes(b.role));
+  let top = [];
+  for (const b of books) {
+    await DB.each('pages', 'bookId', b.id, pg => {
+      const sc = scorePage(pg.text, terms);
+      if (sc > 0) { top.push({ s: sc, bookId: b.id, size: b.size, p: pg.p, book: b.short || b.name, role: b.role, text: pg.text }); if (top.length > 120) { top.sort((x, y) => y.s - x.s); top.length = 40; } }
+    });
+  }
+  top.sort((x, y) => y.s - x.s); top = top.slice(0, 40);
+  const res = [];
+  for (const pg of top) {
+    const sents = pg.text.replace(/\s+\n/g, '\n').split(/(?<=[.!?])\s+|\n{2,}/).map(x => x.trim()).filter(x => x.length > 15);
+    let best = null;
+    for (let i = 0; i < sents.length; i++) {
+      const win = sents.slice(i, i + 3).join(' ');
+      const lw = win.toLowerCase();
+      let sc = 0; for (const w of words) if (lw.includes(w)) sc += 2;
+      if (words.length > 1 && lw.includes(phrase)) sc += 6;
+      if (wantDef && /is defined as|defined as|definition|refers to|is the process|is a |is an |means /.test(lw)) sc += 5;
+      if (!best || sc > best.sc) best = { sc, text: win };
+    }
+    if (best && best.sc > 0) res.push({ book: pg.book, bookId: pg.bookId, size: pg.size, p: pg.p, role: pg.role, passage: best.text.slice(0, 900), score: best.sc * 3 + pg.s });
+  }
+  res.sort((x, y) => y.score - x.score);
+  const per = {}, out = [];
+  for (const r of res) { if ((per[r.bookId] = (per[r.bookId] || 0) + 1) > 2) continue; out.push(r); if (out.length >= max) break; }
+  return out;
+}
+
+async function explainFromBooks(query, results) {
+  return AI.call({ json: false, system: SYSTEM_TUTOR,
+    prompt: `A medical student was asked by a teacher: "${query}". Teachers want the exact textbook wording.
+Here are passages from the student's own books:
+${results.map(r => `[${r.book} p.${r.p}] ${r.passage}`).join('\n\n')}
+
+Reply in this order:
+1. **Book definition / answer** — quote the best line(s) word for word, with the [Book p.N] label. Do not reword the quote.
+2. **In simple words** — 2–3 short lines.
+3. **Must-say points** — 3–5 bullets an examiner expects (numbers, criteria, stages).
+If the passages don't contain the answer, say so plainly and give the standard textbook definition, marked "(general knowledge)".` });
+}
+
 async function askTutor(topic, question, context = '') {
   const sheet = topic ? await DB.get('sheets', topic.id) : null;
   const sheetCtx = sheet ? JSON.stringify({ sections: sheet.sections, comparison: sheet.comparison }).slice(0, 16000) : '';

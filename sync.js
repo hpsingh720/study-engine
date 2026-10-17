@@ -110,6 +110,8 @@ const PageRelay = {
     return (await r.json())[0]?.data || null;
   },
   async askPage(bookId, p, book) { await this.upsert([this.row({ id: this.rid(bookId, p), kind: 'pagereq', bookId, p, book, status: 'pending', at: Date.now() })]); },
+  sid(q) { let h = 0; for (const c of q.toLowerCase().trim()) h = (h * 31 + c.charCodeAt(0)) | 0; return 'q' + (h >>> 0).toString(36); },
+  async askSearch(q) { const id = this.sid(q); await this.upsert([this.row({ id: 'searchreq:' + id, kind: 'searchreq', q, status: 'pending', at: Date.now() })]); return 'media:searchres:' + id; },
   async askMaster(mcqId, chosen) { await this.upsert([this.row({ id: 'masterreq:' + mcqId, kind: 'masterreq', mcqId, chosen, status: 'pending', at: Date.now() })]); },
   // Wait for an answer, checking every few seconds.
   async waitFor(id, test, ms = 90000) {
@@ -120,7 +122,7 @@ const PageRelay = {
   // Runs on the laptop (the device that has the books).
   async serve() {
     if (!Sync.on() || this.busy || !navigator.onLine) return;
-    const books = await DB.all('books'); if (!books.length) return;
+    const books = await DB.all('books'); if (!books.some(b => ['ref', 'mbbs', 'amc'].includes(b.role))) return; // only the laptop (with the processed books) answers
     this.busy = true;
     try {
       const { url } = Sync.cfg();
@@ -137,6 +139,9 @@ const PageRelay = {
             this.row({ id: this.pid(book.id, q.p), kind: 'page', bookId: book.id, p: q.p, book: book.short || book.name, data: c.toDataURL('image/jpeg', 0.72), text: (pg?.text || '').slice(0, 20000) }),
             this.row({ ...q, status: 'done' })
           ]);
+        } else if (q.kind === 'searchreq') {
+          const results = await searchBooks(q.q, 6);
+          await this.upsert([this.row({ id: 'searchres:' + this.sid(q.q), kind: 'searchres', q: q.q, results, at: Date.now() }), this.row({ ...q, status: 'done' })]);
         } else if (q.kind === 'masterreq') {
           const m = await DB.get('mcqs', q.mcqId); if (!m) { await this.upsert([this.row({ ...q, status: 'done' })]); continue; }
           if (!m.master?.read?.length) await masterQuestion(m, q.chosen);
