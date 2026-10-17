@@ -1,8 +1,9 @@
 // Book ingestion + background job queue.
 // Two lanes run side by side: "local" (text extraction, OCR — free, no AI) and "ai" (Gemini calls, rate-limited).
-const LOCAL_KINDS = ['extract', 'ocr', 'refs'];
+const LOCAL_KINDS = ['extract', 'ocr', 'refs', 'embed'];
 const JOB_LABEL = {
   refs: 'Linking questions to book pages',
+  embed: 'Preparing offline AI search',
   extract: 'Reading book', ocr: 'OCR scanned pages', mcqtext: 'Importing MCQs', mcqvision: 'Importing MCQs from photos',
   practical: 'Making image spotters', figure: 'Attaching question pictures', sheet: 'Writing topic sheet', mcqgen: 'Writing MCQs', merge: 'Combining questions'
 };
@@ -136,6 +137,26 @@ async function deleteBook(id) {
 
 // ---------- Job handlers ----------
 const Handlers = {
+  // Offline AI search: make meaning-vectors for every page of a book that doesn't have them yet.
+  async embed(job) {
+    const book = await DB.get('books', job.payload.bookId); if (!book) return;
+    const pages = []; await DB.each('pages', 'bookId', book.id, pg => pages.push(pg));
+    let batch = [], meta = [], done = 0;
+    const flush = async () => {
+      if (!batch.length) return;
+      const vs = await Semantic.embed(batch);
+      await DB.putMany('vecs', vs.map((v, i) => ({ ...meta[i], v: Semantic.quant(v) })));
+      batch = []; meta = [];
+    };
+    for (const pg of pages) {
+      if (await DB.get('vecs', [book.id, pg.p, 0])) continue;
+      Semantic.chunks(pg.text).forEach((ch, c) => { batch.push(ch.text); meta.push({ bookId: book.id, p: pg.p, c, off: ch.off }); });
+      if (batch.length >= 24) await flush();
+      if (++done % 50 === 0) Queue.setStatus(Queue._laneOf?.[job.id] || 'local', `Preparing offline AI search — ${book.short} (${done}/${pages.length} pages)`);
+    }
+    await flush();
+  },
+
   // Link each question of one topic to the best pages in your books, so phones can show "Read first" even when the laptop is off.
   async refs(job) {
     const topic = await DB.get('topics', job.payload.topicId); if (!topic) return;
@@ -494,7 +515,7 @@ const Queue = {
   // Which jobs each lane may take: local = OCR/reading, ai = Gemini (everything AI), p:<id> = free providers (bulk + OCR if it can see images).
   accepts(lane, j, prov) {
     // Linking questions to pages is light work: only the first page reader does it, the others keep reading scanned pages.
-    if (lane.startsWith('local')) return j.lane === 'local' && (j.kind !== 'refs' || lane === 'local');
+    if (lane.startsWith('local')) return j.lane === 'local' && ((j.kind !== 'refs' && j.kind !== 'embed') || lane === 'local');
     if (lane === 'ai') return j.lane === 'ai' && !j.noGemini;
     if (!prov || j.noProv) return false;
     // Topic sheets and new MCQs need a big, careful model: Gemini first; Mistral takes over while Gemini is out for the day.
@@ -715,6 +736,18 @@ async function skipOcr(bookId) {
     await DB.del('queue', j.id); n++;
   }
   const b = await DB.get('books', bookId); if (b) { b.ocrSkipped = 1; if (b.status === 'ocr' || b.status === 'partial') b.status = 'ready'; await DB.put('books', b); }
+  return n;
+}
+
+async function queueEmbeds() {
+  const queued = new Set((await DB.all('queue')).filter(j => j.kind === 'embed' && j.status !== 'done').map(j => j.payload.bookId));
+  let n = 0;
+  for (const b of await DB.all('books')) {
+    if (!['ref', 'mbbs', 'amc', 'reader'].includes(b.role) || queued.has(b.id)) continue;
+    const pages = await DB.count('pages', 'bookId', b.id); if (!pages) continue;
+    const vecPages = new Set(); await DB.each('vecs', 'bookId', b.id, v => { if (v.c === 0) vecPages.add(v.p); });
+    if (vecPages.size < pages) { await Queue.add('embed', { bookId: b.id }, 1.7); n++; }
+  }
   return n;
 }
 

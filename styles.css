@@ -385,5 +385,6 @@ a.topic-row:hover { background: var(--surface-2); }
 @media (max-width: 640px) { .wrow { grid-template-columns: 22px minmax(0, 1fr) 44px; } .wbar { grid-column: 2 / 3; grid-row: 2; } }
 
 /* Ask your books */
-.bookquote { margin: 10px 0; padding: 10px 14px; border-left: 3px solid var(--accent); background: var(--sunk); border-radius: 0 8px 8px 0; font-family: Georgia, 'Times New Roman', serif; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.bookquote { margin: 10px 0; padding: 10px 14px; border-left: 3px solid var(--accent); background: var(--sunk); border-radius: 0 8px 8px 0; font-family: Georgia, 'Times New Roman', serif; line-height: 1.6; overflow-wrap: anywhere; max-width: 75ch; }
+.bookquote mark { background: var(--accent-soft); color: inherit; padding: 0 2px; border-radius: 3px; font-weight: 600; }
 .quote-card .role { flex: none; }

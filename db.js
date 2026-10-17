@@ -6,7 +6,7 @@ let _db;
 function openDB() {
   if (_db) return Promise.resolve(_db);
   return new Promise((res, rej) => {
-    const r = indexedDB.open('amc-engine', 1);
+    const r = indexedDB.open('amc-engine', 2);
     r.onupgradeneeded = () => {
       const db = r.result;
       const mk = (n, opts, idx = []) => {
@@ -27,8 +27,10 @@ function openDB() {
       mk('tests', { keyPath: 'id' }, [['dirty', '_dirty']]);
       mk('notes', { keyPath: 'id' }, [['dirty', '_dirty']]);
       mk('prefs', { keyPath: 'id' }, [['dirty', '_dirty']]);
+      mk('vecs', { keyPath: ['bookId', 'p', 'c'] }, [['bookId', 'bookId']]); // offline AI search index
     };
-    r.onsuccess = () => { _db = r.result; res(_db); };
+    r.onblocked = () => { try { toast('Close the app’s other tabs, then reload, to finish updating.', 8000); } catch (e) {} };
+    r.onsuccess = () => { _db = r.result; _db.onversionchange = () => { _db.close(); location.reload(); }; res(_db); };
     r.onerror = () => rej(r.error);
   });
 }

@@ -483,6 +483,7 @@ async function runSearch(q) {
   try { const r = JSON.parse(localStorage.getItem('recentSearch') || '[]').filter(x => x !== q); r.unshift(q); localStorage.setItem('recentSearch', JSON.stringify(r.slice(0, 8))); } catch (e) {}
   const out = () => $('#search-out');
   const show = st => { Views._lastSearch = st; if (out()) out().innerHTML = searchResultsHtml(st); };
+  if (!Semantic.pipe && (await DB.count('vecs'))) await Semantic.load(msg => show({ q, waiting: msg })).catch(() => {});
   show({ q, waiting: 'Searching your books…' });
   let results = await searchBooks(q).catch(() => []), where = 'here';
   if (!results.length && Sync.on() && !(await DB.all('books')).some(b => ['ref', 'mbbs', 'amc'].includes(b.role))) {
@@ -660,6 +661,7 @@ async function init() {
   Queue.kick();
   if (Sync.on()) { setInterval(() => PageRelay.serve(), 15000); setTimeout(() => PageRelay.serve(), 5000); }
   setTimeout(() => Queue.autoRetry().catch(console.warn), 60000); setInterval(() => Queue.autoRetry().catch(console.warn), 2 * 3600000);
+  setTimeout(() => queueEmbeds().then(n => n && Queue.kick()).catch(console.warn), 30000); setInterval(() => queueEmbeds().then(n => n && Queue.kick()).catch(console.warn), 3600000);
   setTimeout(() => queueRefs().catch(console.warn), 20000); setInterval(() => queueRefs().catch(console.warn), 3600000);
   if (Sync.on()) { Sync.run(); setInterval(() => Sync.run(), 120000); document.addEventListener('visibilitychange', () => { if (!document.hidden) Sync.run(); }); }
   else Sync.set('off');

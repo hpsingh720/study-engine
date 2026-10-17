@@ -532,19 +532,33 @@ function queueLine() {
 }
 
 // ---------------- Ask your books ----------------
+async function aiSearchStatus() {
+  const n = await DB.count('vecs').catch(() => 0);
+  if (Semantic.failed) return `<p class="muted small mt">Offline AI search couldn’t start (${esc(Semantic.failed.slice(0, 80))}) — word search still works.</p>`;
+  return n ? `<p class="muted small mt">✓ Offline AI search on — it matches meaning, not just words (${n.toLocaleString()} passages ready; works without internet).</p>`
+    : `<p class="muted small mt">Offline AI search is being prepared in the background (on the laptop, or for reading copies on this device). Until then, word search is used.</p>`;
+}
 Views.search = async () => {
   let recent = []; try { recent = JSON.parse(localStorage.getItem('recentSearch') || '[]'); } catch (e) {}
   const last = Views._lastSearch;
   return `<div class="page"><header class="page-head"><div><p class="eyebrow">Exact lines from your own books</p><h1>Ask your books</h1></div></header>
-    <form class="card" data-submit="doSearch"><div class="row gap wrap"><input id="search-q" name="q" placeholder="e.g. define normal labour · stages of labour · Bishop score" value="${esc(last?.q || '')}" style="flex:1;min-width:0" autocomplete="off"><button class="btn primary">Search</button></div>
+    <form class="card" data-submit="doSearch"><div class="row gap wrap"><input id="search-q" name="q" placeholder="e.g. define normal labour · hernioplasty from B&L · stages of labour in Dutta" value="${esc(last?.q || '')}" style="flex:1;min-width:0" autocomplete="off"><button class="btn primary">Search</button></div>
     ${recent.length ? `<div class="chips mt">${recent.map(r => `<button type="button" class="chip" data-act="searchAgain" data-q="${esc(r)}">${esc(r)}</button>`).join('')}</div>` : ''}</form>
+    ${await aiSearchStatus()}
     <div id="search-out" class="mt">${last ? searchResultsHtml(last) : '<p class="muted">Type what the teacher asked. You get the book’s own words with the page number, then an optional simple explanation.</p>'}</div></div>`;
 };
+function markTerms(html, terms) {
+  for (const t of (terms || []).filter(t => t.length > 2)) {
+    const re = new RegExp('(' + t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + (t.length >= 8 ? '|' + t.slice(0, 5) + '[a-z]*' : '') + ')', 'gi');
+    html = html.replace(re, '<mark>$1</mark>');
+  }
+  return html;
+}
 function searchResultsHtml(r) {
   if (r.waiting) return `<p class="muted"><span class="spin"></span>${esc(r.waiting)}</p>`;
   if (!r.results?.length) return `<div class="card"><p>Nothing found for “${esc(r.q)}” in ${r.where === 'laptop' ? 'your laptop’s books' : 'the books on this device'}.</p><p class="muted small">Try fewer, simpler words (e.g. “normal labour”), or ask the AI.</p><button class="btn" data-act="explainSearch">Ask the AI anyway</button></div>`;
   return `${r.results.map(x => `<article class="card mt quote-card"><div class="row between wrap gap"><button class="linkbtn" data-act="openRef" data-book="${x.bookId}" data-size="${x.size || ''}" data-p="${x.p}">${esc(x.book)} — page ${x.p}</button><span class="role role-${x.role}">${esc(ROLES[x.role] || '')}</span></div>
-      <blockquote class="bookquote">${esc(x.passage)}</blockquote>
+      <blockquote class="bookquote">${markTerms(esc(x.passage), x.terms)}</blockquote>
       <button class="btn sm ghost" data-act="copyQuote" data-t="${esc(`${x.passage} (${x.book}, p.${x.p})`)}">Copy with reference</button></article>`).join('')}
     <section class="card mt"><div class="row between wrap gap"><h3>In simple words</h3><button class="btn primary sm" data-act="explainSearch">Explain with AI</button></div><div id="search-ai" class="read">${r.ai ? md(r.ai) : '<p class="muted small">Gives the exact book line first, then a simple explanation and the points examiners expect.</p>'}</div></section>`;
 }

@@ -369,40 +369,96 @@ Return JSON {"read":[{"ref":"[Book p.N]","why":"what to read there, in a few wor
 }
 
 // "Ask your books": find the exact lines in your own books that answer a question (e.g. "define normal labour").
-const SEARCH_STOP = new Set(['what', 'is', 'are', 'the', 'of', 'a', 'an', 'in', 'on', 'for', 'and', 'or', 'to', 'define', 'definition', 'defined', 'meaning', 'explain', 'describe', 'about', 'tell', 'me', 'give', 'with', 'its', 'how', 'why', 'which', 'when']);
+const SEARCH_STOP = new Set(('what is are the of a an in on for and or to by from with as at per acc according its it this that these those how why which when where who whom ' +
+  'define definition defined meaning means explain describe description about tell me give list write short note notes book books page chapter text textbook ' +
+  'mention mentioned regarding related do does did can could should would will use used using also into than then there their your my our').split(' '));
+// Short names people use for their books → words to match in the book title.
+const BOOK_ALIASES = { 'b and l': 'bailey', 'b&l': 'bailey', 'bl': 'bailey', 'bailey': 'bailey', 'love': 'bailey', 'srb': 'srb', 'dutta': 'dutta', 'dc dutta': 'dutta', 'harrison': 'harrison', 'davidson': 'davidson', 'murtagh': 'murtagh', 'williams': 'williams', 'ghai': 'ghai', 'op ghai': 'ghai', 'nelson': 'nelson', 'kumar': 'kumar', 'robbins': 'robbins', 'guyton': 'guyton', 'park': 'park', 'red book': 'redbook', 'austroads': 'austroads', 'handbook': 'handbook', 'anthology': 'anthology' };
+function pickBook(q, books) {
+  // "... from b and l", "... in Dutta", "acc to Harrison"
+  const m = q.match(/\b(?:from|in|acc(?:ording)?(?: to)?|as per|per)\s+([a-z&. ]{1,30})$/);
+  const tail = (m ? m[1] : '').replace(/\./g, '').trim();
+  if (!tail) return { q, filter: null };
+  const key = BOOK_ALIASES[tail] || tail.split(' ').find(w => w.length > 3 && books.some(b => (b.name || '').toLowerCase().includes(w)));
+  const hits = key ? books.filter(b => (b.name || '').toLowerCase().replace(/[^a-z]/g, '').includes(key.replace(/[^a-z]/g, ''))) : [];
+  return hits.length ? { q: q.slice(0, m.index).trim(), filter: new Set(hits.map(b => b.id)) } : { q, filter: null };
+}
 async function searchBooks(query, max = 6) {
-  const q = query.toLowerCase().replace(/[^a-z0-9\s'-]/g, ' ');
-  const wantDef = /defin|what is|what are|meaning|means/.test(q);
-  const words = q.split(/\s+/).filter(w => w.length > 2 && !SEARCH_STOP.has(w));
+  let q = query.toLowerCase().replace(/[^a-z0-9\s&'.-]/g, ' ').replace(/\s+/g, ' ').trim();
+  const allBooks = (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc', 'reader'].includes(b.role));
+  const pick = pickBook(q, allBooks); q = pick.q;
+  const wantDef = /defin|what is|what are|meaning|means/.test(query.toLowerCase());
+  const words = [...new Set(q.replace(/[&.]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !SEARCH_STOP.has(w)))];
   if (!words.length) return [];
+  // Word families: "hernioplasty" also finds hernia / herniorrhaphy.
+  const stems = words.filter(w => w.length >= 8).map(w => w.slice(0, 5));
   const phrase = words.join(' ');
-  const terms = topicTerms({ name: '', kw: [...new Set([...(words.length > 1 ? [phrase] : []), ...words])] });
-  const books = (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc', 'reader'].includes(b.role));
+  const terms = topicTerms({ name: '', kw: [...new Set([...(words.length > 1 ? [phrase] : []), ...words, ...stems])] });
+  const books = pick.filter ? allBooks.filter(b => pick.filter.has(b.id)) : allBooks;
+  const has = (lt, w) => lt.includes(w) || (w.length >= 8 && lt.includes(w.slice(0, 5)));
   let top = [];
   for (const b of books) {
     await DB.each('pages', 'bookId', b.id, pg => {
-      const sc = scorePage(pg.text, terms);
+      const lt = pg.text.toLowerCase();
+      const n = words.filter(w => has(lt, w)).length;
+      if (!n || (words.length >= 2 && n < Math.ceil(words.length / 2))) return; // the page must contain the main words
+      const sc = scorePage(pg.text, terms) * (1 + n);
       if (sc > 0) { top.push({ s: sc, bookId: b.id, size: b.size, p: pg.p, book: b.short || b.name, role: b.role, text: pg.text }); if (top.length > 120) { top.sort((x, y) => y.s - x.s); top.length = 40; } }
     });
+  }
+  // Offline AI: add pages whose MEANING matches, even without the exact words.
+  const sem = await semanticHits(q, books).catch(() => []);
+  const byKey = new Map(top.map(t => [t.bookId + ':' + t.p, t]));
+  const maxS = Math.max(1, ...top.map(t => t.s));
+  for (const h of sem) {
+    const k = h.bookId + ':' + h.p, cur = byKey.get(k);
+    if (cur) { cur.s += h.sim * maxS * 1.5; cur.semOff = h.off; }
+    else if (h.sim > 0.42) { const pg = await DB.get('pages', [h.bookId, h.p]); const b = books.find(x => x.id === h.bookId); if (pg && b) { const t = { s: h.sim * maxS * 1.2, bookId: b.id, size: b.size, p: h.p, book: b.short || b.name, role: b.role, text: pg.text, semOff: h.off }; top.push(t); byKey.set(k, t); } }
   }
   top.sort((x, y) => y.s - x.s); top = top.slice(0, 40);
   const res = [];
   for (const pg of top) {
-    const sents = pg.text.replace(/\s+\n/g, '\n').split(/(?<=[.!?])\s+|\n{2,}/).map(x => x.trim()).filter(x => x.length > 15);
-    let best = null;
-    for (let i = 0; i < sents.length; i++) {
-      const win = sents.slice(i, i + 3).join(' ');
-      const lw = win.toLowerCase();
-      let sc = 0; for (const w of words) if (lw.includes(w)) sc += 2;
-      if (words.length > 1 && lw.includes(phrase)) sc += 6;
-      if (wantDef && /is defined as|defined as|definition|refers to|is the process|is a |is an |means /.test(lw)) sc += 5;
-      if (!best || sc > best.sc) best = { sc, text: win };
+    // Cut out the few lines around the best match (not the whole page).
+    const text = pg.text.replace(/[ \t]+/g, ' '), lt = text.toLowerCase();
+    let bestPos = -1, bestSc = -1;
+    for (const w of [...(words.length > 1 ? [phrase] : []), ...words, ...stems]) {
+      let i = lt.indexOf(w);
+      while (i >= 0) {
+        const win = lt.slice(Math.max(0, i - 250), i + 350);
+        let sc = 0; for (const x of words) if (has(win, x)) sc += 3;
+        if (words.length > 1 && win.includes(phrase)) sc += 6;
+        if (wantDef && /is defined as|defined as|definition|refers to|is the process|is a |is an |means |consists of/.test(win)) sc += 5;
+        if (sc > bestSc) { bestSc = sc; bestPos = i; }
+        i = lt.indexOf(w, i + w.length);
+      }
     }
-    if (best && best.sc > 0) res.push({ book: pg.book, bookId: pg.bookId, size: pg.size, p: pg.p, role: pg.role, passage: best.text.slice(0, 900), score: best.sc * 3 + pg.s });
+    if (bestPos < 0 && pg.semOff != null) { bestPos = Math.min(text.length - 1, pg.semOff + 40); bestSc = 4; }
+    if (bestPos < 0) continue;
+    let a2 = Math.max(0, bestPos - 220), b2 = Math.min(text.length, bestPos + 420);
+    const before = text.lastIndexOf('. ', bestPos); if (before > a2 - 120 && before >= 0) a2 = Math.max(0, before + 2);
+    const after = text.indexOf('. ', bestPos + 120); if (after > 0 && after < b2 + 150) b2 = after + 1;
+    const passage = (a2 > 0 ? '…' : '') + text.slice(a2, b2).replace(/\n+/g, ' ').trim() + (b2 < text.length ? '…' : '');
+    res.push({ book: pg.book, bookId: pg.bookId, size: pg.size, p: pg.p, role: pg.role, passage, terms: words, score: bestSc * 4 + pg.s });
   }
   res.sort((x, y) => y.score - x.score);
   const per = {}, out = [];
-  for (const r of res) { if ((per[r.bookId] = (per[r.bookId] || 0) + 1) > 2) continue; out.push(r); if (out.length >= max) break; }
+  for (const r of res) { if ((per[r.bookId] = (per[r.bookId] || 0) + 1) > (pick.filter ? 4 : 2)) continue; out.push(r); if (out.length >= max) break; }
+  return out;
+}
+
+async function semanticHits(q, books) {
+  if (!(await DB.count('vecs'))) return [];
+  const [qv] = await Semantic.embed([q]);
+  const allow = new Set(books.map(b => b.id)), hits = [];
+  await DB.each('vecs', null, null, v => {
+    if (!allow.has(v.bookId)) return;
+    let dot = 0; const a = v.v; for (let i = 0; i < a.length; i++) dot += a[i] * qv[i];
+    const sim = dot / 127;
+    if (sim > 0.3) { hits.push({ bookId: v.bookId, p: v.p, off: v.off, sim }); if (hits.length > 400) { hits.sort((x, y) => y.sim - x.sim); hits.length = 120; } }
+  });
+  hits.sort((x, y) => y.sim - x.sim);
+  const seen = new Set(), out = [];
+  for (const h of hits) { const k = h.bookId + ':' + h.p; if (seen.has(k)) continue; seen.add(k); out.push(h); if (out.length >= 25) break; }
   return out;
 }
 
