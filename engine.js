@@ -507,9 +507,10 @@ const Queue = {
   async next(lane, prov) {
     const pend = (await DB.byIndex('queue', 'status', 'pending')).filter(j => !this.claimed.has(j.id));
     let c = pend.filter(j => this.accepts(lane, j, prov));
-    this._localBusy = pend.some(j => j.lane === 'local');
+    this._localBusy = pend.some(j => j.kind === 'extract');
     if (lane === 'ai') {
-      const localBusy = pend.some(j => j.lane === 'local') || (await DB.byIndex('queue', 'status', 'running')).some(j => j.lane === 'local');
+      // Only wait while books are still being opened (minutes) — not for the scanned-page reading, which can take days.
+      const localBusy = pend.some(j => j.kind === 'extract') || (await DB.byIndex('queue', 'status', 'running')).some(j => j.kind === 'extract');
       // Only the big "every topic" batch waits for the scanned books; topics you asked for yourself go first.
       if (localBusy) c = c.filter(j => (j.kind !== 'sheet' && j.kind !== 'mcqgen') || j.prio < 6);
     }

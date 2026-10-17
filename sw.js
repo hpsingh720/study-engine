@@ -1,5 +1,5 @@
 // Offline support: cache the app shell and libraries; never cache API calls.
-const CACHE = 'study-engine-v43';
+const CACHE = 'study-engine-v44';
 const SHELL = ['./', 'index.html', 'styles.css', 'manifest.webmanifest', 'icon.svg', 'icon-180.png', 'icon-512.png',
   'util.js', 'seed.js', 'db.js', 'ai.js', 'providers.js', 'engine.js', 'sync.js', 'practice.js', 'planner.js', 'notes.js', 'views.js', 'app.js',
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'];
