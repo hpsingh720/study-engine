@@ -23,6 +23,7 @@ const Providers = {
     return p.viaRelay && this.relay() ? this.relay() + '/?u=' + encodeURIComponent(target) : target;
   },
   async send(p, path, init) {
+    if (!init.signal && window.AbortSignal?.timeout) init = { ...init, signal: AbortSignal.timeout(240000) }; // never hang for ever on a stuck network
     const direct = p.base.replace(/\/$/, '') + path;
     const relayed = this.relay() ? this.relay() + '/?u=' + encodeURIComponent(direct) : null;
     const first = p.viaRelay && relayed ? relayed : direct, second = first === direct ? relayed : direct;

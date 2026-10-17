@@ -604,7 +604,7 @@ Views.settings = async () => {
       <div class="form-row"><label>API key<input type="password" name="key_${p.id}" value="${esc(p.key || '')}" autocomplete="off"></label>
       <label>Model<input name="model_${p.id}" list="pm_${p.id}" value="${esc(p.model || '')}" placeholder="click Test to choose"><datalist id="pm_${p.id}"></datalist></label>
       <label>Requests / minute<input type="number" min="1" max="60" name="rpm_${p.id}" value="${p.rpm}"></label></div>
-      <div class="row gap mt"><button type="button" class="btn sm" data-act="testProvider" data-id="${p.id}">Test</button><span class="muted small" id="pmsg_${p.id}">${p.key && p.model ? (p.on === false ? 'Off' : 'Active') : ''}</span></div>
+      <div class="row gap mt"><button type="button" class="btn sm" data-act="testProvider" data-id="${p.id}">Test</button><span class="muted small" id="pmsg_${p.id}">${(window._pmsg || {})[p.id] ? esc(window._pmsg[p.id]) : p.key && p.model ? (p.on === false ? 'Off' : 'Active') : ''}</span></div>
     </div>`).join('')}
     <div class="prov"><b>Relay — for services that block browser apps (NVIDIA, GitHub), and WiFi that blocks Gemini</b>
       <p class="muted small">A tiny free helper on your own Cloudflare account that passes the messages through. One-time, 5 minutes, no card:<br>

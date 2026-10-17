@@ -38,7 +38,7 @@ const App = {
       const h = location.hash;
       const typing = document.activeElement && /TEXTAREA|INPUT|SELECT/.test(document.activeElement.tagName);
       if (h === '#/session' || typing || Views._edit || $('#modal').classList.contains('open')) return;
-      if (h.includes('/notes')) return;
+      if (h.includes('/notes') || h.includes('/settings')) return; // don't wipe Test results while you're in Settings
       this.render(true);
     }, 600);
   },
@@ -391,12 +391,13 @@ const A = {
     catch (e) { msg.textContent = 'Problem: ' + e.message; }
   },
   async testProvider(el) {
-    const id = el.dataset.id, msg = $('#pmsg_' + id);
+    const id = el.dataset.id;
+    const say = t => { (window._pmsg = window._pmsg || {})[id] = t; const e = $('#pmsg_' + id); if (e) e.textContent = t; };
     const key = $(`input[name=key_${id}]`).value.trim(); let model = $(`input[name=model_${id}]`).value.trim();
     const baseIn = $(`input[name=base_${id}]`); const nameIn = $(`input[name=name_${id}]`);
     Providers.save(id, { key, ...(baseIn ? { base: baseIn.value.trim() } : {}), ...(nameIn && nameIn.value.trim() ? { name: nameIn.value.trim() } : {}) });
-    if (baseIn && !baseIn.value.trim()) { msg.textContent = 'Paste the address first (it ends in /v1).'; return; }
-    msg.textContent = 'Checking…';
+    if (baseIn && !baseIn.value.trim()) { say('Paste the address first (it ends in /v1).'); return; }
+    say('Checking…');
     try {
       const p = Providers.get(id);
       let ms = []; try { ms = await Providers.models(p); } catch (e) {}
@@ -417,7 +418,7 @@ const A = {
         const score = m => (/vl|vision|4\.1v|4\.5v|glm-4v|pixtral|scout/i.test(m) ? 0 : 10) + (/(^|[^0-9])(7|8|9)b/i.test(m) ? 0 : /(1\.5|3|4)b/i.test(m) ? 2 : 4) + (/embed|rerank|bge|whisper|tts|speech|flux|stable-diffusion|kolors|wan|video|image-/i.test(m) ? 100 : 0);
         const cands = ms.filter(m => m !== model).sort((x, y) => score(x) - score(y)).filter(m => score(m) < 100).slice(0, 15);
         for (const m of cands) {
-          msg.textContent = `That model is paid — trying ${m}…`;
+          say(`That model is paid — trying ${m}…`);
           Providers.save(id, { model: m }); model = m; $(`input[name=model_${id}]`).value = m;
           try { out = await ping(); break; } catch (e2) { if (!/balance|insufficient|credit|payment|billing|not free|upgrade|permission|not have access|not found|does not exist|json/i.test(e2.message)) throw e2; }
         }
@@ -430,9 +431,9 @@ const A = {
         try { const t = await Providers.call(Providers.get(id), { prompt: 'What colour is this square? One word.', images: [c.toDataURL('image/png')], json: false, maxTokens: 20 }); vision = /red/i.test(t); } catch (e) { vision = false; }
       }
       Providers.save(id, { vision });
-      msg.textContent = out.ok ? `Works with ${model}${vision ? ' — reads images too' : ' — text only (pick a vision model from the list for scanned pages)'}. Saved, it will start helping now.` : 'Replied, but oddly — try another model.';
+      say(out.ok ? `Works with ${model}${vision ? ' — reads images too' : ' — text only (pick a vision model from the list for scanned pages)'}. Saved, it will start helping now.` : 'Replied, but oddly — try another model.');
       Queue.kick();
-    } catch (e) { msg.textContent = 'Problem: ' + e.message; }
+    } catch (e) { say('Problem: ' + e.message); }
   },
   async copyRelay() {
     let code = '';
