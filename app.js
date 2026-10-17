@@ -304,6 +304,11 @@ const A = {
     if (file) { try { const c = await renderPage(book, p, 1400); c.style.width = '100%'; c.style.height = 'auto'; $('#ref-img').appendChild(c); } catch (e) {} }
     else if (!pg) $('#ref-img').innerHTML = '<p class="muted">This book’s pages are only on your laptop.</p>';
   },
+  async skipOcr(el) {
+    const b = await DB.get('books', el.dataset.id); if (!b) return;
+    openModal(`<h3>Skip reading “${esc(b.short || b.name)}”?</h3><p>The pages already read stay and are used in your sheets. The rest of this scanned book won’t be read, which frees the laptop for your other books.</p><div class="row gap end mt"><button class="btn" data-act="closeModal">Keep reading</button><button class="btn primary" data-act="skipOcrYes" data-id="${b.id}">Skip reading</button></div>`);
+  },
+  async skipOcrYes(el) { const n = await skipOcr(el.dataset.id); closeModal(); toast(`Stopped reading that book (${n} batches removed)`); App.render(true); },
   wAll() { sessionStorage.setItem('wAll', sessionStorage.getItem('wAll') === '1' ? '' : '1'); App.render(true); },
   async flagQ() {
     const s = Practice.s; const m = await DB.get('mcqs', s.qs[s.idx]); m.flagged = 1; await DB.put('mcqs', m);

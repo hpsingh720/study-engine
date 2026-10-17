@@ -257,9 +257,9 @@ const Handlers = {
       if (job.payload.then === 'mcqtext') await addMcqText(book.id, job.payload.pages, 1);
       return;
     }
-    const worker = await getOcrWorker(ctx?.lane || 'local');
     for (const p of job.payload.pages) {
       if (done.includes(p)) continue;
+      const worker = await getOcrWorker(ctx?.lane || 'local'); _ocrUses[ctx?.lane || 'local'] = (_ocrUses[ctx?.lane || 'local'] || 0) + 1;
       Queue.setStatus(ctx?.lane || 'local', `OCR ${book.short} — page ${p}`);
       // Pages that timed out before get drawn smaller on the retry, so they finish.
       const canvas = await renderPage(book, p, (job.tries || job.rounds) ? 1200 : 1700);
@@ -450,7 +450,10 @@ async function saveImported(raw, book, firstPage, canvases, scannedSrc) {
 }
 
 const _ocrWorkers = {};
+const _ocrUses = {};
 async function getOcrWorker(lane = 'local') {
+  // The OCR engine slows down as it builds up memory: start a fresh one every 60 pages.
+  if (_ocrWorkers[lane] && (_ocrUses[lane] || 0) >= 60) { const w = _ocrWorkers[lane]; delete _ocrWorkers[lane]; _ocrUses[lane] = 0; try { await w.terminate(); } catch (e) {} }
   if (_ocrWorkers[lane]) return _ocrWorkers[lane];
   if (!window.Tesseract) {
     await new Promise((res, rej) => {
@@ -699,6 +702,18 @@ async function queueRefs() {
   const pagesNow = await DB.count('pages');
   const need = new Set(); for (const m of await DB.all('mcqs')) if (!m.deleted && m.topicId && (!m.refs || (m.refsN || 0) < pagesNow * 0.9)) need.add(m.topicId);
   let n = 0; for (const t of need) if (!queued.has(t)) { await Queue.add('refs', { topicId: t }, 1.5); n++; }
+  return n;
+}
+
+// Stop reading a scanned book (pages already read are kept and used).
+async function skipOcr(bookId) {
+  let n = 0;
+  for (const j of await DB.all('queue')) if (j.kind === 'ocr' && j.payload?.bookId === bookId && j.status !== 'done') {
+    // Question banks still import what was read so far.
+    if (j.payload.then === 'mcqtext' && (j.payload.done || []).length) await addMcqText(bookId, j.payload.done, 1);
+    await DB.del('queue', j.id); n++;
+  }
+  const b = await DB.get('books', bookId); if (b) { b.ocrSkipped = 1; if (b.status === 'ocr' || b.status === 'partial') b.status = 'ready'; await DB.put('books', b); }
   return n;
 }
 
