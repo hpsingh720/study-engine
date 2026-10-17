@@ -261,7 +261,8 @@ const Handlers = {
     for (const p of job.payload.pages) {
       if (done.includes(p)) continue;
       Queue.setStatus(ctx?.lane || 'local', `OCR ${book.short} — page ${p}`);
-      const canvas = await renderPage(book, p, 1700);
+      // Pages that timed out before get drawn smaller on the retry, so they finish.
+      const canvas = await renderPage(book, p, (job.tries || job.rounds) ? 1200 : 1700);
       const { data } = await worker.recognize(canvas);
       const text = (data.text || '').replace(/[ \t]+/g, ' ').trim();
       if (text.length > 30) await DB.put('pages', { bookId: book.id, p, text, ocr: 1 });

@@ -452,7 +452,16 @@ Views.library = async () => {
   const [books, qc, est, allQ] = await Promise.all([DB.all('books'), Queue.counts(), navigator.storage?.estimate?.() || Promise.resolve(null), DB.live('mcqs')]);
   const qByBook = {}; allQ.forEach(m => { const k = (m.src || '').replace(/ p\.\d+$/, ''); qByBook[k] = (qByBook[k] || 0) + 1; });
   const staged = App.staged || [];
-  const kindTotals = Object.entries(qc.byKind).map(([k, v]) => `<div class="qk"><span>${JOB_LABEL[k]}</span><b>${v.done}</b><small>/ ${v.done + v.pending + v.running + v.failed}${v.failed ? ` · ${v.failed} failed` : ''}</small></div>`).join('');
+  // Scanned pages: count real pages (jobs hold 4–10 pages each) and estimate the time left from the last hour's speed.
+  let ocrBox = '';
+  if (qc.byKind.ocr) {
+    let tot = 0, dn = 0, failedPages = 0;
+    for (const j of qc.all) if (j.kind === 'ocr') { const n = j.payload.pages.length; tot += n; if (j.status === 'done') dn += n; else { dn += (j.payload.done || []).length; if (j.status === 'failed') failedPages += n - (j.payload.done || []).length; } }
+    const rate = (Queue.ocrTimes || []).filter(t => t > Date.now() - 3600e3).length, left = tot - dn;
+    const eta = rate >= 5 && left ? (left / rate < 48 ? `about ${Math.ceil(left / rate)} h left` : `about ${Math.ceil(left / rate / 24)} days left`) : '';
+    ocrBox = `<div class="qk"><span>Scanned pages read</span><b>${dn.toLocaleString()}</b><small>/ ${tot.toLocaleString()} pages${eta ? ' · ' + eta : ''}${failedPages ? ` · ${failedPages} to retry` : ''}</small></div>`;
+  }
+  const kindTotals = ocrBox + Object.entries(qc.byKind).filter(([k]) => k !== 'ocr').map(([k, v]) => `<div class="qk"><span>${JOB_LABEL[k]}</span><b>${v.done}</b><small>/ ${v.done + v.pending + v.running + v.failed}${v.failed ? ` · ${v.failed} failed` : ''}</small></div>`).join('');
   const failed = qc.all.filter(j => j.status === 'failed').slice(0, 6);
   return `<div class="page"><header class="page-head"><div><p class="eyebrow">Books stay on this device · ${est ? (est.usage / 1e9).toFixed(1) + ' GB used of ' + (est.quota / 1e9).toFixed(0) + ' GB available' : ''}</p><h1>Library</h1></div></header>
   <section class="card">
