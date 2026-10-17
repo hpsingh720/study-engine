@@ -70,9 +70,10 @@ const Providers = {
     } catch (e) { throw new QuotaError(`${p.name}: could not connect — ${this.relay() ? 'even through your relay (check the relay address)' : 'this service blocks browser apps. Set up the free relay (below) and Test again'}`, false, 60000); }
     const raw = await res.text().catch(() => '');
     let d = {}; try { d = JSON.parse(raw); } catch (e) {}
+    if (Array.isArray(d)) d = d[0] || {}; // Gemini sometimes wraps errors in a list
     if (res.ok && !d.choices) throw new Error(`${p.name}: unexpected reply — "${raw.replace(/\s+/g, ' ').slice(0, 120)}"${p.viaRelay ? ' (through your relay — click Test relay)' : ''}`);
     if (!res.ok) {
-      const msg = d.error?.message || d.message || d.detail || ('HTTP ' + res.status);
+      const msg = d.error?.message || d.message || d.detail || ('HTTP ' + res.status + (raw ? ' — ' + raw.replace(/\s+/g, ' ').slice(0, 160) : ''));
       if (res.status === 429) {
         const ra = +res.headers.get('retry-after') || 30;
         throw new QuotaError(`${p.name}: ${msg}`, /day|daily|quota|tokens per/i.test(msg), ra * 1000 + 1000);

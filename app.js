@@ -401,9 +401,9 @@ const A = {
     try {
       const p = Providers.get(id);
       let ms = []; try { ms = await Providers.models(p); } catch (e) {}
+      const gver = m => parseFloat((m.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1] || 0);
       if (ms.length) $('#pm_' + id).innerHTML = ms.map(m => `<option value="${esc(m)}">`).join('');
       if (!model || (ms.length && !ms.includes(model))) {
-        const gver = m => parseFloat((m.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1] || 0);
         const gem = ms.filter(m => /^gemini-\d/.test(m) && /flash/.test(m) && !/lite|tts|image|audio|live|embedding|thinking|computer|robotics|native/i.test(m)).sort((a, b) => gver(b) - gver(a) || (/preview|exp/.test(a) ? 1 : 0) - (/preview|exp/.test(b) ? 1 : 0) || a.length - b.length);
         const pick = (/generativelanguage/.test(p.base) ? gem[0] : null) || ((p.vision || p.custom) ? ms.find(m => /scout|maverick|pixtral|mistral-small|vision|-vl|glm-4v|4\.1-mini|4o-mini/i.test(m)) : null) || ms.find(m => /:free$/.test(m) && /llama|qwen|gemma|mistral|deepseek/i.test(m)) || ms.find(m => /llama|qwen|gpt-oss/i.test(m)) || ms[0] || p.model;
         model = pick || ''; $(`input[name=model_${id}]`).value = model;
@@ -414,13 +414,15 @@ const A = {
       try { out = await ping(); }
       catch (e) {
         // "Balance insufficient" = this model is paid. Try the others until a free one answers, image-reading ones first.
-        if (!/balance|insufficient|credit|payment|billing|not free|upgrade|quota|permission|not have access|not found|does not exist/i.test(e.message) || !ms.length) throw e;
+        if (!/balance|insufficient|credit|payment|billing|not free|upgrade|quota|permission|not have access|not found|does not exist|429|rate|exhaust|limit/i.test(e.message) || !ms.length) throw e;
         const score = m => (/vl|vision|4\.1v|4\.5v|glm-4v|pixtral|scout/i.test(m) ? 0 : 10) + (/(^|[^0-9])(7|8|9)b/i.test(m) ? 0 : /(1\.5|3|4)b/i.test(m) ? 2 : 4) + (/embed|rerank|bge|whisper|tts|speech|flux|stable-diffusion|kolors|wan|video|image-/i.test(m) ? 100 : 0);
-        const cands = ms.filter(m => m !== model).sort((x, y) => score(x) - score(y)).filter(m => score(m) < 100).slice(0, 15);
+        // Gemini: newest Flash models often have no free allowance — try the others, newest first, then Flash-Lite.
+        const gAll = /generativelanguage/.test(p.base) ? ms.filter(m => /^gemini-\d/.test(m) && /flash/.test(m) && !/tts|image|audio|live|embedding|thinking|computer|robotics|native/i.test(m)).sort((a, b) => (/lite/.test(a) ? 1 : 0) - (/lite/.test(b) ? 1 : 0) || gver(b) - gver(a) || a.length - b.length) : null;
+        const cands = gAll ? gAll.filter(m => m !== model).slice(0, 12) : ms.filter(m => m !== model).sort((x, y) => score(x) - score(y)).filter(m => score(m) < 100).slice(0, 15);
         for (const m of cands) {
-          say(`That model is paid — trying ${m}…`);
+          say(`${model} didn't answer (${e.message.slice(0, 60)}) — trying ${m}…`);
           Providers.save(id, { model: m }); model = m; $(`input[name=model_${id}]`).value = m;
-          try { out = await ping(); break; } catch (e2) { if (!/balance|insufficient|credit|payment|billing|not free|upgrade|permission|not have access|not found|does not exist|json/i.test(e2.message)) throw e2; }
+          try { out = await ping(); break; } catch (e2) { if (!/balance|insufficient|credit|payment|billing|not free|upgrade|permission|not have access|not found|does not exist|json|429|rate|exhaust|limit|quota/i.test(e2.message)) throw e2; }
         }
         if (!out) throw new Error('none of the free models answered. Check the Models page on their site for ones marked “Free”, type the exact name in Model, and Test again.');
       }
