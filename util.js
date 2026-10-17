@@ -1,4 +1,4 @@
-const APP_VERSION = 'v48';
+const APP_VERSION = 'v51';
 // Small helpers shared across the app.
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];

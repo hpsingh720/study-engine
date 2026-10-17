@@ -1,6 +1,7 @@
 // Book ingestion + background job queue.
 // Two lanes run side by side: "local" (text extraction, OCR — free, no AI) and "ai" (Gemini calls, rate-limited).
 const LOCAL_KINDS = ['extract', 'ocr', 'refs', 'embed'];
+const coolMode = () => (+localStorage.getItem('ocrWorkers') || 2) === 1; // 'Cool' laptop setting: one reader with rests
 const JOB_LABEL = {
   refs: 'Linking questions to book pages',
   embed: 'Preparing offline AI search',
@@ -151,7 +152,7 @@ const Handlers = {
     for (const pg of pages) {
       if (await DB.get('vecs', [book.id, pg.p, 0])) continue;
       Semantic.chunks(pg.text).forEach((ch, c) => { batch.push(ch.text); meta.push({ bookId: book.id, p: pg.p, c, off: ch.off }); });
-      if (batch.length >= 24) await flush();
+      if (batch.length >= 8) { await flush(); await sleep(coolMode() ? 2500 : 400); } // short rests keep the laptop cool
       if (++done % 50 === 0) Queue.setStatus(Queue._laneOf?.[job.id] || 'local', `Preparing offline AI search — ${book.short} (${done}/${pages.length} pages)`);
     }
     await flush();
@@ -285,6 +286,7 @@ const Handlers = {
       // Pages that timed out before get drawn smaller on the retry, so they finish.
       const canvas = await renderPage(book, p, (job.tries || job.rounds) ? 1200 : 1700);
       const { data } = await worker.recognize(canvas);
+      if (coolMode()) await sleep(3000); // Cool setting: let the processor rest between pages
       const text = (data.text || '').replace(/[ \t]+/g, ' ').trim();
       if (text.length > 30) await DB.put('pages', { bookId: book.id, p, text, ocr: 1 });
       (Queue.ocrTimes ||= []).push(Date.now());
@@ -519,6 +521,7 @@ const Queue = {
     if (lane === 'ai') return j.lane === 'ai' && !j.noGemini;
     if (!prov || j.noProv) return false;
     // Topic sheets and new MCQs need a big, careful model: Gemini first; Mistral takes over while Gemini is out for the day.
+    if ((j.kind === 'sheet' || j.kind === 'mcqgen') && prov.big) return true; // a second Gemini key writes sheets like the main one
     if (j.kind === 'sheet' || j.kind === 'mcqgen') return prov.id === 'mistral' && (j.noGemini || Date.now() < (this.paused.ai || 0)) && (j.kind === 'mcqgen' || j.prio < 6 || !this._localBusy);
     if (j.kind === 'mcqtext') return true;
     if (prov.vision && (j.kind === 'mcqvision' || j.kind === 'practical' || j.kind === 'ocr' || j.kind === 'figure')) return true;
@@ -539,7 +542,7 @@ const Queue = {
     if (lane.startsWith('p:')) {
       const bulk = c.filter(j => j.kind !== 'ocr'); if (bulk.length) c = bulk;
       // Cheap text imports first; picture jobs are slow and hit limits sooner.
-      const w = { sheet: -2, mcqgen: -1, mcqtext: 0, practical: 1, figure: 2, mcqvision: 3 };
+      const w = prov?.big ? { sheet: -2, mcqgen: -1, ocr: 9 } : { sheet: -2, mcqgen: -1, mcqtext: 0, practical: 1, figure: 2, mcqvision: 3 };
       c.sort((a, b) => (w[a.kind] ?? 1) - (w[b.kind] ?? 1) || a.prio - b.prio || a.created - b.created);
       return c[0];
     }
@@ -547,7 +550,7 @@ const Queue = {
     return c[0];
   },
   // Several OCR workers on the laptop at once (one per spare CPU core, max 3).
-  localLanes() { const auto = Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 1)); const n = Math.min(auto, +localStorage.getItem('ocrWorkers') || auto); return Array.from({ length: n }, (_, i) => i ? 'local' + (i + 1) : 'local'); },
+  localLanes() { const auto = Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 1)); const n = Math.min(auto, +localStorage.getItem('ocrWorkers') || Math.min(auto, 2)); return Array.from({ length: n }, (_, i) => i ? 'local' + (i + 1) : 'local'); },
   lanes() { return [...this.localLanes(), 'ai', ...Providers.active().map(p => 'p:' + p.id)]; },
   kick() { this.lanes().forEach(l => this.loop(l)); },
   async holdWake(on) {

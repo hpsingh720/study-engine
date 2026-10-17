@@ -1,6 +1,8 @@
 // Extra free AI providers (OpenAI-compatible). They work in parallel with Gemini on the bulk jobs:
 // importing question banks, image spotters and reading scanned pages.
 const PROVIDER_PRESETS = {
+  gemini2: { name: 'Gemini — 2nd key (e.g. a friend\'s)', base: 'https://generativelanguage.googleapis.com/v1beta/openai', model: '', rpm: 8, vision: true, big: true, signup: 'https://aistudio.google.com/apikey', note: 'A second Gemini key from another Google account (with its owner\'s OK). It writes topic sheets and MCQs alongside your own key. Click Test and it picks the newest Flash model.' },
+  gemini3: { name: 'Gemini — 3rd key (another friend\'s)', base: 'https://generativelanguage.googleapis.com/v1beta/openai', model: '', rpm: 8, vision: true, big: true, signup: 'https://aistudio.google.com/apikey', note: 'A second Gemini key from another Google account (with its owner\'s OK). It writes topic sheets and MCQs alongside your own key. Click Test and it picks the newest Flash model.' },
   groq: { name: 'Groq', base: 'https://api.groq.com/openai/v1', model: 'meta-llama/llama-4-scout-17b-16e-instruct', rpm: 25, vision: true, signup: 'https://console.groq.com/keys', note: 'Free, no card. About 1,000 requests a day.' },
   mistral: { name: 'Mistral', base: 'https://api.mistral.ai/v1', model: 'mistral-small-latest', rpm: 20, vision: true, signup: 'https://console.mistral.ai/api-keys', note: 'Free "Experiment" plan, no card (phone number needed). Large monthly allowance.' },
   nvidia: { name: 'NVIDIA (build.nvidia.com)', base: 'https://integrate.api.nvidia.com/v1', model: 'meta/llama-3.2-90b-vision-instruct', rpm: 30, vision: true, signup: 'https://build.nvidia.com/settings/api-keys', note: 'Free, no card. Needs the relay (below). Sign up with email, then "Get API Key". About 40 requests a minute on free credits.' },
@@ -101,7 +103,7 @@ const Providers = {
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.error?.message || d.message || 'HTTP ' + r.status);
     const arr = Array.isArray(d) ? d : (d.data || []);
-    return arr.map(m => m.id || m.name).filter(Boolean);
+    return arr.map(m => String(m.id || m.name || '').replace(/^models\//, '')).filter(Boolean);
   }
 };
 

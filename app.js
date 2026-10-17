@@ -402,7 +402,9 @@ const A = {
       let ms = []; try { ms = await Providers.models(p); } catch (e) {}
       if (ms.length) $('#pm_' + id).innerHTML = ms.map(m => `<option value="${esc(m)}">`).join('');
       if (!model || (ms.length && !ms.includes(model))) {
-        const pick = ((p.vision || p.custom) ? ms.find(m => /scout|maverick|pixtral|mistral-small|vision|-vl|glm-4v|4\.1-mini|4o-mini/i.test(m)) : null) || ms.find(m => /:free$/.test(m) && /llama|qwen|gemma|mistral|deepseek/i.test(m)) || ms.find(m => /llama|qwen|gpt-oss/i.test(m)) || ms[0] || p.model;
+        const gver = m => parseFloat((m.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1] || 0);
+        const gem = ms.filter(m => /^gemini-\d/.test(m) && /flash/.test(m) && !/lite|tts|image|audio|live|embedding|thinking|computer|robotics|native/i.test(m)).sort((a, b) => gver(b) - gver(a) || (/preview|exp/.test(a) ? 1 : 0) - (/preview|exp/.test(b) ? 1 : 0) || a.length - b.length);
+        const pick = (/generativelanguage/.test(p.base) ? gem[0] : null) || ((p.vision || p.custom) ? ms.find(m => /scout|maverick|pixtral|mistral-small|vision|-vl|glm-4v|4\.1-mini|4o-mini/i.test(m)) : null) || ms.find(m => /:free$/.test(m) && /llama|qwen|gemma|mistral|deepseek/i.test(m)) || ms.find(m => /llama|qwen|gpt-oss/i.test(m)) || ms[0] || p.model;
         model = pick || ''; $(`input[name=model_${id}]`).value = model;
       }
       Providers.save(id, { model, on: true });
@@ -564,7 +566,7 @@ const F = {
 
 // Change / input handlers
 const C = {
-  ocrWorkers(el) { localStorage.setItem('ocrWorkers', el.value); toast('Saved — takes effect after the current pages (or reload the page)'); },
+  ocrWorkers(el) { localStorage.setItem('ocrWorkers', el.value); toast('Saved — reload the page (Ctrl + R) to apply it now'); },
   bgRun(el) { localStorage.setItem('bgRun', el.checked ? '1' : '0'); if (el.checked && Object.values(Queue.running).some(Boolean)) KeepAlive.start(); else if (!el.checked) KeepAlive.stop(); toast(el.checked ? 'Will keep working when Chrome is minimised' : 'Off'); },
   keepAwake(el) { localStorage.setItem('keepAwake', el.checked ? '1' : '0'); if (!el.checked) Queue.holdWake(false); else Queue.holdWake(true); toast(el.checked ? 'Screen will stay on' : 'Windows can now turn the display off'); },
   setModePref(el) { localStorage.setItem('modePref', el.value); toast('Saved'); },
