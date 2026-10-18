@@ -259,6 +259,22 @@ const Handlers = {
   async ocr(job, ctx) {
     const book = await DB.get('books', job.payload.bookId); if (!book) return;
     const done = job.payload.done || [];
+    if (ctx?.provider?.ocrApi) {
+      // OCR.space: one page per request (pictures must stay under 1 MB).
+      for (const p of job.payload.pages) {
+        if (done.includes(p)) continue;
+        Queue.setStatus(ctx.lane, `${ctx.provider.name}: reading ${book.short} — page ${p}`);
+        const c = await renderPage(book, p, 1600);
+        let url = c.toDataURL('image/jpeg', 0.7); if (url.length * 0.75 > 950000) url = c.toDataURL('image/jpeg', 0.45);
+        const text = (await Providers.ocrPage(ctx.provider, url)).replace(/[ \t]+/g, ' ').trim();
+        if (text.length > 30) await DB.put('pages', { bookId: book.id, p, text, ocr: 3 });
+        (Queue.ocrTimes ||= []).push(Date.now());
+        done.push(p); job.payload.done = done; await DB.put('queue', job);
+        await sleep(Math.max(0, 60000 / ctx.provider.rpm));
+      }
+      if (job.payload.then === 'mcqtext') await addMcqText(book.id, job.payload.pages, 1);
+      return;
+    }
     if (ctx?.provider) {
       // A free vision AI reads the scanned pages — much faster than OCR on the laptop.
       const todo = job.payload.pages.filter(p => !done.includes(p));
@@ -514,6 +530,7 @@ const Queue = {
     if (lane.startsWith('local')) return j.lane === 'local' && ((j.kind !== 'refs' && j.kind !== 'embed') || lane === 'local');
     if (lane === 'ai') return j.lane === 'ai' && !j.noGemini;
     if (!prov || j.noProv) return false;
+    if (prov.ocrApi) return j.kind === 'ocr'; // OCR.space only reads scanned pages
     if (prov.ocrOnly) return j.kind === 'ocr' && !Queue.pendingAI; // your own key only reads pages while it has no sheets/MCQs to write
     // Topic sheets and new MCQs need a big, careful model: Gemini first; Mistral takes over while Gemini is out for the day.
     if ((j.kind === 'sheet' || j.kind === 'mcqgen') && prov.big) return true; // a second Gemini key writes sheets like the main one

@@ -2,7 +2,7 @@
 // It passes the app's AI requests to services that block browser apps (NVIDIA, GitHub Models…),
 // and reaches Gemini on networks that block it.
 const ALLOW = ['generativelanguage.googleapis.com', 'integrate.api.nvidia.com', 'models.github.ai', 'api.siliconflow.com', 'api.siliconflow.cn', 'open.bigmodel.cn', 'api.z.ai',
-  'api.cerebras.ai', 'api.groq.com', 'api.mistral.ai', 'openrouter.ai', 'api.sambanova.ai', 'api.together.xyz', 'api.hyperbolic.xyz', 'api.chutes.ai', 'llm.chutes.ai'];
+  'api.cerebras.ai', 'api.groq.com', 'api.mistral.ai', 'openrouter.ai', 'api.sambanova.ai', 'api.together.xyz', 'api.hyperbolic.xyz', 'api.chutes.ai', 'llm.chutes.ai', 'api.ocr.space'];
 const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Expose-Headers': '*' };
 export default {
   async fetch(req) {

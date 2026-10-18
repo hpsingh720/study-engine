@@ -419,6 +419,17 @@ const A = {
     Providers.save(id, { key, ...(baseIn ? { base: baseIn.value.trim() } : {}), ...(nameIn && nameIn.value.trim() ? { name: nameIn.value.trim() } : {}) });
     if (baseIn && !baseIn.value.trim()) { say('Paste the address first (it ends in /v1).'); return; }
     say('Checking…');
+    if (PROVIDER_PRESETS[id].ocrApi) {
+      try {
+        Providers.save(id, { model: model || '2', on: true });
+        const c = document.createElement('canvas'); c.width = 700; c.height = 160; const x = c.getContext('2d');
+        x.fillStyle = '#fff'; x.fillRect(0, 0, 700, 160); x.fillStyle = '#000'; x.font = 'bold 54px Arial'; x.fillText('HEART FAILURE', 30, 100);
+        const t = await Providers.ocrPage(Providers.get(id), c.toDataURL('image/jpeg', 0.9));
+        say(/heart/i.test(t) ? 'Works — it read a test picture correctly. Saved, it will start reading scanned pages now.' : `Replied, but read “${t.slice(0, 40)}” — try engine 1 in Model.`);
+        Queue.kick();
+      } catch (e) { say('Problem: ' + e.message); }
+      return;
+    }
     try {
       const p = Providers.get(id);
       let ms = []; try { ms = await Providers.models(p); } catch (e) {}

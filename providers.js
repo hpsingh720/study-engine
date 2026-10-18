@@ -3,6 +3,7 @@
 const PROVIDER_PRESETS = {
   gemini2: { name: 'Gemini — 2nd key (e.g. a friend\'s)', base: 'https://generativelanguage.googleapis.com/v1beta/openai', model: '', rpm: 8, vision: true, big: true, signup: 'https://aistudio.google.com/apikey', note: 'A second Gemini key from another Google account (with its owner\'s OK). It writes topic sheets and MCQs alongside your own key. Click Test and it picks the newest Flash model.' },
   gemini3: { name: 'Gemini — 3rd key (another friend\'s)', base: 'https://generativelanguage.googleapis.com/v1beta/openai', model: '', rpm: 8, vision: true, big: true, signup: 'https://aistudio.google.com/apikey', note: 'A second Gemini key from another Google account (with its owner\'s OK). It writes topic sheets and MCQs alongside your own key. Click Test and it picks the newest Flash model.' },
+  ocrspace: { name: 'OCR.space (free page reader)', base: 'https://api.ocr.space', model: '2', rpm: 20, vision: true, ocrApi: true, signup: 'https://ocr.space/ocrapi/freekey', note: 'Free OCR service, about 500 scanned pages a day. It only reads scanned pages (no AI). Enter your email on their page — the key arrives by email. Model = OCR engine: 2 (best for books) or 1.' },
   groq: { name: 'Groq', base: 'https://api.groq.com/openai/v1', model: 'meta-llama/llama-4-scout-17b-16e-instruct', rpm: 25, vision: true, signup: 'https://console.groq.com/keys', note: 'Free, no card. About 1,000 requests a day.' },
   mistral: { name: 'Mistral', base: 'https://api.mistral.ai/v1', model: 'mistral-small-latest', rpm: 20, vision: true, signup: 'https://console.mistral.ai/api-keys', note: 'Free "Experiment" plan, no card (phone number needed). Large monthly allowance.' },
   nvidia: { name: 'NVIDIA (build.nvidia.com)', base: 'https://integrate.api.nvidia.com/v1', model: 'meta/llama-3.2-90b-vision-instruct', rpm: 30, vision: true, signup: 'https://build.nvidia.com/settings/api-keys', note: 'Free, no card. Needs the relay (below). Sign up with email, then "Get API Key". About 40 requests a minute on free credits.' },
@@ -101,6 +102,22 @@ const Providers = {
       throw new Error(`${p.name}: empty reply from ${p.model} (finish: ${d.choices?.[0]?.finish_reason || 'unknown'}) — try another model, e.g. openai/gpt-4.1-mini`);
     }
     return json ? parseJSON(text) : text;
+  },
+
+  // OCR.space: plain page reading (no AI). One page picture in, its text out.
+  async ocrPage(p, dataUrl) {
+    const form = new FormData();
+    form.append('apikey', p.key); form.append('base64Image', dataUrl); form.append('OCREngine', String(p.model || '2'));
+    form.append('scale', 'true'); form.append('language', 'eng');
+    let res;
+    try { res = await this.send(p, '/parse/image', { method: 'POST', body: form }); }
+    catch (e) { const q = new QuotaError(`${p.name}: could not connect${this.relay() ? '' : ' — set up the relay (Settings) and Test again'}`, false, 60000); throw q; }
+    const raw = await res.text().catch(() => ''); let d = {}; try { d = JSON.parse(raw); } catch (e) {}
+    const err = [].concat(d.ErrorMessage || []).join(' ') || (typeof d === 'string' ? d : '') || (!res.ok ? raw.slice(0, 160) : '');
+    if (res.status === 403 || res.status === 429 || /maximum|limit|too many|exceeded/i.test(err)) throw new QuotaError(`${p.name}: ${err || 'limit reached'}`, /86400|day|daily|month/i.test(err) || res.status === 403, 120000);
+    if (/api ?key|invalid|unauthori/i.test(err)) throw new Error(`${p.name}: invalid api key — check the key from your email`);
+    if (!res.ok || d.IsErroredOnProcessing) throw new Error(`${p.name}: ${err || 'HTTP ' + res.status}`);
+    return (d.ParsedResults || []).map(r => r.ParsedText || '').join('\n').trim();
   },
 
   async models(p) {
