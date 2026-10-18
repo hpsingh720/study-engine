@@ -468,6 +468,11 @@ Views.result = async (id) => {
 Views.library = async () => {
   const [books, qc, est, allQ] = await Promise.all([DB.all('books'), Queue.counts(), navigator.storage?.estimate?.() || Promise.resolve(null), DB.live('mcqs')]);
   const qByBook = {}; allQ.forEach(m => { const k = (m.src || '').replace(/ p\.\d+$/, ''); qByBook[k] = (qByBook[k] || 0) + 1; });
+  // Question banks split into parts (Gyne 1-20, Gyne 20-40…) form one set, so the whole set can jump the queue together.
+  const setKey = b => String(b.role).startsWith('mcq') ? (String(b.name).toLowerCase().match(/[a-z]+/) || [''])[0] : '';
+  const waitingB = new Set(qc.all.filter(j => j.status === 'pending' || j.status === 'failed').map(j => j.payload?.bookId));
+  const canFirst = b => waitingB.has(b.id);
+  const setSize = {}; for (const b of books) { const k = setKey(b); if (k && canFirst(b)) setSize[k] = (setSize[k] || 0) + 1; }
   const ocrLeft = {}; for (const j of qc.all) if (j.kind === 'ocr' && j.status !== 'done') ocrLeft[j.payload.bookId] = (ocrLeft[j.payload.bookId] || 0) + j.payload.pages.length - (j.payload.done || []).length;
   const staged = App.staged || [];
   // Scanned pages: count real pages (jobs hold 4–10 pages each) and estimate the time left from the last hour's speed.
@@ -515,7 +520,7 @@ Views.library = async () => {
       <span class="role role-${b.role}">${ROLES[b.role]}</span>
       <div class="tr-main"><div class="tr-name">${esc(b.name)}</div><div class="tr-meta">${b.pages} pages${b.scannedPages ? ` · ${b.scannedPages} scanned` : ''}${qByBook[b.short] ? ` · <b>${qByBook[b.short]} questions imported</b>` : ''} · ${statusText(b.status)}${b.fileLost ? ' · <b class="warn-t">saved copy unreadable — add this PDF again to repair it</b>' : ''}${ocrLeft[b.id] ? ` · <b>${ocrLeft[b.id].toLocaleString()} scanned pages left to read</b> <button class="linkbtn" data-act="skipOcr" data-id="${b.id}">Skip reading</button>` : ''}${b.ocrSkipped ? ' · <span class="muted">reading skipped</span>' : ''}</div></div>
       <select class="select-sm" data-change="bookRole" data-id="${b.id}">${Object.entries(ROLES).map(([k, l]) => `<option value="${k}" ${b.role === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
-      ${['ready', 'partial'].includes(b.status) ? '' : `<button class="btn sm" data-act="bookFirst" data-id="${b.id}">Do this first</button>`}
+      ${!canFirst(b) ? '' : setSize[setKey(b)] > 1 ? `<span class="row gap"><button class="btn sm" data-act="bookFirst" data-id="${b.id}">Do this first</button><button class="btn sm" data-act="setFirst" data-key="${esc(setKey(b))}" title="All ${setSize[setKey(b)]} parts, in order">All ${esc(b.name.match(/[A-Za-z]+/)[0])} parts first</button></span>` : `<button class="btn sm" data-act="bookFirst" data-id="${b.id}">Do this first</button>`}
       <button class="btn sm ghost" data-act="delBook" data-id="${b.id}">Delete</button></div>`).join('') || '<p class="muted pad">No books yet.</p>'}</div></section>
   </div>`;
 };

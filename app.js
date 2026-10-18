@@ -370,10 +370,31 @@ const A = {
     toast(n ? `Queued ${n} jobs. Your focus system (${sysName(prefs.focus)}) goes first.` : 'Everything is already generated or queued.');
     App.render(true);
   },
+  // Each press lines up behind the earlier presses (first pressed = done first), still ahead of everything else.
+  async _firstBooks(ids) {
+    let seq = +localStorage.getItem('firstSeq') || 0, n = 0;
+    const q = await DB.all('queue');
+    for (const id of ids) {
+      seq = (seq + 1) % 900; localStorage.setItem('firstSeq', seq);
+      const prio = 0.1 + seq / 10000;
+      for (const j of q) if (j.payload?.bookId === id && (j.status === 'pending' || j.status === 'failed')) {
+        // Failed pages (e.g. when the laptop overheated) get a fresh try too.
+        if (j.status === 'failed') { j.status = 'pending'; j.tries = 0; j.rounds = 0; delete j.noProv; delete j.error; }
+        j.prio = prio; await DB.put('queue', j); n++;
+      }
+    }
+    return n;
+  },
   async bookFirst(el) {
-    let n = 0;
-    for (const j of await DB.all('queue')) if (j.payload?.bookId === el.dataset.id && j.status === 'pending') { j.prio = 0.1; await DB.put('queue', j); n++; }
-    toast(n ? `This book jumps the queue (${n} jobs).` : 'Nothing waiting for this book.'); App.render(true);
+    const n = await A._firstBooks([el.dataset.id]);
+    Queue.kick(); toast(n ? `This book jumps the queue (${n} jobs). Press "Do this first" on another book to line it up next.` : 'Nothing waiting for this book.'); App.render(true);
+  },
+  async setFirst(el) {
+    const key = el.dataset.key, nat = s => s.replace(/\d+/g, d => d.padStart(5, '0'));
+    const waiting = new Set((await DB.all('queue')).filter(j => j.status === 'pending' || j.status === 'failed').map(j => j.payload?.bookId));
+    const books = (await DB.all('books')).filter(b => String(b.role).startsWith('mcq') && (String(b.name).toLowerCase().match(/[a-z]+/) || [''])[0] === key && waiting.has(b.id)).sort((a, b) => nat(a.name).localeCompare(nat(b.name)));
+    const n = await A._firstBooks(books.map(b => b.id));
+    Queue.kick(); toast(n ? `${books.length} parts jump the queue, in order: ${books.map(b => b.name).join(' → ')}` : 'Nothing waiting in this set.'); App.render(true);
   },
   async delBook(el) { if (!confirm('Remove this book from the laptop? Sheets and questions already made from it stay.')) return; await deleteBook(el.dataset.id); App.render(true); },
 
@@ -665,6 +686,7 @@ async function init() {
   await App.render();
   Queue.kick();
   if (Sync.on()) { setInterval(() => PageRelay.serve(), 15000); setTimeout(() => PageRelay.serve(), 5000); }
+  setTimeout(() => Queue.reviveLibFails().then(n => n && toast(`Gave ${n} jobs another go (the page reader hadn't downloaded)`, 6000)).catch(console.warn), 8000);
   setTimeout(() => Queue.autoRetry().catch(console.warn), 60000); setInterval(() => Queue.autoRetry().catch(console.warn), 2 * 3600000);
   setTimeout(() => queueEmbeds().then(n => n && Queue.kick()).catch(console.warn), 30000); setInterval(() => queueEmbeds().then(n => n && Queue.kick()).catch(console.warn), 3600000);
   setTimeout(() => queueRefs().catch(console.warn), 20000); setInterval(() => queueRefs().catch(console.warn), 3600000);

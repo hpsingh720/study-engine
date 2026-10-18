@@ -26,6 +26,7 @@ function shortName(name) {
 const PdfCache = new Map();
 const _pdfUsed = new Map();
 async function getPdf(bookId) {
+  await ensurePdfjs();
   _pdfUsed.set(bookId, Date.now());
   if (PdfCache.has(bookId)) return PdfCache.get(bookId);
   const f = await DB.get('files', bookId);
@@ -201,7 +202,7 @@ const Handlers = {
       book.pages = pdf.numPages;
       let batch = [];
       const start = job.payload.from || 1;
-      const OPS = pdfjsLib.OPS;
+      await ensurePdfjs(); const OPS = pdfjsLib.OPS;
       for (let i = start; i <= pdf.numPages; i++) {
         let page, tc;
         try {
@@ -478,14 +479,7 @@ async function getOcrWorker(lane = 'local') {
   // The OCR engine slows down as it builds up memory: start a fresh one every 60 pages.
   if (_ocrWorkers[lane] && (_ocrUses[lane] || 0) >= 60) { const w = _ocrWorkers[lane]; delete _ocrWorkers[lane]; _ocrUses[lane] = 0; try { await w.terminate(); } catch (e) {} }
   if (_ocrWorkers[lane]) return _ocrWorkers[lane];
-  if (!window.Tesseract) {
-    await new Promise((res, rej) => {
-      const s = document.createElement('script');
-      s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
-      s.onload = res; s.onerror = () => rej(new Error('Could not load OCR engine (offline?)'));
-      document.head.appendChild(s);
-    });
-  }
+  await ensureTesseract();
   _ocrWorkers[lane] = await Tesseract.createWorker('eng');
   return _ocrWorkers[lane];
 }
@@ -520,6 +514,7 @@ const Queue = {
     if (lane.startsWith('local')) return j.lane === 'local' && ((j.kind !== 'refs' && j.kind !== 'embed') || lane === 'local');
     if (lane === 'ai') return j.lane === 'ai' && !j.noGemini;
     if (!prov || j.noProv) return false;
+    if (prov.ocrOnly) return j.kind === 'ocr' && !Queue.pendingAI; // your own key only reads pages while it has no sheets/MCQs to write
     // Topic sheets and new MCQs need a big, careful model: Gemini first; Mistral takes over while Gemini is out for the day.
     if ((j.kind === 'sheet' || j.kind === 'mcqgen') && prov.big) return true; // a second Gemini key writes sheets like the main one
     if (j.kind === 'sheet' || j.kind === 'mcqgen') return prov.id === 'mistral' && (j.noGemini || Date.now() < (this.paused.ai || 0)) && (j.kind === 'mcqgen' || j.prio < 6 || !this._localBusy);
@@ -530,6 +525,7 @@ const Queue = {
   providerOcr() { return Providers.active().some(p => p.vision); },
   async next(lane, prov) {
     const pend = (await DB.byIndex('queue', 'status', 'pending')).filter(j => !this.claimed.has(j.id));
+    this.pendingAI = pend.some(j => j.lane === 'ai' && !j.noGemini && (j.kind === 'sheet' || j.kind === 'mcqgen'));
     let c = pend.filter(j => this.accepts(lane, j, prov));
     this._localBusy = pend.some(j => j.kind === 'extract');
     if (lane === 'ai') {
@@ -606,7 +602,7 @@ const Queue = {
             if (e instanceof QuotaError && (e.net || !navigator.onLine)) {
               // No internet: not a limit. Just wait and carry on as soon as it is back.
               j.status = 'pending';
-              this.setStatus(lane, `${prov ? prov.name : 'Gemini'}: no internet — will continue by itself when it is back`);
+              this.setStatus(lane, `${prov ? prov.name : lane.startsWith('local') ? 'Page reader' : 'Gemini'}: no internet — will continue by itself when it is back`);
               await DB.put('queue', j); this.claimed.delete(j.id);
               await Promise.race([sleep(30000), new Promise(r => window.addEventListener('online', r, { once: true }))]);
               continue;
@@ -708,7 +704,18 @@ const Queue = {
     this.kick();
   },
   // Every 2 hours: give failed jobs another go (up to 3 extra rounds each), so you don't have to press Retry.
+  // Jobs that failed only because the PDF/OCR library didn't download: give them back, uncounted.
+  async reviveLibFails() {
+    let n = 0;
+    for (const j of await DB.byIndex('queue', 'status', 'failed')) {
+      if (!/pdfjsLib is not defined|Tesseract is not defined|Could not load OCR engine|page reader/i.test(j.error || '')) continue;
+      j.status = 'pending'; j.tries = 0; j.rounds = 0; delete j.error; delete j.noProv; await DB.put('queue', j); n++;
+    }
+    if (n) this.kick();
+    return n;
+  },
   async autoRetry() {
+    await this.reviveLibFails().catch(() => {});
     let n = 0;
     for (const j of await DB.byIndex('queue', 'status', 'failed')) {
       if ((j.rounds || 0) >= 3) continue;

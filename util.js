@@ -1,4 +1,4 @@
-const APP_VERSION = 'v53';
+const APP_VERSION = 'v56';
 // Small helpers shared across the app.
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -138,3 +138,32 @@ function isRight(m, choice) {
   return set.length === ch.length && set.every(x => ch.includes(x));
 }
 const letters = arr => (Array.isArray(arr) ? arr : [arr]).filter(x => x != null).map(i => String.fromCharCode(65 + i)).join(', ');
+
+// Load a library from the first CDN that answers (a blocked or flaky network on one CDN no longer stops the app).
+const _libLoads = {};
+function loadScriptFrom(urls, test) {
+  if (test()) return Promise.resolve();
+  const key = urls[0];
+  if (_libLoads[key]) return _libLoads[key];
+  _libLoads[key] = (async () => {
+    for (const u of urls) {
+      try {
+        await new Promise((res, rej) => { const s = document.createElement('script'); s.src = u; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
+        if (test()) return u;
+      } catch (e) {}
+    }
+    const err = new QuotaError('Could not download the page reader — no internet? It will carry on by itself when the connection is back.', false, 60000);
+    err.net = true; throw err;
+  })().finally(() => { if (!test()) delete _libLoads[key]; });
+  return _libLoads[key];
+}
+async function ensurePdfjs() {
+  if (window.pdfjsLib) return;
+  const bases = ['https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/', 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/', 'https://unpkg.com/pdfjs-dist@3.11.174/build/'];
+  const used = await loadScriptFrom(bases.map(b => b + 'pdf.min.js'), () => !!window.pdfjsLib);
+  const base = (used || bases[0]).replace(/pdf\.min\.js$/, '');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = base + 'pdf.worker.min.js';
+}
+function ensureTesseract() {
+  return loadScriptFrom(['https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js', 'https://unpkg.com/tesseract.js@5.1.1/dist/tesseract.min.js'], () => !!window.Tesseract);
+}

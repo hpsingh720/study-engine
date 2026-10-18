@@ -39,16 +39,22 @@ const Providers = {
   list() {
     let saved = {};
     try { saved = JSON.parse(localStorage.getItem('providers') || '{}'); } catch (e) {}
-    return Object.entries(PROVIDER_PRESETS).map(([id, p]) => ({ id, ...p, ...(saved[id] || {}) }));
+    return Object.entries(PROVIDER_PRESETS).map(([id, p]) => ({ id, ...p, ...(saved[id] || {}) })).map(p => /generativelanguage/.test(p.base || '') ? { ...p, vision: true } : p); // every Gemini model reads images
   },
-  active() { return this.list().filter(p => p.key && p.model && p.base && p.on !== false); },
+  // Your own Gemini key also reads scanned pages (with the cheaper Lite model) whenever it has no sheets to write.
+  mainReader() {
+    if (typeof AI === 'undefined' || !AI.key || localStorage.getItem('mainOcr') === '0') return null;
+    return { id: 'gmain', name: 'Gemini (your key)', base: 'https://generativelanguage.googleapis.com/v1beta/openai', key: AI.key, model: AI.bulkModel, rpm: 8, vision: true, ocrOnly: true, viaRelay: !!AI._viaRelay };
+  },
+  active() { const m = this.mainReader(); return [...this.list().filter(p => p.key && p.model && p.base && p.on !== false), ...(m ? [m] : [])]; },
   save(id, patch) {
     let saved = {};
     try { saved = JSON.parse(localStorage.getItem('providers') || '{}'); } catch (e) {}
+    if (id === 'gmain') return; // the built-in reader keeps no settings of its own
     saved[id] = { ...(saved[id] || {}), ...patch };
     localStorage.setItem('providers', JSON.stringify(saved));
   },
-  get(id) { return this.list().find(p => p.id === id); },
+  get(id) { return id === 'gmain' ? this.mainReader() : this.list().find(p => p.id === id); },
 
   async call(p, { prompt, images = [], system, json = true, temperature = 0.3, maxTokens = 8000, _retried = false }) {
     const content = images.length
