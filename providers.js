@@ -82,7 +82,9 @@ const Providers = {
       const msg = d.error?.message || d.message || d.detail || ('HTTP ' + res.status + (raw ? ' — ' + raw.replace(/\s+/g, ' ').slice(0, 160) : ''));
       if (res.status === 429) {
         const ra = +res.headers.get('retry-after') || 30;
-        throw new QuotaError(`${p.name}: ${msg}`, /day|daily|quota|tokens per/i.test(msg), ra * 1000 + 1000);
+        // Per-minute limits (Groq's "tokens per minute") clear in a minute — only a daily limit means a long rest.
+        const perMin = /per minute|\b(TPM|RPM|OTP|ITP)\b/i.test(msg) && !/per day|daily|\bRPD\b|\bTPD\b/i.test(msg);
+        throw new QuotaError(`${p.name}: ${msg}`, !perMin && /day|daily|quota|tokens per/i.test(msg), Math.max(ra, perMin ? 60 : 0) * 1000 + 1000);
       }
       if (res.status >= 500) throw new QuotaError(`${p.name} busy (${res.status})`, false, 20000);
       // Newer "thinking" models want max_completion_tokens and no temperature — remember that and retry.
