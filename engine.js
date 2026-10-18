@@ -268,7 +268,7 @@ const Handlers = {
         let url = c.toDataURL('image/jpeg', 0.7); if (url.length * 0.75 > 950000) url = c.toDataURL('image/jpeg', 0.45);
         const text = (await Providers.ocrPage(ctx.provider, url)).replace(/[ \t]+/g, ' ').trim();
         if (text.length > 30) await DB.put('pages', { bookId: book.id, p, text, ocr: 3 });
-        (Queue.ocrTimes ||= []).push(Date.now());
+        (Queue.ocrTimes ||= []).push(Date.now()); (Queue.ocrWho ||= []).push(ctx.provider.name);
         done.push(p); job.payload.done = done; await DB.put('queue', job);
         await sleep(Math.max(0, 60000 / ctx.provider.rpm));
       }
@@ -281,7 +281,7 @@ const Handlers = {
       for (let i = 0; i < todo.length; i += 3) {
         const batch = todo.slice(i, i + 3);
         Queue.setStatus(ctx.lane, `${ctx.provider.name}: reading ${book.short} — pages ${batch.join(', ')}`);
-        const images = []; for (const p of batch) images.push((await renderPage(book, p, 1700)).toDataURL('image/jpeg', 0.82));
+        const images = []; for (const p of batch) images.push((await renderPage(book, p, 1400)).toDataURL('image/jpeg', 0.78)); // a bit smaller: quicker to draw and send, still sharp enough to read
         const txt = await Providers.call(ctx.provider, { json: false, temperature: 0, images,
           prompt: `Transcribe ALL text on these ${batch.length} scanned medical textbook pages, in reading order, keeping headings, bullet points, table rows and drug doses. No commentary. Output exactly:\n=== PAGE 1 ===\n<text>\n=== PAGE 2 ===\n<text> …` });
         const parts = txt.split(/===\s*PAGE\s*(\d+)\s*===/i);
@@ -290,6 +290,7 @@ const Handlers = {
           if (batch[idx] && text.length > 30) await DB.put('pages', { bookId: book.id, p: batch[idx], text, ocr: 2 });
         }
         if (parts.length < 3 && txt.trim().length > 30) await DB.put('pages', { bookId: book.id, p: batch[0], text: txt.trim(), ocr: 2 });
+        for (const _ of batch) (Queue.ocrTimes ||= []).push(Date.now()), (Queue.ocrWho ||= []).push(ctx.provider.name);
         done.push(...batch); job.payload.done = done; await DB.put('queue', job);
         await sleep(Math.max(0, 60000 / ctx.provider.rpm));
       }
@@ -306,7 +307,7 @@ const Handlers = {
       if (coolMode()) await sleep(3000); // Cool setting: let the processor rest between pages
       const text = (data.text || '').replace(/[ \t]+/g, ' ').trim();
       if (text.length > 30) await DB.put('pages', { bookId: book.id, p, text, ocr: 1 });
-      (Queue.ocrTimes ||= []).push(Date.now());
+      (Queue.ocrTimes ||= []).push(Date.now()); (Queue.ocrWho ||= []).push('Laptop');
       done.push(p); job.payload.done = done; await DB.put('queue', job);
     }
     if (job.payload.then === 'mcqtext') { await addMcqText(book.id, job.payload.pages, 1); return; }
@@ -624,6 +625,11 @@ const Queue = {
               await Promise.race([sleep(30000), new Promise(r => window.addEventListener('online', r, { once: true }))]);
               continue;
             } else if (e instanceof QuotaError) {
+              // A Gemini key out of allowance on this model: carry on with another model of the same key.
+              if (prov && e.daily && /generativelanguage/.test(prov.base || '')) {
+                const nm = await Providers.nextGeminiModel(prov, e.perDay).catch(() => null);
+                if (nm) { j.status = 'pending'; await DB.put('queue', j); this.claimed.delete(j.id); this.setStatus(lane, `${prov.name}: ${prov.model} used up for now — switching to ${nm}`); this.emit(); continue; }
+              }
               j.status = 'pending';
               this.hits[lane] = (this.hits[lane] || 0) + 1;
               if (e.daily || this.hits[lane] >= 4) {

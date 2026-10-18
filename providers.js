@@ -45,13 +45,13 @@ const Providers = {
   // Your own Gemini key also reads scanned pages (with the cheaper Lite model) whenever it has no sheets to write.
   mainReader() {
     if (typeof AI === 'undefined' || !AI.key || localStorage.getItem('mainOcr') === '0') return null;
-    return { id: 'gmain', name: 'Gemini (your key)', base: 'https://generativelanguage.googleapis.com/v1beta/openai', key: AI.key, model: AI.bulkModel, rpm: 8, vision: true, ocrOnly: true, viaRelay: !!AI._viaRelay };
+    return { id: 'gmain', name: 'Gemini (your key)', base: 'https://generativelanguage.googleapis.com/v1beta/openai', key: AI.key, model: localStorage.getItem('gmainModel') || AI.bulkModel, rpm: 8, vision: true, ocrOnly: true, viaRelay: !!AI._viaRelay };
   },
   active() { const m = this.mainReader(); return [...this.list().filter(p => p.key && p.model && p.base && p.on !== false), ...(m ? [m] : [])]; },
   save(id, patch) {
     let saved = {};
     try { saved = JSON.parse(localStorage.getItem('providers') || '{}'); } catch (e) {}
-    if (id === 'gmain') return; // the built-in reader keeps no settings of its own
+    if (id === 'gmain') { if (patch.model) localStorage.setItem('gmainModel', patch.model); return; } // the built-in reader only remembers its model
     saved[id] = { ...(saved[id] || {}), ...patch };
     localStorage.setItem('providers', JSON.stringify(saved));
   },
@@ -84,8 +84,11 @@ const Providers = {
       if (res.status === 429) {
         const ra = +res.headers.get('retry-after') || 30;
         // Per-minute limits (Groq's "tokens per minute") clear in a minute — only a daily limit means a long rest.
-        const perMin = /per minute|\b(TPM|RPM|OTP|ITP)\b/i.test(msg) && !/per day|daily|\bRPD\b|\bTPD\b/i.test(msg);
-        throw new QuotaError(`${p.name}: ${msg}`, !perMin && /day|daily|quota|tokens per/i.test(msg), Math.max(ra, perMin ? 60 : 0) * 1000 + 1000);
+        // Gemini says which limit it was in the details ("…PerDay…" vs "…PerMinute…").
+        const gPerMin = /PerMinute/i.test(raw) && !/PerDay/i.test(raw), gPerDay = /PerDay/i.test(raw);
+        const perMin = gPerMin || (/per minute|\b(TPM|RPM|OTP|ITP)\b/i.test(msg) && !/per day|daily|\bRPD\b|\bTPD\b/i.test(msg));
+        const q = new QuotaError(`${p.name}: ${msg}`, !perMin && (gPerDay || /day|daily|quota|tokens per/i.test(msg)), Math.max(ra, perMin ? 60 : 0) * 1000 + 1000);
+        q.perDay = gPerDay; throw q;
       }
       if (res.status >= 500) throw new QuotaError(`${p.name} busy (${res.status})`, false, 20000);
       // Newer "thinking" models want max_completion_tokens and no temperature — remember that and retry.
@@ -102,6 +105,27 @@ const Providers = {
       throw new Error(`${p.name}: empty reply from ${p.model} (finish: ${d.choices?.[0]?.finish_reason || 'unknown'}) — try another model, e.g. openai/gpt-4.1-mini`);
     }
     return json ? parseJSON(text) : text;
+  },
+
+  // Gemini gives every key a separate daily allowance FOR EACH MODEL. When one model is used up,
+  // switch the key to another model it can use, instead of resting for hours.
+  _gOut() { try { return JSON.parse(localStorage.getItem('gemOut') || '{}'); } catch (e) { return {}; } },
+  async nextGeminiModel(p, perDay) {
+    if (!/generativelanguage/.test(p.base || '')) return null;
+    const tag = (p.key || '').slice(-6), out = this._gOut(), now = Date.now();
+    // Used-up models come back at Google's daily reset (about 12:30 pm India time); unclear limits, after an hour.
+    const reset = new Date(); reset.setUTCHours(7, 30, 0, 0); if (reset.getTime() <= now) reset.setUTCDate(reset.getUTCDate() + 1);
+    out[tag + '|' + p.model] = perDay ? reset.getTime() : now + 3600e3;
+    for (const k of Object.keys(out)) if (out[k] < now) delete out[k];
+    localStorage.setItem('gemOut', JSON.stringify(out));
+    let ms = (this._gList ||= {})[tag];
+    if (!ms) { try { ms = this._gList[tag] = await this.models(p); } catch (e) { ms = []; } }
+    const ver = m => parseFloat((m.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1] || 0);
+    const cands = ms.filter(m => /^gemini-\d/.test(m) && /flash/.test(m) && !/tts|image|audio|live|embedding|thinking|computer|robotics|native|exp/i.test(m) && !out[tag + '|' + m])
+      .sort((a, b) => (/lite/.test(b) ? 1 : 0) - (/lite/.test(a) ? 1 : 0) || ver(b) - ver(a) || a.length - b.length);
+    const next = cands[0] || null;
+    if (next) this.save(p.id, { model: next });
+    return next;
   },
 
   // OCR.space: plain page reading (no AI). One page picture in, its text out.

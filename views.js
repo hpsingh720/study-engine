@@ -531,7 +531,9 @@ function queueLine() {
   if (Queue.pauseMsg) parts.push(`<span class="warn-t">${esc(Queue.pauseMsg)}</span>`);
   if (Queue.manualPause) parts.push('<span class="warn-t">AI jobs paused.</span>');
   const hr = (Queue.ocrTimes || []).filter(t => t > Date.now() - 3600e3).length, since = Queue.startedAt ? Math.round((Date.now() - Queue.startedAt) / 60000) : 0;
-  if (parts.length) parts.push(`<span class="muted small">Scanned pages read in the last hour: <b>${hr}</b>${since < 60 ? ` (app opened ${since} min ago)` : ''} · app ${APP_VERSION}</span>`);
+  const who = {}; (Queue.ocrTimes || []).forEach((t, i) => { if (t > Date.now() - 3600e3) { const w = (Queue.ocrWho || [])[i] || 'Laptop'; who[w] = (who[w] || 0) + 1; } });
+  const whoTxt = Object.entries(who).sort((a, b) => b[1] - a[1]).map(([w, n]) => `${esc(w.replace(/ \(.*\)$/, '').replace(/^Gemini — /, 'Gemini '))} ${n}`).join(' · ');
+  if (parts.length) parts.push(`<span class="muted small">Scanned pages read in the last hour: <b>${hr}</b>${whoTxt ? ` (${whoTxt})` : ''}${since < 60 ? ` · app opened ${since} min ago` : ''} · app ${APP_VERSION}</span>`);
   if (parts.length && KeepAlive.wanted() && !(KeepAlive.ctx && KeepAlive.ctx.state === 'running')) parts.push('<span class="warn-t">Click anywhere on this page once, so it keeps working when Chrome is minimised.</span>');
   return parts.join('<br>') || '<span class="muted">Idle.</span>';
 }
