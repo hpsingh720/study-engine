@@ -405,8 +405,33 @@ async function searchBooks(query, max = 6) {
   const phrase = words.join(' ');
   const phrases = words.length > 1 ? vars.reduce((acc, v) => acc.flatMap(a => v.map(x => a ? a + ' ' + x : x)), ['']).slice(0, 8) : [];
   const terms = topicTerms({ name: '', kw: [...new Set([...phrases, ...vars.flat(), ...stems])] });
-  const defCue = /^.{0,60}?(is defined as|defined as|is said to be|refers to|is the |is a |is an |means |may be defined|:|—|-)/;
-  const phraseDef = lt => { for (const ph of phrases) { let i = lt.indexOf(ph); while (i >= 0) { if (defCue.test(lt.slice(i + ph.length, i + ph.length + 80))) return i; i = lt.indexOf(ph, i + 1); } } return -1; };
+  const defCue = /^.{0,60}?(is defined as|defined as|is said to be|refers to|is called|is termed|is known as|is the |is a |is an |means |may be defined|:|—|-)/;
+  // Books also write it backwards: "Series of events … is called 'labor'". Then the definition starts at that sentence.
+  const sentStart = (lt, i) => { const a = Math.max(lt.lastIndexOf('. ', i), lt.lastIndexOf('\n\n', i)); return a < 0 ? 0 : a + 2; };
+  const atWord = (lt, i) => i === 0 || !/[a-z]/.test(lt[i - 1]);      // "normal labour" must not match inside "abnormal labour"
+  let defStrong = false;
+  const defIn = (lt, list) => {
+    defStrong = false;
+    // Strongest: a "DEFINITION" heading with the term just before it (chapter title) or just after it.
+    let d = lt.indexOf('definition');
+    while (d >= 0) {
+      const near = lt.slice(Math.max(0, d - 300), d + 500);
+      if (list.some(ph => { const k = near.indexOf(ph); return k >= 0 && atWord(near, k); })) { defStrong = true; return d + 'definition'.length; }
+      d = lt.indexOf('definition', d + 10);
+    }
+    for (const ph of list) {
+      let i = lt.indexOf(ph);
+      while (i >= 0) {
+        if (atWord(lt, i) && defCue.test(lt.slice(i + ph.length, i + ph.length + 80))) return i;
+        if (atWord(lt, i) && /(is|are) (called|termed|known as|defined as)\s*['"‘“]?\s*$/.test(lt.slice(Math.max(0, i - 30), i))) return sentStart(lt, i);
+        i = lt.indexOf(ph, i + 1);
+      }
+    }
+    return -1;
+  };
+  const head = words.length > 1 ? vars[vars.length - 1] : [];   // "normal labour" → also the definition of "labour" itself
+  const phraseDef = lt => defIn(lt, phrases.length ? phrases : vars.flat());
+  const headDef = lt => head.length ? defIn(lt, head) : -1;
   const books = pick.filter ? allBooks.filter(b => pick.filter.has(b.id)) : allBooks;
   const has1 = (lt, w) => lt.includes(w) || (w.length >= 8 && lt.includes(w.slice(0, 5)));
   const has = (lt, w) => spellVariants(w).some(v => has1(lt, v));
@@ -418,7 +443,8 @@ async function searchBooks(query, max = 6) {
       if (!n || (words.length >= 2 && n < Math.ceil(words.length / 2))) return; // the page must contain the main words
       let sc = scorePage(pg.text, terms) * (1 + n);
       if (phrases.some(ph => lt.includes(ph))) sc *= 3;              // the exact phrase ("normal labour"), not just the single words
-      if (wantDef && phraseDef(lt) >= 0) sc *= 4;                    // …followed by "is defined as / is the…" = the definition line
+      if (wantDef && phraseDef(lt) >= 0) sc *= defStrong ? 8 : 4;                    // …followed by "is defined as / is the…" = the definition line
+      else if (wantDef && headDef(lt) >= 0) sc *= 3;               // the main word's own definition ("…is called 'labor'")
       if (sc > 0) { top.push({ s: sc, bookId: b.id, size: b.size, p: pg.p, book: b.short || b.name, role: b.role, text: pg.text }); if (top.length > 120) { top.sort((x, y) => y.s - x.s); top.length = 40; } }
     });
   }
@@ -437,8 +463,9 @@ async function searchBooks(query, max = 6) {
     // Cut out the few lines around the best match (not the whole page).
     const text = pg.text.replace(/[ \t]+/g, ' '), lt = text.toLowerCase();
     let bestPos = -1, bestSc = -1;
-    const dpos = wantDef ? phraseDef(lt) : -1;
-    if (dpos >= 0) { bestPos = dpos; bestSc = 40; }
+    let dpos = wantDef ? phraseDef(lt) : -1; if (wantDef && dpos < 0) dpos = headDef(lt);
+    const strong = defStrong;
+    if (dpos >= 0) { bestPos = dpos; bestSc = strong ? 80 : 40; }
     for (const w of dpos >= 0 ? [] : [...phrases, ...vars.flat(), ...stems]) {
       let i = lt.indexOf(w);
       while (i >= 0) {
@@ -454,6 +481,7 @@ async function searchBooks(query, max = 6) {
     if (bestPos < 0) continue;
     let a2 = Math.max(0, bestPos - 220), b2 = Math.min(text.length, bestPos + 420);
     const before = text.lastIndexOf('. ', bestPos); if (before > a2 - 120 && before >= 0) a2 = Math.max(0, before + 2);
+    if (dpos >= 0 && strong) a2 = Math.max(0, bestPos - 10);   // start right at the DEFINITION heading
     const after = text.indexOf('. ', bestPos + 120); if (after > 0 && after < b2 + 150) b2 = after + 1;
     const passage = (a2 > 0 ? '…' : '') + text.slice(a2, b2).replace(/\n+/g, ' ').trim() + (b2 < text.length ? '…' : '');
     res.push({ book: pg.book, bookId: pg.bookId, size: pg.size, p: pg.p, role: pg.role, passage, terms: [...new Set(vars.flat())], score: bestSc * 4 + pg.s });
