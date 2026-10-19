@@ -383,6 +383,14 @@ function pickBook(q, books) {
   const hits = key ? books.filter(b => (b.name || '').toLowerCase().replace(/[^a-z]/g, '').includes(key.replace(/[^a-z]/g, ''))) : [];
   return hits.length ? { q: q.slice(0, m.index).trim(), filter: new Set(hits.map(b => b.id)) } : { q, filter: null };
 }
+const SPELL_PAIRS = [['labor', 'labour'], ['tumor', 'tumour'], ['color', 'colour'], ['behavior', 'behaviour'], ['hemorrh', 'haemorrh'], ['hem', 'haem'], ['anem', 'anaem'], ['anesth', 'anaesth'],
+  ['gynec', 'gynaec'], ['pediat', 'paediat'], ['orthoped', 'orthopaed'], ['cesar', 'caesar'], ['ischem', 'ischaem'], ['leukem', 'leukaem'], ['septicem', 'septicaem'], ['edema', 'oedema'], ['esoph', 'oesoph'],
+  ['estro', 'oestro'], ['fetus', 'foetus'], ['fetal', 'foetal'], ['diarrhea', 'diarrhoea'], ['center', 'centre'], ['fiber', 'fibre'], ['liter', 'litre'], ['iz', 'is']];
+function spellVariants(w) {
+  const out = new Set([w]);
+  for (const [us, uk] of SPELL_PAIRS) { if (w.includes(uk)) out.add(w.replace(uk, us)); else if (w.includes(us)) out.add(w.replace(us, uk)); }
+  return [...out];
+}
 async function searchBooks(query, max = 6) {
   let q = query.toLowerCase().replace(/[^a-z0-9\s&'.-]/g, ' ').replace(/\s+/g, ' ').trim();
   const allBooks = (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc', 'reader'].includes(b.role));
@@ -392,17 +400,25 @@ async function searchBooks(query, max = 6) {
   if (!words.length) return [];
   // Word families: "hernioplasty" also finds hernia / herniorrhaphy.
   const stems = words.filter(w => w.length >= 8).map(w => w.slice(0, 5));
+  // British/American spellings: labor = labour, hemorrhage = haemorrhage, edema = oedema…
+  const vars = words.map(spellVariants);
   const phrase = words.join(' ');
-  const terms = topicTerms({ name: '', kw: [...new Set([...(words.length > 1 ? [phrase] : []), ...words, ...stems])] });
+  const phrases = words.length > 1 ? vars.reduce((acc, v) => acc.flatMap(a => v.map(x => a ? a + ' ' + x : x)), ['']).slice(0, 8) : [];
+  const terms = topicTerms({ name: '', kw: [...new Set([...phrases, ...vars.flat(), ...stems])] });
+  const defCue = /^.{0,60}?(is defined as|defined as|is said to be|refers to|is the |is a |is an |means |may be defined|:|—|-)/;
+  const phraseDef = lt => { for (const ph of phrases) { let i = lt.indexOf(ph); while (i >= 0) { if (defCue.test(lt.slice(i + ph.length, i + ph.length + 80))) return i; i = lt.indexOf(ph, i + 1); } } return -1; };
   const books = pick.filter ? allBooks.filter(b => pick.filter.has(b.id)) : allBooks;
-  const has = (lt, w) => lt.includes(w) || (w.length >= 8 && lt.includes(w.slice(0, 5)));
+  const has1 = (lt, w) => lt.includes(w) || (w.length >= 8 && lt.includes(w.slice(0, 5)));
+  const has = (lt, w) => spellVariants(w).some(v => has1(lt, v));
   let top = [];
   for (const b of books) {
     await DB.each('pages', 'bookId', b.id, pg => {
       const lt = pg.text.toLowerCase();
       const n = words.filter(w => has(lt, w)).length;
       if (!n || (words.length >= 2 && n < Math.ceil(words.length / 2))) return; // the page must contain the main words
-      const sc = scorePage(pg.text, terms) * (1 + n);
+      let sc = scorePage(pg.text, terms) * (1 + n);
+      if (phrases.some(ph => lt.includes(ph))) sc *= 3;              // the exact phrase ("normal labour"), not just the single words
+      if (wantDef && phraseDef(lt) >= 0) sc *= 4;                    // …followed by "is defined as / is the…" = the definition line
       if (sc > 0) { top.push({ s: sc, bookId: b.id, size: b.size, p: pg.p, book: b.short || b.name, role: b.role, text: pg.text }); if (top.length > 120) { top.sort((x, y) => y.s - x.s); top.length = 40; } }
     });
   }
@@ -421,12 +437,14 @@ async function searchBooks(query, max = 6) {
     // Cut out the few lines around the best match (not the whole page).
     const text = pg.text.replace(/[ \t]+/g, ' '), lt = text.toLowerCase();
     let bestPos = -1, bestSc = -1;
-    for (const w of [...(words.length > 1 ? [phrase] : []), ...words, ...stems]) {
+    const dpos = wantDef ? phraseDef(lt) : -1;
+    if (dpos >= 0) { bestPos = dpos; bestSc = 40; }
+    for (const w of dpos >= 0 ? [] : [...phrases, ...vars.flat(), ...stems]) {
       let i = lt.indexOf(w);
       while (i >= 0) {
         const win = lt.slice(Math.max(0, i - 250), i + 350);
         let sc = 0; for (const x of words) if (has(win, x)) sc += 3;
-        if (words.length > 1 && win.includes(phrase)) sc += 6;
+        if (phrases.some(ph => win.includes(ph))) sc += 6;
         if (wantDef && /is defined as|defined as|definition|refers to|is the process|is a |is an |means |consists of/.test(win)) sc += 5;
         if (sc > bestSc) { bestSc = sc; bestPos = i; }
         i = lt.indexOf(w, i + w.length);
@@ -438,7 +456,7 @@ async function searchBooks(query, max = 6) {
     const before = text.lastIndexOf('. ', bestPos); if (before > a2 - 120 && before >= 0) a2 = Math.max(0, before + 2);
     const after = text.indexOf('. ', bestPos + 120); if (after > 0 && after < b2 + 150) b2 = after + 1;
     const passage = (a2 > 0 ? '…' : '') + text.slice(a2, b2).replace(/\n+/g, ' ').trim() + (b2 < text.length ? '…' : '');
-    res.push({ book: pg.book, bookId: pg.bookId, size: pg.size, p: pg.p, role: pg.role, passage, terms: words, score: bestSc * 4 + pg.s });
+    res.push({ book: pg.book, bookId: pg.bookId, size: pg.size, p: pg.p, role: pg.role, passage, terms: [...new Set(vars.flat())], score: bestSc * 4 + pg.s });
   }
   res.sort((x, y) => y.score - x.score);
   const per = {}, out = [];
