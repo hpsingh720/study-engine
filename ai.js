@@ -396,7 +396,11 @@ async function searchBooks(query, max = 6) {
   const allBooks = (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc', 'reader'].includes(b.role));
   const pick = pickBook(q, allBooks); q = pick.q;
   const wantDef = /defin|what is|what are|meaning|means/.test(query.toLowerCase());
-  const words = [...new Set(q.replace(/[&.]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !SEARCH_STOP.has(w)))];
+  // Guideline bodies the teacher names ("according to WHO", "FIGO staging"): the passage MUST mention them.
+  const ORGS = { who: /\bWHO\b|World Health Organi[sz]ation/, figo: /\bFIGO\b/, nice: /\bNICE\b/, rcog: /\bRCOG\b/, acog: /\bACOG\b/, icmr: /\bICMR\b/, nhmrc: /\bNHMRC\b/, racgp: /\bRACGP\b/, ranzcog: /\bRANZCOG\b/, cdc: /\bCDC\b/, aha: /\bAHA\b/, esc: /\bESC\b/, gina: /\bGINA\b/, gold: /\bGOLD\b/, kdigo: /\bKDIGO\b/, ada: /\bADA\b/, iap: /\bIAP\b/ };
+  const orgs = Object.keys(ORGS).filter(k => (k === 'who' ? (/\bWHO\b/.test(query) || /(according to|acc(\.|ording)? to|as per|per|by|of|the) who\b|\bwho (criteria|classification|definition|grading|guideline|staging|grade)/i.test(query)) : new RegExp('\\b' + k + '\\b', 'i').test(query)));
+  const orgOk = text => orgs.every(k => ORGS[k].test(text));
+  const words = [...new Set(q.replace(/[&.]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !SEARCH_STOP.has(w) && !orgs.includes(w)))];
   if (!words.length) return [];
   // Word families: "hernioplasty" also finds hernia / herniorrhaphy.
   const stems = words.filter(w => w.length >= 8).map(w => w.slice(0, 5));
@@ -441,6 +445,7 @@ async function searchBooks(query, max = 6) {
       const lt = pg.text.toLowerCase();
       const n = words.filter(w => has(lt, w)).length;
       if (!n || (words.length >= 2 && n < Math.ceil(words.length / 2))) return; // the page must contain the main words
+      if (orgs.length && !orgOk(pg.text)) return;                    // "according to WHO": only pages that mention WHO
       let sc = scorePage(pg.text, terms) * (1 + n);
       if (phrases.some(ph => lt.includes(ph))) sc *= 3;              // the exact phrase ("normal labour"), not just the single words
       if (wantDef && phraseDef(lt) >= 0) sc *= defStrong ? 8 : 4;                    // …followed by "is defined as / is the…" = the definition line
@@ -455,7 +460,7 @@ async function searchBooks(query, max = 6) {
   for (const h of sem) {
     const k = h.bookId + ':' + h.p, cur = byKey.get(k);
     if (cur) { cur.s += h.sim * maxS * 1.5; cur.semOff = h.off; }
-    else if (h.sim > 0.42) { const pg = await DB.get('pages', [h.bookId, h.p]); const b = books.find(x => x.id === h.bookId); if (pg && b) { const t = { s: h.sim * maxS * 1.2, bookId: b.id, size: b.size, p: h.p, book: b.short || b.name, role: b.role, text: pg.text, semOff: h.off }; top.push(t); byKey.set(k, t); } }
+    else if (h.sim > 0.42) { const pg = await DB.get('pages', [h.bookId, h.p]); const b = books.find(x => x.id === h.bookId); if (pg && b && orgOk(pg.text)) { const t = { s: h.sim * maxS * 1.2, bookId: b.id, size: b.size, p: h.p, book: b.short || b.name, role: b.role, text: pg.text, semOff: h.off }; top.push(t); byKey.set(k, t); } }
   }
   top.sort((x, y) => y.s - x.s); top = top.slice(0, 40);
   const res = [];
@@ -466,12 +471,13 @@ async function searchBooks(query, max = 6) {
     let dpos = wantDef ? phraseDef(lt) : -1; if (wantDef && dpos < 0) dpos = headDef(lt);
     const strong = defStrong;
     if (dpos >= 0) { bestPos = dpos; bestSc = strong ? 80 : 40; }
-    for (const w of dpos >= 0 ? [] : [...phrases, ...vars.flat(), ...stems]) {
+    for (const w of dpos >= 0 ? [] : [...phrases, ...vars.flat(), ...stems, ...orgs]) {
       let i = lt.indexOf(w);
       while (i >= 0) {
         const win = lt.slice(Math.max(0, i - 250), i + 350);
         let sc = 0; for (const x of words) if (has(win, x)) sc += 3;
         if (phrases.some(ph => win.includes(ph))) sc += 6;
+        if (orgs.length && orgOk(text.slice(Math.max(0, i - 250), i + 350))) sc += 10;   // WHO mentioned right here
         if (wantDef && /is defined as|defined as|definition|refers to|is the process|is a |is an |means |consists of/.test(win)) sc += 5;
         if (sc > bestSc) { bestSc = sc; bestPos = i; }
         i = lt.indexOf(w, i + w.length);
