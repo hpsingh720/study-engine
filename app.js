@@ -697,6 +697,8 @@ async function init() {
   await App.render();
   Queue.kick();
   if (Sync.on()) { setInterval(() => PageRelay.serve(), 15000); setTimeout(() => PageRelay.serve(), 5000); }
+  // Jobs that failed only because a retired Gemini model was picked: give them back once.
+  setTimeout(async () => { let n = 0; for (const j of await DB.byIndex('queue', 'status', 'failed')) if (/no longer available to new users/i.test(j.error || '')) { j.status = 'pending'; j.tries = 0; delete j.error; await DB.put('queue', j); n++; } if (n) { Queue.kick(); toast(`Gave ${n} jobs another go (an old Gemini model had been picked)`, 6000); } }, 9000);
   setTimeout(() => Queue.reviveLibFails().then(n => n && toast(`Gave ${n} jobs another go (the page reader hadn't downloaded)`, 6000)).catch(console.warn), 8000);
   setTimeout(() => Queue.autoRetry().catch(console.warn), 60000); setInterval(() => Queue.autoRetry().catch(console.warn), 2 * 3600000);
   setTimeout(() => queueEmbeds().then(n => n && Queue.kick()).catch(console.warn), 30000); setInterval(() => queueEmbeds().then(n => n && Queue.kick()).catch(console.warn), 3600000);

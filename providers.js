@@ -92,6 +92,13 @@ const Providers = {
       }
       if (res.status >= 500) throw new QuotaError(`${p.name} busy (${res.status})`, false, 20000);
       // Newer "thinking" models want max_completion_tokens and no temperature — remember that and retry.
+      // Google retired this model for new keys and names the replacement: switch to it, never pick the old one again.
+      if (/no longer available|deprecated|is not supported|not found for API/i.test(msg) && /generativelanguage/.test(p.base || '') && !_retried) {
+        const dead = JSON.parse(localStorage.getItem('gemDead') || '[]'); if (!dead.includes(p.model)) { dead.push(p.model); localStorage.setItem('gemDead', JSON.stringify(dead)); }
+        const repl = (msg.match(/use (?:models\/)?(gemini-[\w.\-]+)/i) || [])[1];
+        const nm = repl && !dead.includes(repl) ? repl : await this.nextGeminiModel(p, false);
+        if (nm) { this.save(p.id, { model: nm }); return this.call({ ...p, model: nm }, { prompt, images, system, json, temperature, maxTokens, _retried: true }); }
+      }
       if (/max_completion_tokens/i.test(msg) && !p.newTokens) { this.save(p.id, { newTokens: true }); return this.call({ ...p, newTokens: true }, { prompt, images, system, json, temperature, maxTokens, _retried }); }
       if (/temperature/i.test(msg) && !p.noTemp) { this.save(p.id, { noTemp: true }); return this.call({ ...p, noTemp: true }, { prompt, images, system, json, temperature, maxTokens, _retried }); }
       // Some models reject JSON mode — retry once without it.
@@ -121,7 +128,8 @@ const Providers = {
     let ms = (this._gList ||= {})[tag];
     if (!ms) { try { ms = this._gList[tag] = await this.models(p); } catch (e) { ms = []; } }
     const ver = m => parseFloat((m.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1] || 0);
-    const cands = ms.filter(m => /^gemini-\d/.test(m) && /flash/.test(m) && !/tts|image|audio|live|embedding|thinking|computer|robotics|native|exp/i.test(m) && !out[tag + '|' + m])
+    const dead = JSON.parse(localStorage.getItem('gemDead') || '[]');
+    const cands = ms.filter(m => /^gemini-\d/.test(m) && /flash/.test(m) && !/tts|image|audio|live|embedding|thinking|computer|robotics|native|exp/i.test(m) && !out[tag + '|' + m] && !dead.includes(m))
       .sort((a, b) => (/lite/.test(b) ? 1 : 0) - (/lite/.test(a) ? 1 : 0) || ver(b) - ver(a) || a.length - b.length);
     const next = cands[0] || null;
     if (next) this.save(p.id, { model: next });
