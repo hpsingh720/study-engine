@@ -391,6 +391,15 @@ function spellVariants(w) {
   for (const [us, uk] of SPELL_PAIRS) { if (w.includes(uk)) out.add(w.replace(uk, us)); else if (w.includes(us)) out.add(w.replace(us, uk)); }
   return [...out];
 }
+// Scanned pages with pictures leave junk characters ("�:: ,�� · h $"). Keep only real words and numbers.
+function cleanOcr(t) {
+  return t.replace(/[^\x20-\x7E°±≤≥µ×–—…‘’“”■•→↑↓]/g, ' ').split(/\s+/).filter(w => {
+    if (!w) return false;
+    if (/[;{}?!$|_¢]/.test(w.slice(0, -1)) || /^[-(]?[A-Za-z][;:]?$/.test(w) && !/^(a|A|I)$/.test(w) || /^[()\-]+$/.test(w) || /^-[A-Za-z]{1,2}$/.test(w)) return false;
+    const good = (w.match(/[A-Za-z0-9]/g) || []).length;
+    return good >= Math.max(1, w.length * 0.5) || /^[-–—:;,.()\/%■•…]$/.test(w);
+  }).join(' ').replace(/(\s[,;:.·])+(?=\s)/g, '').replace(/\s{2,}/g, ' ').trim();
+}
 async function searchBooks(query, max = 6) {
   let q = query.toLowerCase().replace(/[^a-z0-9\s&'.-]/g, ' ').replace(/\s+/g, ' ').trim();
   const allBooks = (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc', 'reader'].includes(b.role));
@@ -490,7 +499,7 @@ async function searchBooks(query, max = 6) {
     if (dpos >= 0 && strong) a2 = Math.max(0, bestPos - 10);   // start right at the DEFINITION heading
     const after = text.indexOf('. ', bestPos + 120); if (after > 0 && after < b2 + 150) b2 = after + 1;
     const passage = (a2 > 0 ? '…' : '') + text.slice(a2, b2).replace(/\n+/g, ' ').trim() + (b2 < text.length ? '…' : '');
-    res.push({ book: pg.book, bookId: pg.bookId, size: pg.size, p: pg.p, role: pg.role, passage, terms: [...new Set(vars.flat())], score: bestSc * 4 + pg.s });
+    res.push({ book: pg.book, bookId: pg.bookId, size: pg.size, p: pg.p, role: pg.role, passage: cleanOcr(passage), terms: [...new Set(vars.flat())], score: bestSc * 4 + pg.s });
   }
   res.sort((x, y) => y.score - x.score);
   const per = {}, out = [];
