@@ -410,10 +410,17 @@ const MED_ABBR = { mi: 'myocardial infarction', acs: 'acute coronary syndrome', 
   dka: 'diabetic ketoacidosis', dm: 'diabetes mellitus', gdm: 'gestational diabetes', sle: 'systemic lupus erythematosus', ra: 'rheumatoid arthritis', cva: 'stroke', tia: 'transient ischaemic attack', gbs: 'guillain-barre syndrome',
   ibd: 'inflammatory bowel disease', ibs: 'irritable bowel syndrome', gerd: 'gastro-oesophageal reflux', gord: 'gastro-oesophageal reflux', pud: 'peptic ulcer', ugib: 'upper gastrointestinal bleeding', pph: 'postpartum haemorrhage', aph: 'antepartum haemorrhage',
   iugr: 'fetal growth restriction', fgr: 'fetal growth restriction', pih: 'pregnancy induced hypertension', pcos: 'polycystic ovary syndrome', bph: 'benign prostatic hyperplasia', ttp: 'thrombotic thrombocytopenic purpura', itp: 'immune thrombocytopenia', dic: 'disseminated intravascular coagulation' };
+// Books this device can search: its own, plus the text of the laptop's books downloaded through Sync.
+async function searchableBooks() {
+  let own = (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc', 'reader'].includes(b.role));
+  const rem = (typeof BookText !== 'undefined' ? BookText.remote() : []).filter(r => !own.some(b => b.id === r.id || (b.role !== 'reader' && b.size && b.size === r.size))).map(r => ({ ...r, remote: 1 }));
+  own = own.filter(b => !(b.role === 'reader' && rem.some(r => r.size && r.size === b.size)));   // the laptop's read text is better than a fresh copy
+  return [...own, ...rem];
+}
 async function searchBooks(query, max = 6) {
   query = String(query).replace(/\b[A-Za-z]{2,4}\b/g, w => MED_ABBR[w.toLowerCase()] && !/^(pe|ra|dm|hf)$/i.test(w) || (MED_ABBR[w.toLowerCase()] && w === w.toUpperCase()) ? MED_ABBR[w.toLowerCase()] : w);
   let q = query.toLowerCase().replace(/[^a-z0-9\s&'.-]/g, ' ').replace(/\s+/g, ' ').trim();
-  const allBooks = (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc', 'reader'].includes(b.role));
+  const allBooks = await searchableBooks();
   const pick = pickBook(q, allBooks); q = pick.q;
   const wantDef = /defin|what is|what are|meaning|means/.test(query.toLowerCase());
   // Guideline bodies the teacher names ("according to WHO", "FIGO staging"): the passage MUST mention them.

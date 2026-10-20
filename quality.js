@@ -69,8 +69,8 @@ function refsForPatient(m, refs = []) {
 
 // ---------- Mind maps (made only when asked) ----------
 async function bookFigures(t) {
-  if (!(await DB.count('books'))) return [];
-  const books = (await DB.all('books')).filter(b => ['ref', 'amc', 'mbbs'].includes(b.role));
+  const books = (await searchableBooks()).filter(b => ['ref', 'amc', 'mbbs'].includes(b.role));
+  if (!books.length) return [];
   const stop = /^(and|the|with|of|in|for|acute|chronic|disease|disorders?|syndrome)$/i;
   const words = [...new Set(`${t.name} ${(t.kw || []).join(' ')}`.toLowerCase().match(/[a-z]{3,}/g) || [])].filter(w => !stop.test(w));
   const abbr = (t.name.match(/\b[A-Z]{2,6}\b/g) || []).map(x => x.toLowerCase());
@@ -94,7 +94,11 @@ async function bookFigures(t) {
   for (const f of figs.slice(0, 3)) {
     try {
       const id = `fig-${f.bookId}-${f.p}`;
-      if (!(await DB.get('media', id))) { const book = await DB.get('books', f.bookId); const c = await renderPage(book, f.p, 1500); await DB.put('media', { id, data: c.toDataURL('image/jpeg', 0.72), kind: 'figure', caption: f.cap }); }
+      let book = await DB.get('books', f.bookId), file = book && await DB.get('files', book.id);
+      // On the iPad/phone: use a reading copy of the same PDF if you added one, otherwise ask the laptop for the page picture.
+      if (!file && f.size) { book = (await DB.all('books')).find(b => b.size === f.size) || null; file = book && await DB.get('files', book.id); }
+      if (!file) { f.img = PageRelay.pid(f.bookId, f.p); if (Sync.on() && !(await DB.get('media', f.img))) PageRelay.askPage(f.bookId, f.p, f.book).catch(() => {}); continue; }
+      if (!(await DB.get('media', id))) { const c = await renderPage(book, f.p, 1500); await DB.put('media', { id, data: c.toDataURL('image/jpeg', 0.72), kind: 'figure', caption: f.cap }); }
       f.img = id;
     } catch (e) { console.warn('figure', e); }
   }
@@ -116,7 +120,7 @@ Rules:
   const mm = await AI.call({ prompt, json: true });
   if (!mm || !Array.isArray(mm.branches)) throw new Error('The AI reply wasn’t a mind map — try again.');
   mm.figs = await bookFigures(t).catch(() => []);
-  mm.figsDone = !!(await DB.count('books'));   // no books on this device → the laptop adds the figures later
+  mm.figsDone = (await searchableBooks()).some(b => b.role !== 'reader');   // no books on this device → the laptop adds the figures later
   mm.at = Date.now();
   const s = sheet || { id: t.id, sections: {} };
   s.mindmap = mm; s.updated = Date.now(); await DB.put('sheets', s);

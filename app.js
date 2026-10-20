@@ -303,7 +303,26 @@ const A = {
     const btn = document.querySelector('[data-act=refPage]'); if (!btn || cur < 1) return;
     await A.openRef({ dataset: { book: btn.dataset.book, size: btn.dataset.size, p: String(cur) }, textContent: '' });
   },
-  printMindmap() { document.body.classList.add('print-mm'); setTimeout(() => { window.print(); setTimeout(() => document.body.classList.remove('print-mm'), 500); }, 50); },
+  async btFetch(el) {
+    if (!Sync.on()) return toast('Turn on Sync in Settings first (same address and key as the laptop).', 6000);
+    el.disabled = true; el.innerHTML = '<span class="spin"></span>Downloading…';
+    const n = await BookText.fetch(m => { window._btMsg = m; if (m) el.innerHTML = '<span class="spin"></span>' + esc(m); }).catch(e => { toast(e.message, 6000); return 0; });
+    window._btMsg = ''; toast(n ? `Got ${n.toLocaleString()} pages of book text — searches now answer on this device.` : (BookText.remote().length ? 'Already up to date.' : 'Nothing from the laptop yet — open the app on the laptop and try again in 5 minutes.'), 7000);
+    App.render(true);
+  },
+  printMindmap() {
+    const mm = document.querySelector('.mm'); if (!mm) return;
+    document.getElementById('print-area')?.remove();
+    const side = mm.querySelectorAll('.mm-side'), flows = document.querySelector('.mm-flows');
+    const area = document.createElement('div'); area.id = 'print-area';
+    const nf = flows ? flows.children.length : 0;
+    area.innerHTML = `<div class="pa-grid"><div class="pa-side">${side[0]?.innerHTML || ''}</div><div class="pa-mid"><div class="mm-center">${mm.querySelector('.mm-center')?.innerHTML || ''}</div></div><div class="pa-side">${side[1]?.innerHTML || ''}</div></div>${nf ? `<div class="pa-flows" style="grid-template-columns:repeat(${nf},1fr)">${flows.innerHTML}</div>` : ''}`;
+    document.body.appendChild(area);
+    // Fit one A4 landscape page: 277 × 190 mm inside the margins ≈ 1040 × 700 px.
+    const r = area.getBoundingClientRect(); area.style.zoom = Math.min(1, 1040 / r.width, 690 / r.height);
+    document.body.classList.add('print-mm');
+    setTimeout(() => { window.print(); setTimeout(() => { document.body.classList.remove('print-mm'); area.remove(); }, 800); }, 80);
+  },
   async askQ() {
     const s = Practice.s; const m = await DB.get('mcqs', s.qs[s.idx]);
     const a = s.ans[m.id], R = letters(correctSet(m));
@@ -538,14 +557,14 @@ async function openRemotePage(bookId, p, label) {
   if (cached?.data) return show(cached);
   if (!Sync.on()) { $('#ref-img').innerHTML = '<p class="muted">This book is on your laptop. Turn on Sync (Settings) so the laptop can send pages to this device.</p>'; return; }
   try {
-    let d = await PageRelay.getRecord('media:' + PageRelay.pid(bookId, p));
+    let d = await PageRelay.getRecord('media:' + PageRelay.pid(bookId, p)).catch(() => null);
     if (!d) {
       await PageRelay.askPage(bookId, p, label);
       const box = $('#ref-img'); if (box) box.innerHTML = '<p class="muted"><span class="spin"></span>Asking your laptop for this page… (it needs to be on, with the app open — usually 10–20 seconds)</p>';
       d = await PageRelay.waitFor('media:' + PageRelay.pid(bookId, p), x => !!x.data);
     }
     if (d) { await DB.put('media', { ...d, _dirty: 0 }, { fromSync: true }); show(d); }
-    else { const box = $('#ref-img'); if (box) box.innerHTML = '<p class="muted">Your laptop didn’t answer yet. Check it is on with the app open. Your request is saved — the page will be here next time you tap.</p>'; }
+    else { const box = $('#ref-img'); if (box) box.innerHTML = '<p class="muted">Your laptop didn’t answer in 90 seconds. Check: ① the laptop is on with the app open (not asleep), ② Settings → Sync shows <b>On</b> on <b>both</b> devices with the same address. Your request is saved — the page will be here next time you tap.</p>'; }
   } catch (e) { const box = $('#ref-img'); if (box) box.innerHTML = `<p class="warn-t">${esc(e.message)}</p>`; }
 }
 
@@ -555,24 +574,28 @@ async function runSearch(q) {
   const out = () => $('#search-out');
   const show = st => { Views._lastSearch = st; if (out()) out().innerHTML = searchResultsHtml(st); };
   if (!Semantic.pipe && (await DB.count('vecs'))) await Semantic.load(msg => show({ q, waiting: msg })).catch(() => {});
+  // Quick internet AI answer straight away; the exact book lines follow when the search finishes.
+  let quick = null;
   show({ q, waiting: 'Searching your books…' });
+  if (navigator.onLine) fastAI({ prompt: `Medical exam question from an MBBS/AMC student: "${q}". Answer ONLY in 4–10 short bullet points (max 14 words each), **bold** key terms, standard textbook facts (Australian practice if it differs). No intro sentence.` })
+    .then(a => { quick = a; const st = Views._lastSearch || { q }; if (st.q === q && !st.ai) show({ ...st, quick: a }); }).catch(() => {});
   let results = await searchBooks(q).catch(() => []), where = 'here';
-  if (!results.length && Sync.on() && !(await DB.all('books')).some(b => ['ref', 'mbbs', 'amc'].includes(b.role))) {
+  if (!results.length && Sync.on() && !(await searchableBooks()).some(b => b.role !== 'reader')) {
     // Books live on the laptop: ask it to search.
     show({ q, waiting: 'Asking your laptop to search your books… (10–20 seconds; it needs to be on with the app open)' });
     try { const id = await PageRelay.askSearch(q); const d = await PageRelay.waitFor(id, x => Array.isArray(x.results), 60000); results = d?.results || []; where = 'laptop'; if (!d) toast('Your laptop didn’t answer — is it on with the app open?', 6000); }
     catch (e) { toast(e.message, 6000); }
   }
-  if (AI.key && navigator.onLine) {
-    show({ q, results, where, aiWait: true });
+  if (AI.key && navigator.onLine && results.length) {
+    show({ q, results, where, quick, aiWait: true });
     try {
-      const canSearch = (await DB.all('books')).some(b => ['ref', 'mbbs', 'amc'].includes(b.role));
+      const canSearch = (await searchableBooks()).some(b => b.role !== 'reader');
       const r = await aiSearchAssist(q, results, canSearch);
-      show({ q, results: r.results.length ? r.results : results, where, ai: r.answer });
+      show({ q, results: r.results.length ? r.results : results, where, ai: r.answer, quick });
       return;
     } catch (e) { console.warn(e); }
   }
-  show({ q, results, where });
+  show({ q, results, where, quick });
 }
 
 // Form submits
@@ -747,6 +770,9 @@ async function init() {
   await App.render();
   Queue.kick();
   if (Sync.on()) { setInterval(() => PageRelay.serve(), 15000); setTimeout(() => PageRelay.serve(), 5000); }
+  // Book text: the laptop shares it, phones/iPads download it (then Ask books works on them with the laptop off).
+  const bt = () => BookText.share().then(() => BookText.fetch(m => { window._btMsg = m; })).catch(console.warn);
+  setTimeout(bt, 40000); setInterval(bt, 1800000);
   // Jobs that failed only because a retired Gemini model was picked: give them back once.
   setTimeout(async () => { let n = 0; for (const j of await DB.byIndex('queue', 'status', 'failed')) if (/no longer available to new users/i.test(j.error || '')) { j.status = 'pending'; j.tries = 0; delete j.error; await DB.put('queue', j); n++; } if (n) { Queue.kick(); toast(`Gave ${n} jobs another go (an old Gemini model had been picked)`, 6000); } }, 9000);
   setTimeout(() => Queue.reviveLibFails().then(n => n && toast(`Gave ${n} jobs another go (the page reader hadn't downloaded)`, 6000)).catch(console.warn), 8000);

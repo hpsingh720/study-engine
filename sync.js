@@ -65,7 +65,7 @@ const Sync = {
     const { url } = this.cfg();
     let since = localStorage.getItem('sb_since') || '1970-01-01T00:00:00Z', got = 0;
     while (true) {
-      const q = `${url}/rest/v1/records?select=store,data,updated,synced_at&synced_at=gt.${encodeURIComponent(since)}&order=synced_at.asc&limit=150`;
+      const q = `${url}/rest/v1/records?select=store,data,updated,synced_at&synced_at=gt.${encodeURIComponent(since)}&store=in.(${SYNCED.join(',')})&order=synced_at.asc&limit=150`;
       const r = await fetch(q, { headers: this.headers() });
       if (!r.ok) throw new Error('Download failed (' + r.status + '): ' + (await r.text()).slice(0, 160));
       const rows = await r.json();
@@ -99,13 +99,13 @@ const PageRelay = {
   rid(b, p) { return `pagereq:${b}:${p}`; },
   async upsert(rows) {
     const { url } = Sync.cfg();
-    const r = await fetch(url + '/rest/v1/records', { method: 'POST', headers: { ...Sync.headers(), Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify(rows) });
+    const r = await fetch(url + '/rest/v1/records', { method: 'POST', headers: { ...Sync.headers(), Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify(rows), signal: AbortSignal.timeout(15000) }).catch(() => { throw new Error('Could not reach your sync — check the internet, and the Sync address/key in Settings on this device.'); });
     if (!r.ok) throw new Error('Could not reach your sync (' + r.status + ')');
   },
   row(data) { return { id: 'media:' + data.id, store: 'media', data, updated: Date.now(), deleted: false }; },
   async getRecord(id) {
     const { url } = Sync.cfg();
-    const r = await fetch(`${url}/rest/v1/records?select=data&id=eq.${encodeURIComponent(id)}`, { headers: Sync.headers() });
+    const r = await fetch(`${url}/rest/v1/records?select=data&id=eq.${encodeURIComponent(id)}`, { headers: Sync.headers(), signal: AbortSignal.timeout(12000) });
     if (!r.ok) return null;
     return (await r.json())[0]?.data || null;
   },
@@ -121,18 +121,20 @@ const PageRelay = {
   },
   // Runs on the laptop (the device that has the books).
   async serve() {
-    if (!Sync.on() || this.busy || !navigator.onLine) return;
+    if (!Sync.on() || !navigator.onLine) return;
+    if (this.busy && Date.now() - (this.busyAt || 0) < 180000) return; // never stay stuck if one answer hung
+    this.busyAt = Date.now();
     const books = await DB.all('books'); if (!books.some(b => ['ref', 'mbbs', 'amc'].includes(b.role))) return; // only the laptop (with the processed books) answers
     this.busy = true;
     try {
       const { url } = Sync.cfg();
-      const r = await fetch(`${url}/rest/v1/records?select=data&store=eq.media&data->>status=eq.pending&order=updated.asc&limit=4`, { headers: Sync.headers() });
+      const r = await fetch(`${url}/rest/v1/records?select=data&store=eq.media&data->>status=eq.pending&order=updated.desc&limit=8`, { headers: Sync.headers(), signal: AbortSignal.timeout(15000) });
       if (!r.ok) return;
-      for (const { data: q } of await r.json()) {
+      for (const { data: q } of await r.json()) try {
         if (Date.now() - (q.at || 0) > 24 * 3600 * 1000) { await this.upsert([this.row({ ...q, status: 'expired' })]); continue; }
         if (q.kind === 'pagereq') {
           const book = books.find(b => b.id === q.bookId); const file = book && await DB.get('files', book.id);
-          if (!file) continue;
+          if (!file) { await this.upsert([this.row({ ...q, status: 'missing' })]); continue; }
           const c = await renderPage(book, q.p, 1500);
           const pg = await DB.get('pages', [book.id, q.p]);
           await this.upsert([
@@ -148,7 +150,73 @@ const PageRelay = {
           await Sync.run();
           await this.upsert([this.row({ ...q, status: 'done' })]);
         }
-      }
+      } catch (e) { console.warn('page relay item', e); await this.upsert([this.row({ ...q, status: 'failed', err: String(e.message || e).slice(0, 200) })]).catch(() => {}); }
     } catch (e) { console.warn('page relay', e); } finally { this.busy = false; }
+  }
+};
+
+// ---------- Book text for phone / iPad ----------
+// The laptop uploads the text it read from every book (about 3 KB a page). Phones and iPads download it once,
+// so "Ask books" answers straight away on that device — no PDFs to upload there, laptop can be off.
+const BookText = {
+  CH: 40,
+  remote() { try { return JSON.parse(localStorage.getItem('remoteBooks') || '[]'); } catch (e) { return []; } },
+  async ownBooks() { return (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc'].includes(b.role)); },
+  async post(rows) {
+    const { url } = Sync.cfg();
+    const r = await fetch(url + '/rest/v1/records', { method: 'POST', headers: { ...Sync.headers(), Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify(rows), signal: AbortSignal.timeout(60000) });
+    if (!r.ok) throw new Error('Book text upload failed (' + r.status + ')');
+  },
+  // Laptop side.
+  async share() {
+    if (!Sync.on() || !navigator.onLine || this.busy) return;
+    const books = await this.ownBooks(); if (!books.length) return;
+    this.busy = true;
+    try {
+      const index = [];
+      for (const b of books) {
+        const pages = []; await DB.each('pages', 'bookId', b.id, pg => pages.push([pg.p, String(pg.text || '').slice(0, 7000)]));
+        if (!pages.length) continue;
+        pages.sort((x, y) => x[0] - y[0]);
+        const chunks = Math.ceil(pages.length / this.CH), ver = pages.length + ':' + pages.reduce((n, x) => n + x[1].length, 0);
+        index.push({ id: b.id, name: b.name, short: b.short, role: b.role, size: b.size, pages: pages.length, chunks, ver, system: b.system || null });
+        if (localStorage.getItem('bt_' + b.id) === ver) continue;
+        for (let c = 0; c < chunks; c += 4) {
+          const rows = [];
+          for (let k = c; k < Math.min(chunks, c + 4); k++) rows.push({ id: `booktext:${b.id}:${k}`, store: 'booktext', data: { id: `${b.id}:${k}`, bookId: b.id, k, ver, pages: pages.slice(k * this.CH, (k + 1) * this.CH) }, updated: Date.now(), deleted: false });
+          await this.post(rows);
+        }
+        localStorage.setItem('bt_' + b.id, ver);
+      }
+      await this.post([{ id: 'booktext:index', store: 'booktext', data: { id: 'index', books: index, at: Date.now() }, updated: Date.now(), deleted: false }]);
+    } catch (e) { console.warn('book text share', e); } finally { this.busy = false; }
+  },
+  // Phone / iPad side (devices without the processed books).
+  async fetch(onMsg = () => {}) {
+    if (!Sync.on() || !navigator.onLine || this.busy) return 0;
+    if ((await this.ownBooks()).length) return 0;
+    this.busy = true; let got = 0;
+    try {
+      const { url } = Sync.cfg(), H = { headers: Sync.headers(), signal: AbortSignal.timeout(30000) };
+      const r = await fetch(`${url}/rest/v1/records?select=data&id=eq.booktext:index`, H);
+      if (!r.ok) return 0;
+      const idx = (await r.json())[0]?.data; if (!idx?.books?.length) return 0;
+      const have = this.remote();
+      for (const b of idx.books) {
+        const old = have.find(x => x.id === b.id);
+        if (old && old.ver === b.ver && old.complete) continue;
+        for (let k = 0; k < b.chunks; k += 5) {
+          onMsg(`Downloading your book text: ${b.short || b.name} (${Math.min(100, Math.round(k / b.chunks * 100))}%)`);
+          const ids = []; for (let j = k; j < Math.min(b.chunks, k + 5); j++) ids.push(`booktext:${b.id}:${j}`);
+          const q = await fetch(`${url}/rest/v1/records?select=data&id=in.(${ids.map(encodeURIComponent).join(',')})`, { headers: Sync.headers(), signal: AbortSignal.timeout(60000) });
+          if (!q.ok) throw new Error('download ' + q.status);
+          for (const { data } of await q.json()) { await DB.putMany('pages', (data.pages || []).map(([p, text]) => ({ bookId: b.id, p, text, remote: 1 }))); got += (data.pages || []).length; }
+        }
+        const list = this.remote().filter(x => x.id !== b.id); list.push({ ...b, complete: 1 });
+        localStorage.setItem('remoteBooks', JSON.stringify(list));
+      }
+      onMsg('');
+    } catch (e) { console.warn('book text fetch', e); } finally { this.busy = false; }
+    return got;
   }
 };

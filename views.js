@@ -553,6 +553,12 @@ function queueLine() {
 // ---------------- Ask your books ----------------
 async function aiSearchStatus() {
   const n = await DB.count('vecs').catch(() => 0);
+  const rem = BookText.remote(), own = (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc'].includes(b.role)).length;
+  if (!own) {
+    if (window._btMsg) return `<p class="muted small mt"><span class="spin"></span>${esc(window._btMsg)} — one time only; search works on the finished books already.</p>`;
+    if (rem.length) return `<p class="muted small mt">✓ Text of ${rem.length} books from your laptop is on this device (${rem.reduce((a, b) => a + (b.pages || 0), 0).toLocaleString()} pages) — answers come straight from here, laptop not needed. <button type="button" class="linkbtn" data-act="btFetch">Check for new books</button></p>`;
+    return `<p class="muted small mt">${Sync.on() ? 'Your laptop’s book text hasn’t reached this device yet. Open the app on the laptop once (it uploads in a few minutes), then' : 'Turn on Sync (Settings) with the same address as your laptop, then'} <button type="button" class="linkbtn" data-act="btFetch">download book text</button>. Until then searches are sent to the laptop.</p>`;
+  }
   if (Semantic.failed) return `<p class="muted small mt">Offline AI search couldn’t start (${esc(Semantic.failed.slice(0, 80))}) — word search still works.</p>`;
   return n ? `<p class="muted small mt">✓ Offline AI search on — it matches meaning, not just words (${n.toLocaleString()} passages ready; works without internet).</p>`
     : (await DB.count('books')) ? `<p class="muted small mt">Offline AI search is being prepared in the background. Until then, word search is used.</p>`
@@ -575,11 +581,12 @@ function markTerms(html, terms) {
   return html;
 }
 function searchResultsHtml(r) {
-  if (r.waiting) return `<p class="muted"><span class="spin"></span>${esc(r.waiting)}</p>`;
   const g = `<a class="btn sm ghost" target="_blank" rel="noopener" href="https://www.google.com/search?q=${encodeURIComponent(r.q)}">Search Google</a>`;
+  const quickBox = r.quick && !r.ai ? `<div class="card ai-ans mb"><div class="row between"><p class="eyebrow">Quick answer · internet AI</p>${g}</div><div class="read">${md(r.quick)}</div><p class="muted small">${r.waiting || r.aiWait || !r.results ? 'Exact lines from your books are coming below…' : 'Exact lines from your books are below.'}</p></div>` : '';
+  if (r.waiting) return quickBox + `<p class="muted"><span class="spin"></span>${esc(r.waiting)}</p>`;
   const top = r.ai ? `<div class="card ai-ans mb"><div class="row between"><p class="eyebrow">AI answer · from your books</p>${g}</div><div class="read">${md(r.ai)}</div></div>`
     : r.aiWait ? `<p class="muted"><span class="spin"></span>AI is checking your books for the best answer…</p>` : '';
-  if (top) return top + searchResultsHtml({ ...r, ai: null, aiWait: false, _inner: 1 });
+  if (top || quickBox) return quickBox + top + searchResultsHtml({ ...r, ai: null, aiWait: false, quick: null, _inner: 1 });
   if (!r._inner && !r.results?.length) return `<div class="card"><p>Nothing found for “${esc(r.q)}”.</p><div class="row gap">${g}</div></div>`;
   if (!r.results?.length) return `<div class="card"><p>Nothing found for “${esc(r.q)}” in ${r.where === 'laptop' ? 'your laptop’s books' : 'the books on this device'}.</p><p class="muted small">Try fewer, simpler words (e.g. “normal labour”), or ask the AI.</p><button class="btn" data-act="explainSearch">Ask the AI anyway</button></div>`;
   return `${r.results.map(x => `<article class="card mt quote-card"><div class="row between wrap gap"><button class="linkbtn" data-act="openRef" data-book="${x.bookId}" data-size="${x.size || ''}" data-p="${x.p}">${esc(x.book)} — page ${x.p}</button><span class="role role-${x.role}">${esc(ROLES[x.role] || '')}</span></div>

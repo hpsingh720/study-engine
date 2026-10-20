@@ -470,3 +470,22 @@ mark.kw { background: none; font-weight: 650; text-decoration: underline 1px; te
   body.print-mm .mm-b, body.print-mm .mm-flow { break-inside: avoid; background: #fff; }
   @page { size: A4 landscape; margin: 10mm; }
 }
+#print-area { position: absolute; left: -99999px; top: 0; width: 1500px; background: #fff; color: #111; }
+#print-area .pa-grid { display: grid; grid-template-columns: 2fr 220px 2fr; gap: 12px; align-items: center; }
+#print-area .pa-side { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }
+#print-area .pa-mid { display: grid; justify-items: center; }
+#print-area .mm-center { width: 210px; }
+#print-area .pa-flows { display: grid; gap: 10px; margin-top: 12px; }
+#print-area .flow { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 4px; }
+#print-area .fstep { width: auto; flex: 0 1 auto; max-width: 48%; padding: 4px 8px; }
+#print-area .farrow { font-size: 0; } #print-area .farrow::after { content: '→'; font-size: 14px; }
+#print-area ul { margin: 0; padding-left: 16px; } #print-area li { margin: 1px 0; }
+#print-area .mm-b, #print-area .mm-flow { break-inside: avoid; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+@media print {
+  body.print-mm > *:not(#print-area) { display: none !important; }
+  body.print-mm, body.print-mm html { background: #fff !important; }
+  body.print-mm #print-area { position: static; left: 0; }
+  body.print-mm #print-area .mm-b, body.print-mm #print-area .mm-flow { background: #fff; }
+}
+#print-area .mm-center { background: #1e3a8a !important; color: #fff !important; border-radius: 18px; padding: 18px 14px; text-align: center; font-weight: 800; font-size: 20px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+#print-area .mm-center * { color: #fff !important; }
