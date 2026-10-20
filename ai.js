@@ -553,24 +553,27 @@ async function askTutor(topic, question, context = '') {
 }
 
 // Online help for "Ask books": the AI rewrites the question into textbook wording, then picks the best passages and answers from them.
-async function aiSearchAssist(q, results, canSearch) {
+async function aiSearchAssist(q, results, canSearch, _second) {
   const fast = { model: AI.bulkModel, json: true };
   let all = results.slice();
-  if (canSearch) {
-    const r = await AI.call({ ...fast, prompt: `A medical student searched their textbooks for: "${q}".
-Write 3 short alternative searches using the exact words a textbook heading or sentence would use (expand abbreviations, use synonyms, e.g. "types of MI" → "classification of acute myocardial infarction type 1 type 2"). Keep any book name they gave (e.g. "from davidson").
-Return JSON {"queries":["…","…","…"]}` }).catch(() => null);
-    for (const alt of (r?.queries || []).slice(0, 3)) for (const x of await searchBooks(alt, 6).catch(() => [])) all.push(x);
+  // Search again in textbook wording when the first try found little — or when the AI says the pages don't answer it.
+  if (canSearch && (results.length < 3 || _second)) {
+    const r = await AI.call({ ...fast, prompt: `A medical student searched their textbooks for: "${q}".\nWrite 4 short alternative searches using the exact words a textbook heading or sentence would use (expand abbreviations, synonyms, the operation's or condition's other names, e.g. "hernioplasty" → "mesh repair of inguinal hernia", "Lichtenstein repair"; "types of MI" → "classification of acute myocardial infarction"). Keep any book name they gave (e.g. "from davidson").\nReturn JSON {"queries":["…","…","…","…"]}` }).catch(() => null);
+    const fresh = [];
+    for (const alt of (r?.queries || []).slice(0, 4)) for (const x of await searchBooks(alt, 6).catch(() => [])) fresh.push(x);
+    all = _second ? [...fresh, ...all] : [...all, ...fresh];
   }
-  const seen = new Set(); all = all.filter(x => { const k = x.bookId + ':' + x.p; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 14);
+  const seen = new Set(); all = all.filter(x => { const k = x.bookId + ':' + x.p; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 16);
   if (!all.length) {
-    const a = await AI.call({ model: AI.bulkModel, json: false, prompt: `Answer this medical question for an MBBS/AMC student in 3–6 short bullet points: ${q}\nStart with: "(Not found in your books — general knowledge)"` });
+    const a = await AI.call({ model: AI.bulkModel, json: false, prompt: `Answer this medical question for an MBBS/AMC student in 4–8 short bullet points: ${q}\nStart with: "(Not found in your books — general knowledge)"` });
     return { results: [], answer: a };
   }
   const list = all.map((x, i) => `[${i + 1}] ${x.book} p.${x.p}: ${String(x.passage).slice(0, 600)}`).join('\n');
-  const r2 = await AI.call({ ...fast, prompt: `Question: "${q}"\nPassages from the student's own textbooks:\n${list}\n\nReturn JSON {"best":[numbers of the passages that actually answer the question, best first],"answer":"the answer in 3–8 short bullet points, keeping the books' own wording where possible, each bullet ending with its passage number like [3]"}. If none answer it, best = [] and answer from general knowledge starting with "(Not in these pages)".` });
+  const r2 = await AI.call({ ...fast, prompt: `Question from a medical student: "${q}"\nPassages from their own textbooks:\n${list}\n\nGive a COMPLETE, correct exam answer.\nReturn JSON {"best":[numbers of passages that actually answer it, best first],"points":["one short point per item — use the books' wording where a passage covers it and end with its number like [3]; add anything important the passages miss from standard textbook knowledge, ending with (general)"]}\nUse 4–10 points, grouped logically. No paragraphs. Only list a passage in "best" if it is really about the question.` });
   const best = (r2?.best || []).map(n => all[n - 1]).filter(Boolean);
+  if (!best.length && canSearch && !_second) return aiSearchAssist(q, results, canSearch, true);
   const rest = all.filter(x => !best.includes(x));
-  const answer = String(r2?.answer || '').replace(/\[(\d+)\]/g, (m, n) => { const x = all[n - 1]; return x ? ` (${x.book} p.${x.p})` : ''; });
-  return { results: [...best, ...rest].slice(0, 10), answer };
+  const pts = Array.isArray(r2?.points) ? r2.points : String(r2?.answer || '').split(/\n+/);
+  const answer = (best.length ? '' : '(Your books’ pages didn’t cover this directly — points marked general are standard knowledge)\n') + pts.map(x => '- ' + String(x).replace(/^[-•\s]+/, '').replace(/\[(\d+)\]/g, (m, n) => { const y = all[n - 1]; return y ? ` (${y.book.replace(/'s Principles and Pr.*/, '')} p.${y.p})` : ''; })).join('\n');
+  return { results: best.length ? [...best, ...rest.slice(0, 4)] : rest.slice(0, 6), answer };
 }

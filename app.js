@@ -738,6 +738,12 @@ async function init() {
   setTimeout(() => queueRefs().catch(console.warn), 20000); setInterval(() => queueRefs().catch(console.warn), 3600000);
   if (Sync.on()) { Sync.run(); setInterval(() => Sync.run(), 120000); document.addEventListener('visibilitychange', () => { if (!document.hidden) Sync.run(); }); }
   else Sync.set('off');
-  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+    // Pick up a new version by itself: check on every open, and reload once when the new one takes over.
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(r => { r.update().catch(() => {}); document.addEventListener('visibilitychange', () => { if (!document.hidden) r.update().catch(() => {}); }); }).catch(() => {});
+    let reloaded = false; if (navigator.serviceWorker.controller) navigator.serviceWorker.addEventListener('controllerchange', () => { if (!reloaded && !Practice.s) { reloaded = true; location.reload(); } });
+  }
+  const vb = document.createElement('span'); vb.className = 'ver-badge'; vb.textContent = APP_VERSION; document.querySelector('.brand')?.appendChild(vb);
+  const vt = document.createElement('div'); vt.className = 'ver-top'; vt.textContent = 'Study Engine ' + APP_VERSION; document.body.prepend(vt);
 }
 document.addEventListener('DOMContentLoaded', init);
