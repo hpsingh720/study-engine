@@ -670,7 +670,7 @@ Views.settings = async () => {
     <div class="row gap wrap"><button class="btn" data-act="exportData">Download backup</button><label class="btn">Load backup<input type="file" accept=".json,application/json" hidden data-change="importData"></label></div></section>
   <section class="card mt"><h3>Test mode</h3><p class="muted small">When you start a topic test or practice set.</p>
     <select data-change="setModePref" class="select-sm">${[['ask', 'Ask me every time'], ...Object.entries(MODES).map(([k, m]) => [k, m.label])].map(([v, l]) => `<option value="${v}" ${(localStorage.getItem('modePref') || 'ask') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></section>
-  <section class="card mt"><h3>Appearance</h3><div class="seg">${['auto', 'light', 'dark'].map(k => `<button class="${(localStorage.getItem('theme') || 'auto') === k ? 'on' : ''}" data-act="theme" data-k="${k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}</div></section>
+  <section class="card mt"><h3>Appearance</h3><div class="seg">${[['auto', 'Auto'], ['light', 'Dawn (light)'], ['dark', 'Cosmos (dark)']].map(([k, l]) => `<button class="${(localStorage.getItem('theme') || 'auto') === k ? 'on' : ''}" data-act="theme" data-k="${k}">${l}</button>`).join('')}</div></section>
   </div>`;
 };
 
