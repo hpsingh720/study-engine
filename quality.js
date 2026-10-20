@@ -116,6 +116,7 @@ Rules:
   const mm = await AI.call({ prompt, json: true });
   if (!mm || !Array.isArray(mm.branches)) throw new Error('The AI reply wasn’t a mind map — try again.');
   mm.figs = await bookFigures(t).catch(() => []);
+  mm.figsDone = !!(await DB.count('books'));   // no books on this device → the laptop adds the figures later
   mm.at = Date.now();
   const s = sheet || { id: t.id, sections: {} };
   s.mindmap = mm; s.updated = Date.now(); await DB.put('sheets', s);
@@ -183,15 +184,16 @@ async function askSelection(text, ctx, history = []) {
   const slot = out.lastElementChild;
   try {
     const prev = history.slice(0, -1).map(h => `Q: ${h.q}\nA: ${h.a}`).join('\n');
-    const prompt = q ? `Earlier we discussed "${text}" (context: ${ctx}).\n${prev}\nStudent's follow-up: ${q}\nAnswer briefly and clearly (max 150 words), with **bold** key terms; use an arrow chain (A → B → C) if it helps.`
+    const prompt = q ? `Earlier we discussed "${text}" (context: ${ctx}).\n${prev}\nStudent's follow-up: ${q}\nAnswer ONLY in short bullet points (max 120 words), **bold** key terms; an arrow chain (A → B → C) if it helps; add a Hindi/Punjabi mnemonic (in English letters) if useful.`
       : `A medical student (Indian MBBS, preparing for the Australian AMC exam) selected this text while studying: "${text}"\nSurrounding text: ${ctx}\n
-Explain it in an interesting, easy way (max 220 words):
-1. **In one line:** what it means in plain words.
-2. **How it works:** the mechanism as a short arrow chain (A → B → C), or a tiny step list.
-3. **Remember it:** an analogy or memory hook.
-4. **Exam angle:** what AMC/MBBS exams ask about it (Australian practice if it differs).
-5. **Test yourself:** 2 short questions, answers in brackets at the very end.
-Use **bold** for key terms. No long paragraphs.`;
+Explain it ONLY in short bullet points (max 12 words each, max 200 words total) — never paragraphs:
+**What it is** – 1–2 points in plain words.
+**How it works** – the mechanism as an arrow chain (A → B → C).
+**Key facts** – 3–6 points (numbers, criteria, components as a list).
+**Remember it** – one mnemonic in English, and one fun mnemonic in Hindi or Punjabi written in English letters.
+**Exam angle** – 1–2 points on what AMC/MBBS asks (Australian practice if different).
+**Test yourself** – 2 short questions; answers in brackets at the end.
+Use **bold** for key terms.`;
     const a = await fastAI({ prompt, json: false }); // the fast model: answers in a few seconds
     slot.innerHTML = (q ? `<p class="muted small">You asked: ${esc(q)}</p>` : '') + md(a);
     if (q) history[history.length - 1].a = a;

@@ -186,7 +186,6 @@ const A = {
     const t = await DB.get('topics', el.dataset.id); const books = await hasBooks(); const sheet = await DB.get('sheets', t.id);
     openModal(`<h3>${esc(t.name)}</h3><div class="menu">
       ${books ? `<button class="btn full" data-act="genTopic" data-id="${t.id}" data-force="1">${sheet ? 'Rewrite sheet from books' : 'Generate sheet & MCQs'}</button>` : ''}
-      ${sheet ? `<button class="btn full" data-act="printTopic" data-id="${t.id}">Print / save sheet as PDF</button>` : ''}
       <button class="btn full" data-act="renameTopic" data-id="${t.id}">Rename / edit search words</button>
       <button class="btn full ghost danger" data-act="deleteTopic" data-id="${t.id}">Delete topic</button>
       <button class="btn full" data-act="closeModal">Close</button></div>`);
@@ -304,6 +303,7 @@ const A = {
     const btn = document.querySelector('[data-act=refPage]'); if (!btn || cur < 1) return;
     await A.openRef({ dataset: { book: btn.dataset.book, size: btn.dataset.size, p: String(cur) }, textContent: '' });
   },
+  printMindmap() { document.body.classList.add('print-mm'); setTimeout(() => { window.print(); setTimeout(() => document.body.classList.remove('print-mm'), 500); }, 50); },
   async askQ() {
     const s = Practice.s; const m = await DB.get('mcqs', s.qs[s.idx]);
     const a = s.ans[m.id], R = letters(correctSet(m));
@@ -753,6 +753,7 @@ async function init() {
   setTimeout(() => Queue.autoRetry().catch(console.warn), 60000); setInterval(() => Queue.autoRetry().catch(console.warn), 2 * 3600000);
   setTimeout(() => queueEmbeds().then(n => n && Queue.kick()).catch(console.warn), 30000); setInterval(() => queueEmbeds().then(n => n && Queue.kick()).catch(console.warn), 3600000);
   setInterval(() => { if (localStorage.getItem('reviewOn') && (Date.now() - (window._rvT || 0)) > 3500e3) { window._rvT = Date.now(); queueReview().then(() => queueMasks()).then(() => queueVerify()).catch(console.warn); } }, 600000);
+  setInterval(() => fillMindmapFigs().catch(console.warn), 300000); setTimeout(() => fillMindmapFigs().catch(console.warn), 25000);
   setTimeout(() => queueRefs().catch(console.warn), 20000); setInterval(() => queueRefs().catch(console.warn), 3600000);
   if (Sync.on()) { Sync.run(); setInterval(() => Sync.run(), 120000); document.addEventListener('visibilitychange', () => { if (!document.hidden) Sync.run(); }); }
   else Sync.set('off');

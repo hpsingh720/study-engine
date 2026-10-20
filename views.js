@@ -200,7 +200,7 @@ Views.topic = async (id, tab) => {
   if (tab === 'sheet') body = sheet ? Object.keys(SECTIONS).map(sec => sectionTab(t, sheet, sec, books, inQueue, note?.hl)).join('<hr class="sec-gap">') : noSheet(t, books, inQueue);
   else if (tab === 'mindmap' && sheet?.mindmap) {
     const imgs = {}; for (const f of sheet.mindmap.figs || []) if (f.img) { const d = await DB.get('media', f.img); if (d) imgs[f.img] = d.data; }
-    body = `<div class="row between mb"><span class="muted small">Made ${fmtDate(sheet.mindmap.at)} from your books</span><button class="btn sm ghost" data-act="genMindmap" data-id="${id}">Remake</button></div>${mindmapHTML(t, sheet.mindmap, imgs)}`;
+    body = `<div class="row between mb"><span class="muted small">Made ${fmtDate(sheet.mindmap.at)} from your books</span><div class="row gap"><button class="btn sm" data-act="printMindmap">Download / print</button><button class="btn sm ghost" data-act="genMindmap" data-id="${id}">Remake</button></div></div>${mindmapHTML(t, sheet.mindmap, imgs)}`;
   } else if (tab === 'mindmap') body = sheet?.mindmap ? '' 
     : empty('Mind map on request', 'A one-page colourful map of this topic — causes, features, investigations, management — plus step-by-step flowcharts and the figure pages in your books. Made only for topics you ask for.', `<button class="btn primary" data-act="genMindmap" data-id="${id}">Make mind map</button>`);
   else if (tab === 'compare') body = compareTab(t, sheet, books, inQueue);

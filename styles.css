@@ -461,3 +461,12 @@ mark.kw { background: none; font-weight: 650; text-decoration: underline 1px; te
 @media (max-width: 860px) { .ver-top { display: block; text-align: center; font-size: .72rem; opacity: .55; padding: 4px 0 0; } }
 .disputed { background: #fff4e6; color: #8a4b00; border-radius: 8px; padding: 8px 10px; font-size: .92rem; } @media (prefers-color-scheme: dark) { .disputed { background: #3b2a12; color: #ffc078; } }
 .b-UWORLD { background: #e3fafc; color: #0b7285; } .help li { margin: 6px 0; line-height: 1.5; }
+/* Download / print a mind map: only the map, on white, landscape */
+@media print {
+  body.print-mm .nav, body.print-mm .tabbar, body.print-mm .page-head .row, body.print-mm .tabs, body.print-mm .ver-top, body.print-mm .tab-body > .row, body.print-mm #toast, body.print-mm #selbar { display: none !important; }
+  body.print-mm .app { display: block; } body.print-mm .main { padding: 0; }
+  body.print-mm { background: #fff !important; color: #111 !important; }
+  body.print-mm .mm-center { box-shadow: none; }
+  body.print-mm .mm-b, body.print-mm .mm-flow { break-inside: avoid; background: #fff; }
+  @page { size: A4 landscape; margin: 10mm; }
+}

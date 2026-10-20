@@ -466,7 +466,8 @@ async function searchBooks(query, max = 6) {
       const n = words.filter(w => has(lt, w)).length;
       if (!n || (words.length >= 2 && n < Math.ceil(words.length / 2))) return; // the page must contain the main words
       if (orgs.length && !orgOk(pg.text)) return;                    // "according to WHO": only pages that mention WHO
-      let sc = scorePage(pg.text, terms) * (1 + n);
+      let sc = scorePage(pg.text, terms) || stems.reduce((a, st) => a + Math.min(20, lt.split(st).length - 1), 0) * 0.5;
+      sc *= (1 + n);
       if (phrases.some(ph => lt.includes(ph))) sc *= 3;              // the exact phrase ("normal labour"), not just the single words
       if (wantDef && phraseDef(lt) >= 0) sc *= defStrong ? 8 : 4;                    // …followed by "is defined as / is the…" = the definition line
       else if (wantDef && headDef(lt) >= 0) sc *= 3;               // the main word's own definition ("…is called 'labor'")
@@ -565,7 +566,7 @@ async function askTutor(topic, question, context = '') {
   const sheet = topic ? await DB.get('sheets', topic.id) : null;
   const sheetCtx = sheet ? JSON.stringify({ sections: sheet.sections, comparison: sheet.comparison }).slice(0, 5000) : '';
   return fastAI({
-    json: false, system: SYSTEM_TUTOR + ' Answer in short bullet points. When Indian and Australian practice differ, say both clearly.',
+    json: false, system: SYSTEM_TUTOR + ' Answer ONLY in short bullet points (max 14 words each), never paragraphs. Bold key terms. Add one memorable mnemonic (English, plus a fun Hindi/Punjabi one in English letters) when there is a list to remember. When Indian and Australian practice differ, say both clearly.',
     prompt: `${topic ? 'Topic: ' + topic.name + '\nRevision sheet: ' + sheetCtx : ''}\n${context ? 'Context: ' + context : ''}\n\nStudent question: ${question}`
   });
 }

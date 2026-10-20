@@ -64,7 +64,7 @@ ${block}`;
 async function queueMasks() {
   const queued = new Set((await DB.all('queue')).filter(j => j.kind === 'maskimg' && j.status !== 'done').map(j => j.payload.id));
   let n = 0;
-  for (const m of await DB.live('mcqs')) if (m.img && !m.imgMask && !m.maskTried && !queued.has(m.id)) { await Queue.add('maskimg', { id: m.id }, 6); n++; }
+  for (const m of await DB.live('mcqs')) if (m.img && !m.mask2 && !queued.has(m.id)) { await Queue.add('maskimg', { id: m.id }, 6); n++; }
   return n;
 }
 Handlers.maskimg = async function (job, ctx) {
@@ -74,9 +74,13 @@ Handlers.maskimg = async function (job, ctx) {
   const worker = await getOcrWorker(ctx?.lane || 'local');
   const { data } = await worker.recognize(img, {}, { blocks: true, text: true });
   const words = data.words || (data.blocks || []).flatMap(b => (b.paragraphs || []).flatMap(p => (p.lines || []).flatMap(l => l.words || [])));
-  const optWords = new Set(m.options.join(' ').toLowerCase().match(/[a-z]{4,}/g) || []);
-  const hits = words.filter(w => { const t = String(w.text || '').toLowerCase().replace(/[^a-z]/g, ''); return t.length >= 4 && optWords.has(t); });
-  m.maskTried = 1;
+  // Cover every printed word of 3+ letters (labels, arrows' names, captions) — short marks like ECG leads (II, V1) stay.
+  const hits = words.filter(w => (w.confidence ?? 100) >= 45 && String(w.text || '').replace(/[^A-Za-z]/g, '').length >= 3);
+  const area = img.naturalWidth * img.naturalHeight || 1;
+  const textArea = hits.reduce((a, w) => a + (w.bbox.x1 - w.bbox.x0) * (w.bbox.y1 - w.bbox.y0), 0);
+  const huge = hits.some(w => (w.bbox.y1 - w.bbox.y0) > img.naturalHeight * 0.12);
+  m.maskTried = 1; m.mask2 = 1;
+  if (textArea > area * 0.18 || huge) { m.flagged = 1; m.flagReason = 'picture is only text (bad crop)'; }
   if (hits.length) {
     const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
     const g = c.getContext('2d'); g.drawImage(img, 0, 0); g.fillStyle = '#fff';
@@ -123,3 +127,17 @@ ${qs.map(m => `[${m.id}]\n${m.stem}\n${m.options.map((o, i) => `${L(i)}) ${o}`).
   }
   if (!matched) throw new Error('Double-check reply did not match — will retry');
 };
+
+// Mind maps made on the phone or iPad have no book figures (the books live on the laptop):
+// the laptop adds them by itself and Sync brings them back.
+async function fillMindmapFigs() {
+  if (!(await DB.all('books')).some(b => ['ref', 'mbbs', 'amc'].includes(b.role))) return 0;
+  let n = 0;
+  for (const s of await DB.all('sheets')) {
+    if (!s.mindmap || s.mindmap.figsDone) continue;
+    const t = await DB.get('topics', s.id); if (!t) continue;
+    if (!(s.mindmap.figs || []).length) s.mindmap.figs = await bookFigures(t).catch(() => []);
+    s.mindmap.figsDone = 1; await DB.put('sheets', s); n++;
+  }
+  return n;
+}
