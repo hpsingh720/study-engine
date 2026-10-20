@@ -171,7 +171,7 @@ const BookText = {
   async share() {
     if (!Sync.on() || !navigator.onLine || this.busy) return;
     const books = await this.ownBooks(); if (!books.length) return;
-    this.busy = true;
+    this.busy = true; let sent = 0;
     try {
       const index = [];
       for (const b of books) {
@@ -181,6 +181,7 @@ const BookText = {
         const chunks = Math.ceil(pages.length / this.CH), ver = pages.length + ':' + pages.reduce((n, x) => n + x[1].length, 0);
         index.push({ id: b.id, name: b.name, short: b.short, role: b.role, size: b.size, pages: pages.length, chunks, ver, system: b.system || null });
         if (localStorage.getItem('bt_' + b.id) === ver) continue;
+        sent++; window._btMsg = `Sending book text to your phone/iPad: ${b.short || b.name}…`;
         for (let c = 0; c < chunks; c += 4) {
           const rows = [];
           for (let k = c; k < Math.min(chunks, c + 4); k++) rows.push({ id: `booktext:${b.id}:${k}`, store: 'booktext', data: { id: `${b.id}:${k}`, bookId: b.id, k, ver, pages: pages.slice(k * this.CH, (k + 1) * this.CH) }, updated: Date.now(), deleted: false });
@@ -189,7 +190,9 @@ const BookText = {
         localStorage.setItem('bt_' + b.id, ver);
       }
       await this.post([{ id: 'booktext:index', store: 'booktext', data: { id: 'index', books: index, at: Date.now() }, updated: Date.now(), deleted: false }]);
-    } catch (e) { console.warn('book text share', e); } finally { this.busy = false; }
+      localStorage.setItem('bt_sharedAt', Date.now()); localStorage.removeItem('bt_err');
+      if (sent) toast(`✓ Book text sent to your phone/iPad (${index.length} books). On them: Ask books → download book text.`, 12000);
+    } catch (e) { console.warn('book text share', e); localStorage.setItem('bt_err', e.message); toast('Couldn’t send book text to your phone/iPad: ' + e.message, 10000); } finally { this.busy = false; window._btMsg = ''; }
   },
   // Phone / iPad side (devices without the processed books).
   async fetch(onMsg = () => {}) {
@@ -216,6 +219,7 @@ const BookText = {
         localStorage.setItem('remoteBooks', JSON.stringify(list));
       }
       onMsg('');
+      if (got) toast(`✓ Downloaded your books’ text (${got.toLocaleString()} pages) — Ask books now answers on this device.`, 10000);
     } catch (e) { console.warn('book text fetch', e); } finally { this.busy = false; }
     return got;
   }

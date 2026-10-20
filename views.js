@@ -559,10 +559,15 @@ async function aiSearchStatus() {
     if (rem.length) return `<p class="muted small mt">✓ Text of ${rem.length} books from your laptop is on this device (${rem.reduce((a, b) => a + (b.pages || 0), 0).toLocaleString()} pages) — answers come straight from here, laptop not needed. <button type="button" class="linkbtn" data-act="btFetch">Check for new books</button></p>`;
     return `<p class="muted small mt">${Sync.on() ? 'Your laptop’s book text hasn’t reached this device yet. Open the app on the laptop once (it uploads in a few minutes), then' : 'Turn on Sync (Settings) with the same address as your laptop, then'} <button type="button" class="linkbtn" data-act="btFetch">download book text</button>. Until then searches are sent to the laptop.</p>`;
   }
+  const sh = +localStorage.getItem('bt_sharedAt') || 0, er = localStorage.getItem('bt_err');
+  const shareLine = !Sync.on() ? '' : window._btMsg ? `<p class="muted small mt"><span class="spin"></span>${esc(window._btMsg)}</p>`
+    : er ? `<p class="warn-t small mt">Sending book text to phone/iPad failed: ${esc(er)}</p>`
+    : sh ? `<p class="muted small mt">✓ Book text sent to your phone/iPad (${new Date(sh).toLocaleString()}).</p>`
+    : `<p class="muted small mt"><span class="spin"></span>Book text will be sent to your phone/iPad within a minute of opening the app.</p>`;
   if (Semantic.failed) return `<p class="muted small mt">Offline AI search couldn’t start (${esc(Semantic.failed.slice(0, 80))}) — word search still works.</p>`;
-  return n ? `<p class="muted small mt">✓ Offline AI search on — it matches meaning, not just words (${n.toLocaleString()} passages ready; works without internet).</p>`
+  return shareLine + (n ? `<p class="muted small mt">✓ Offline AI search on — it matches meaning, not just words (${n.toLocaleString()} passages ready; works without internet).</p>`
     : (await DB.count('books')) ? `<p class="muted small mt">Offline AI search is being prepared in the background. Until then, word search is used.</p>`
-    : `<p class="muted small mt">Searches from this device are answered by your laptop’s offline AI search — keep the app open on the laptop.</p>`;
+    : `<p class="muted small mt">Searches from this device are answered by your laptop’s offline AI search — keep the app open on the laptop.</p>`);
 }
 Views.search = async () => {
   let recent = []; try { recent = JSON.parse(localStorage.getItem('recentSearch') || '[]'); } catch (e) {}

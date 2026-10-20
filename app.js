@@ -303,6 +303,7 @@ const A = {
     const btn = document.querySelector('[data-act=refPage]'); if (!btn || cur < 1) return;
     await A.openRef({ dataset: { book: btn.dataset.book, size: btn.dataset.size, p: String(cur) }, textContent: '' });
   },
+  remotePage(el) { const p = +el.dataset.p; if (p >= 1) openRemotePage(el.dataset.book, p, el.dataset.label); },
   async btFetch(el) {
     if (!Sync.on()) return toast('Turn on Sync in Settings first (same address and key as the laptop).', 6000);
     el.disabled = true; el.innerHTML = '<span class="spin"></span>Downloading…';
@@ -319,7 +320,10 @@ const A = {
     area.innerHTML = `<div class="pa-grid"><div class="pa-side">${side[0]?.innerHTML || ''}</div><div class="pa-mid"><div class="mm-center">${mm.querySelector('.mm-center')?.innerHTML || ''}</div></div><div class="pa-side">${side[1]?.innerHTML || ''}</div></div>${nf ? `<div class="pa-flows" style="grid-template-columns:repeat(${nf},1fr)">${flows.innerHTML}</div>` : ''}`;
     document.body.appendChild(area);
     // Fit one A4 landscape page: 277 × 190 mm inside the margins ≈ 1040 × 700 px.
-    const r = area.getBoundingClientRect(); area.style.zoom = Math.min(1, 1040 / r.width, 690 / r.height);
+    // iPad/iPhone Safari ignores the page-size setting, so fit BOTH ways; the printer's orientation picks the layout.
+    const r = area.getBoundingClientRect(); area.style.setProperty('--zl', Math.min(1, 1040 / r.width, 690 / r.height));
+    area.classList.add('pa-p'); const rp = area.getBoundingClientRect(); area.classList.remove('pa-p');
+    area.style.setProperty('--zp', Math.min(1, 700 / rp.width, 1020 / rp.height));
     document.body.classList.add('print-mm');
     setTimeout(() => { window.print(); setTimeout(() => { document.body.classList.remove('print-mm'); area.remove(); }, 800); }, 80);
   },
@@ -551,21 +555,34 @@ const A = {
 
 // Phone: show a page the laptop sends over (kept on the phone afterwards, so it opens instantly next time).
 async function openRemotePage(bookId, p, label) {
-  const show = d => { const box = $('#ref-img'); if (!box) return; box.innerHTML = `<img src="${d.data}" alt="${esc(label)}" style="width:100%;height:auto">${d.text ? `<details class="mt"><summary class="small">Page text</summary><div class="read small">${esc(d.text).replace(/\n/g, '<br>')}</div></details>` : ''}`; };
-  openModal(`<h3>${esc(label)}</h3><div id="ref-img" class="mt"><p class="muted"><span class="spin"></span>Asking your laptop for this page…</p></div><div class="row end mt"><button class="btn" data-act="closeModal">Close</button></div>`);
+  const mine = () => { const b = $('#ref-img'); return b && b.dataset.p === String(p) && b.dataset.book === bookId ? b : null; };
+  const show = d => { const box = mine(); if (!box) return; box.innerHTML = `<img src="${d.data}" alt="${esc(label)}" style="width:100%;height:auto">${d.text ? `<details class="mt"><summary class="small">Page text</summary><div class="read small">${esc(d.text).replace(/\n/g, '<br>')}</div></details>` : ''}`; };
+  label = String(label).replace(/\s*(p\.|page)\s*\d+\s*$/i, '');
+  const nav = `<div class="row gap"><button class="btn sm" data-act="remotePage" data-book="${bookId}" data-p="${p - 1}" data-label="${esc(label)}" ${p <= 1 ? 'disabled' : ''}>‹ Prev</button><button class="btn sm" data-act="remotePage" data-book="${bookId}" data-p="${p + 1}" data-label="${esc(label)}">Next ›</button></div>`;
+  openModal(`<div class="row between"><h3>${esc(label)} — page ${p}</h3>${nav}</div><div id="ref-img" class="mt" data-p="${p}" data-book="${esc(bookId)}"><p class="muted"><span class="spin"></span>Asking your laptop for this page…</p></div><div class="row between mt">${nav}<button class="btn" data-act="closeModal">Close</button></div>`);
+  // Ask for the next page too, so "Next" opens fast.
+  if (Sync.on()) DB.get('media', PageRelay.pid(bookId, p + 1)).then(x => x || PageRelay.getRecord('media:' + PageRelay.pid(bookId, p + 1)).then(r => r || PageRelay.askPage(bookId, p + 1, label))).catch(() => {});
   const cached = await DB.get('media', PageRelay.pid(bookId, p));
   if (cached?.data) return show(cached);
-  if (!Sync.on()) { $('#ref-img').innerHTML = '<p class="muted">This book is on your laptop. Turn on Sync (Settings) so the laptop can send pages to this device.</p>'; return; }
+  if (!Sync.on()) { { const b = mine(); if (b) b.innerHTML = '<p class="muted">This book is on your laptop. Turn on Sync (Settings) so the laptop can send pages to this device.</p>'; } return; }
   try {
     let d = await PageRelay.getRecord('media:' + PageRelay.pid(bookId, p)).catch(() => null);
     if (!d) {
       await PageRelay.askPage(bookId, p, label);
-      const box = $('#ref-img'); if (box) box.innerHTML = '<p class="muted"><span class="spin"></span>Asking your laptop for this page… (it needs to be on, with the app open — usually 10–20 seconds)</p>';
-      d = await PageRelay.waitFor('media:' + PageRelay.pid(bookId, p), x => !!x.data);
+      const box = mine(); if (box) box.innerHTML = '<p class="muted"><span class="spin"></span>Asking your laptop for this page… (it needs to be on, with the app open — usually 10–20 seconds)</p>';
+      const end = Date.now() + 90000; let req = null;
+      while (!d && Date.now() < end && mine()) {
+        await sleep(4000);
+        d = await PageRelay.getRecord('media:' + PageRelay.pid(bookId, p)).catch(() => null); if (d && !d.data) d = null;
+        req = await PageRelay.getRecord('media:' + PageRelay.rid(bookId, p)).catch(() => null);
+        if (req?.status === 'missing' || req?.status === 'failed') break;
+      }
+      if (!d && (req?.status === 'missing' || req?.status === 'failed')) { const box = mine(); if (box) box.innerHTML = `<p class="warn-t">Your laptop got the request but couldn’t open this page: ${req.status === 'missing' ? 'that book’s PDF isn’t stored in the laptop app any more (re-add it in Library).' : esc(req.err || 'error')}</p>`; return; }
+      if (!d && req?.status === 'pending') { const box = mine(); if (box) box.innerHTML = '<p class="muted">The request reached Sync, but your laptop hasn’t picked it up — so the laptop app is closed, asleep, or on an old version / Sync off there. Open the app on the laptop (check the version at the top), then tap the page again.</p>'; return; }
     }
     if (d) { await DB.put('media', { ...d, _dirty: 0 }, { fromSync: true }); show(d); }
-    else { const box = $('#ref-img'); if (box) box.innerHTML = '<p class="muted">Your laptop didn’t answer in 90 seconds. Check: ① the laptop is on with the app open (not asleep), ② Settings → Sync shows <b>On</b> on <b>both</b> devices with the same address. Your request is saved — the page will be here next time you tap.</p>'; }
-  } catch (e) { const box = $('#ref-img'); if (box) box.innerHTML = `<p class="warn-t">${esc(e.message)}</p>`; }
+    else { const box = mine(); if (box) box.innerHTML = '<p class="muted">Your laptop didn’t answer in 90 seconds. Check: ① the laptop is on with the app open (not asleep), ② Settings → Sync shows <b>On</b> on <b>both</b> devices with the same address. Your request is saved — the page will be here next time you tap.</p>'; }
+  } catch (e) { const box = mine(); if (box) box.innerHTML = `<p class="warn-t">${esc(e.message)}</p>`; }
 }
 
 async function runSearch(q) {
@@ -772,7 +789,7 @@ async function init() {
   if (Sync.on()) { setInterval(() => PageRelay.serve(), 15000); setTimeout(() => PageRelay.serve(), 5000); }
   // Book text: the laptop shares it, phones/iPads download it (then Ask books works on them with the laptop off).
   const bt = () => BookText.share().then(() => BookText.fetch(m => { window._btMsg = m; })).catch(console.warn);
-  setTimeout(bt, 40000); setInterval(bt, 1800000);
+  setTimeout(bt, 30000); setInterval(bt, 600000);
   // Jobs that failed only because a retired Gemini model was picked: give them back once.
   setTimeout(async () => { let n = 0; for (const j of await DB.byIndex('queue', 'status', 'failed')) if (/no longer available to new users/i.test(j.error || '')) { j.status = 'pending'; j.tries = 0; delete j.error; await DB.put('queue', j); n++; } if (n) { Queue.kick(); toast(`Gave ${n} jobs another go (an old Gemini model had been picked)`, 6000); } }, 9000);
   setTimeout(() => Queue.reviveLibFails().then(n => n && toast(`Gave ${n} jobs another go (the page reader hadn't downloaded)`, 6000)).catch(console.warn), 8000);

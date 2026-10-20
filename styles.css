@@ -468,7 +468,7 @@ mark.kw { background: none; font-weight: 650; text-decoration: underline 1px; te
   body.print-mm { background: #fff !important; color: #111 !important; }
   body.print-mm .mm-center { box-shadow: none; }
   body.print-mm .mm-b, body.print-mm .mm-flow { break-inside: avoid; background: #fff; }
-  @page { size: A4 landscape; margin: 10mm; }
+  @page { margin: 10mm; }
 }
 #print-area { position: absolute; left: -99999px; top: 0; width: 1500px; background: #fff; color: #111; }
 #print-area .pa-grid { display: grid; grid-template-columns: 2fr 220px 2fr; gap: 12px; align-items: center; }
@@ -489,3 +489,19 @@ mark.kw { background: none; font-weight: 650; text-decoration: underline 1px; te
 }
 #print-area .mm-center { background: #1e3a8a !important; color: #fff !important; border-radius: 18px; padding: 18px 14px; text-align: center; font-weight: 800; font-size: 20px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 #print-area .mm-center * { color: #fff !important; }
+
+/* v77: portrait layout for the one-page mind map (iPad Safari prints portrait by default) */
+#print-area.pa-p { width: 1000px; }
+#print-area.pa-p .pa-grid { grid-template-columns: 1fr 1fr 1fr; align-items: start; }
+#print-area.pa-p .pa-side { display: contents; }
+#print-area.pa-p .pa-mid { grid-column: 1 / -1; order: -1; }
+@media print {
+  body.print-mm #print-area { zoom: var(--zl); }
+  @page { margin: 10mm; }
+}
+@media print and (orientation: portrait) {
+  body.print-mm #print-area { width: 1000px; zoom: var(--zp); }
+  body.print-mm #print-area .pa-grid { grid-template-columns: 1fr 1fr 1fr; align-items: start; }
+  body.print-mm #print-area .pa-side { display: contents; }
+  body.print-mm #print-area .pa-mid { grid-column: 1 / -1; order: -1; }
+}
