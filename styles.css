@@ -522,3 +522,7 @@ body { background: var(--bg); }
 @media print { body::before, body::after { display: none; } }
 img.brand-mark { padding: 0; background: none; object-fit: cover; }
 .card.count .eyebrow { padding-right: 18px; }
+/* Print is always on white paper: use the light colours even when the app is in Cosmos (dark). */
+#print-area { --surface: #fff; --surface-2: #f7f8fd; --sunk: #eef0f7; --ink: #111; --ink-2: #333; --muted: #555; --line: #d8dbe8; --line-2: #c4c8da; --bg: #fff; color: #111; color-scheme: light; }
+#print-area .fstep { background: #fff !important; color: #111 !important; }
+#print-area .mm-b li, #print-area .mm-flow, #print-area .fstep * { color: #111; }
