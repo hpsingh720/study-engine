@@ -270,7 +270,11 @@ Return JSON exactly in this shape:
     }
     const existing = (await DB.byIndex('mcqs', 'topicId', topic.id)).filter(m => !m.deleted).slice(-50).map(m => '- ' + m.stem.slice(0, 110)).join('\n');
     const sheetText = sheet ? JSON.stringify({ management: sheet.sections?.management, comparison: sheet.comparison }).slice(0, 14000) : '';
+    const real = (await DB.byIndex('mcqs', 'topicId', topic.id)).filter(m => !m.deleted && !m.flagged && ['AMEDEX', 'PYQ'].includes(qBank(m)) && !qBroken(m) && !m.oldFormat).slice(0, 4);
+    const examples = real.map(m => `Q: ${m.stem}\n${m.options.map((o, i) => String.fromCharCode(65 + i) + ') ' + o).join('\n')}\nAnswer: ${String.fromCharCode(65 + m.ans)}`).join('\n\n');
     const prompt = `Write ${nAmc} AMC-style and ${nMbbs} Indian-MBBS-style MCQs on: ${topic.name}.
+${examples ? `\nREAL EXAM QUESTIONS on this topic — match their style, length and difficulty exactly (do not copy them):\n${examples}\n` : ''}
+Only write questions that are highly relevant and conceptual (UWorld-like reasoning: next best step, mechanism, distinguishing two close diagnoses). Fewer, better questions beat many easy ones. Every wrong option must be something a real junior doctor could choose.
 
 Factual basis — the revision sheet and book excerpts below. Prefer facts from them; cite pages when used.
 SHEET: ${sheetText}

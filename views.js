@@ -339,8 +339,8 @@ Views.session = async () => {
   if (!m) { s.qs.splice(s.idx, 1); Practice.save(); return Views.session(); }
   const topic = s.topicId ? await DB.get('topics', s.topicId) : null;
   const sheet = s.topicId ? await DB.get('sheets', s.topicId) : null;
-  const img = m.img ? (await DB.get('media', m.img))?.data : null;
   const a = s.ans[m.id];
+  const img = m.img ? (await DB.get('media', (!a && m.imgMask) ? m.imgMask : m.img))?.data : null;
   const revealed = s.mode === 'tutor' && !!a;
   const chosen = a ? a.c : s.sel;
   const multi = isMulti(m), right = correctSet(m), chosenArr = chosen == null ? [] : Array.isArray(chosen) ? chosen : [chosen];
@@ -519,6 +519,7 @@ Views.library = async () => {
       ${Queue.manualPause ? '<button class="btn" data-act="resumeQueue">Resume</button>' : '<button class="btn" data-act="pauseQueue">Pause AI</button>'}
       ${qc.failed ? `<button class="btn" data-act="retryFailed">Retry ${qc.failed} failed</button>` : ''}
       ${qc.done ? '<button class="btn ghost" data-act="clearDone">Clear finished</button>' : ''}
+      <button class="btn" data-act="startReview">Review all questions with AI</button>
       <button class="btn" data-act="mergeEverything">Combine questions in every topic</button>
       <button class="btn primary" data-act="genEverything" ${books.length ? '' : 'disabled'}>Generate every topic</button>
     </div></div>
@@ -579,7 +580,7 @@ function markTerms(html, terms) {
 }
 function searchResultsHtml(r) {
   if (r.waiting) return `<p class="muted"><span class="spin"></span>${esc(r.waiting)}</p>`;
-  const g = `<a class="btn sm ghost" target="_blank" rel="noopener" href="https://www.google.com/search?q=${encodeURIComponent(r.q)}">Search Google</a>`;
+  const g = `<a class="btn sm ghost" target="_blank" rel="noopener" href="https://www.google.com/search?q=${encodeURIComponent(r.q)}">Search Google</a>` + notebookLinks().map(n => `<button class="btn sm ghost" data-act="askNblm" data-url="${esc(n.url)}" data-q="${esc(r.q)}">NotebookLM · ${esc(n.name)}</button>`).join('');
   const top = r.ai ? `<div class="card ai-ans mb"><div class="row between"><p class="eyebrow">AI answer · from your books</p>${g}</div><div class="read">${md(r.ai)}</div></div>`
     : r.aiWait ? `<p class="muted"><span class="spin"></span>AI is checking your books for the best answer…</p>` : '';
   if (top) return top + searchResultsHtml({ ...r, ai: null, aiWait: false, _inner: 1 });
@@ -623,6 +624,9 @@ Views.settings = async () => {
     <p class="muted small">Importing thousands of questions is simple work, so it uses the cheaper "lite" model, which has much higher free limits. Sheets and new questions use the main model.</p>
     <div class="row gap mt"><button class="btn primary">Save</button><button type="button" class="btn" data-act="testKey">Test key & list models</button></div>
     <p class="muted small" id="key-msg"></p></form>
+  <section class="card mt"><h3>NotebookLM (search your books on Google's servers)</h3>
+    <p class="muted small">Make one notebook per subject at notebooklm.google.com, upload that subject's PDFs, then paste one line per notebook: <b>name | link</b>. Ask books then shows a button that copies your question and opens the notebook.</p>
+    <textarea data-change="nblm" rows="4" placeholder="OBG | https://notebooklm.google.com/notebook/…&#10;Medicine | https://notebooklm.google.com/notebook/…">${esc(localStorage.getItem('nblm') || '')}</textarea></section>
   <form class="card mt" data-submit="saveProviders"><h3>Extra free AI — make it faster</h3>
     <p class="muted small">Each free service you add works <b>at the same time</b> as Gemini on importing question banks, image questions and reading scanned pages, so the work finishes several times faster. Sign up (free), create an API key, paste it here and click Test. Topic sheets and new MCQs use Gemini for best quality; when Gemini’s free allowance runs out for the day, Mistral takes over.</p>
     ${Providers.list().map(p => `<div class="prov">

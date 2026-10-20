@@ -454,6 +454,8 @@ mark.kw { background: none; font-weight: 650; text-decoration: underline 1px; te
 .ai-ans { border-left: 4px solid var(--accent); }
 .mm-fig { margin: 12px 0; } .mm-fig img { width: 100%; max-width: 900px; border: 1px solid var(--line-2); border-radius: 8px; background: #fff; cursor: zoom-in; }
 .mm-fig figcaption { font-size: .85rem; color: var(--ink-2); margin-top: 4px; }
+.row.gap { flex-wrap: wrap; }
+.big { line-height: 1.15; } .big span { display: inline-block; }
 .ver-badge { font-size: .7rem; font-weight: 600; opacity: .6; margin-left: 6px; }
 .ver-top { display: none; }
 @media (max-width: 860px) { .ver-top { display: block; text-align: center; font-size: .72rem; opacity: .55; padding: 4px 0 0; } }

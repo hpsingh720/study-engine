@@ -288,6 +288,21 @@ const A = {
     catch (e) { toast(e.message + (/key/i.test(e.message) ? ' — add your Gemini key in Settings on this device, or make it on the laptop.' : ''), 7000); }
     App.render(true);
   },
+  async startReview() {
+    localStorage.setItem('reviewOn', '1');
+    const n = await queueReview(), k = await queueMasks();
+    toast(n ? `Reviewing questions in ${n} batches (+ ${k} pictures) — runs in the background with your free AI keys. Watch Library.` : 'All questions are already reviewed.', 7000);
+    App.render(true);
+  },
+  async askNblm(el) {
+    try { await navigator.clipboard.writeText(el.dataset.q); toast('Question copied — paste it in NotebookLM', 4000); } catch (e) {}
+    window.open(el.dataset.url, '_blank', 'noopener');
+  },
+  async refPage(el) {
+    const box = el.closest('.modal-body, .modal') || document; const cur = +(document.getElementById('ref-img')?.dataset.p || 0) + +el.dataset.d;
+    const btn = document.querySelector('[data-act=refPage]'); if (!btn || cur < 1) return;
+    await A.openRef({ dataset: { book: btn.dataset.book, size: btn.dataset.size, p: String(cur) }, textContent: '' });
+  },
   async askQ() {
     const s = Practice.s; const m = await DB.get('mcqs', s.qs[s.idx]);
     const a = s.ans[m.id], R = letters(correctSet(m));
@@ -319,7 +334,7 @@ const A = {
     if (!book && size) { book = (await DB.all('books')).find(b => b.size === size) || null; if (book) bookId = book.id; }
     const [pg, file] = await Promise.all([DB.get('pages', [bookId, p]), book ? DB.get('files', bookId) : null]);
     if (!book || !file) return openRemotePage(el.dataset.book, p, el.textContent.trim());
-    openModal(`<h3>${esc(book.short || book.name)} — page ${p}</h3><div id="ref-img" class="mt"></div>${pg ? `<details class="mt"><summary class="small">Page text</summary><div class="read small">${esc(pg.text).replace(/\n/g, '<br>')}</div></details>` : ''}<div class="row end mt"><button class="btn" data-act="closeModal">Close</button></div>`);
+    openModal(`<div class="row between"><h3>${esc(book.short || book.name)} — page ${p}</h3><div class="row gap"><button class="btn sm" data-act="refPage" data-d="-1" data-book="${bookId}" data-size="${size || ''}">‹ Prev</button><button class="btn sm" data-act="refPage" data-d="1" data-book="${bookId}" data-size="${size || ''}">Next ›</button></div></div><div id="ref-img" class="mt" data-p="${p}"></div>${pg ? `<details class="mt"><summary class="small">Page text</summary><div class="read small">${esc(pg.text).replace(/\n/g, '<br>')}</div></details>` : ''}<div class="row end mt"><button class="btn" data-act="closeModal">Close</button></div>`);
     if (file) { try { const c = await renderPage(book, p, 1400); c.style.width = '100%'; c.style.height = 'auto'; $('#ref-img').appendChild(c); } catch (e) {} }
     else if (!pg) $('#ref-img').innerHTML = '<p class="muted">This book’s pages are only on your laptop.</p>';
   },
@@ -633,6 +648,7 @@ const F = {
 
 // Change / input handlers
 const C = {
+  nblm(el) { localStorage.setItem('nblm', el.value); toast('Saved'); },
   ocrWorkers(el) { localStorage.setItem('ocrWorkers', el.value); toast('Saved — reload the page (Ctrl + R) to apply it now'); },
   bgRun(el) { localStorage.setItem('bgRun', el.checked ? '1' : '0'); if (el.checked && Object.values(Queue.running).some(Boolean)) KeepAlive.start(); else if (!el.checked) KeepAlive.stop(); toast(el.checked ? 'Will keep working when Chrome is minimised' : 'Off'); },
   keepAwake(el) { localStorage.setItem('keepAwake', el.checked ? '1' : '0'); if (!el.checked) Queue.holdWake(false); else Queue.holdWake(true); toast(el.checked ? 'Screen will stay on' : 'Windows can now turn the display off'); },
@@ -735,6 +751,7 @@ async function init() {
   setTimeout(() => Queue.reviveLibFails().then(n => n && toast(`Gave ${n} jobs another go (the page reader hadn't downloaded)`, 6000)).catch(console.warn), 8000);
   setTimeout(() => Queue.autoRetry().catch(console.warn), 60000); setInterval(() => Queue.autoRetry().catch(console.warn), 2 * 3600000);
   setTimeout(() => queueEmbeds().then(n => n && Queue.kick()).catch(console.warn), 30000); setInterval(() => queueEmbeds().then(n => n && Queue.kick()).catch(console.warn), 3600000);
+  setInterval(() => { if (localStorage.getItem('reviewOn') && (Date.now() - (window._rvT || 0)) > 3500e3) { window._rvT = Date.now(); queueReview().then(() => queueMasks()).catch(console.warn); } }, 600000);
   setTimeout(() => queueRefs().catch(console.warn), 20000); setInterval(() => queueRefs().catch(console.warn), 3600000);
   if (Sync.on()) { Sync.run(); setInterval(() => Sync.run(), 120000); document.addEventListener('visibilitychange', () => { if (!document.hidden) Sync.run(); }); }
   else Sync.set('off');

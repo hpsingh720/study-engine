@@ -536,7 +536,7 @@ const Queue = {
     // Topic sheets and new MCQs need a big, careful model: Gemini first; Mistral takes over while Gemini is out for the day.
     if ((j.kind === 'sheet' || j.kind === 'mcqgen') && prov.big) return true; // a second Gemini key writes sheets like the main one
     if (j.kind === 'sheet' || j.kind === 'mcqgen') return prov.id === 'mistral' && (j.noGemini || Date.now() < (this.paused.ai || 0)) && (j.kind === 'mcqgen' || j.prio < 6 || !this._localBusy);
-    if (j.kind === 'mcqtext') return true;
+    if (j.kind === 'mcqtext' || j.kind === 'review') return true;
     if (prov.vision && (j.kind === 'mcqvision' || j.kind === 'practical' || j.kind === 'ocr' || j.kind === 'figure')) return true;
     return false;
   },
@@ -597,7 +597,7 @@ const Queue = {
             this.last[lane] = Date.now();
           }
           j.status = 'running'; await DB.put('queue', j);
-          const name = j.payload.topicId ? (await DB.get('topics', j.payload.topicId))?.name : (await DB.get('books', j.payload.bookId))?.short;
+          const name = j.payload.topicId ? (await DB.get('topics', j.payload.topicId))?.name : j.payload.bookId ? (await DB.get('books', j.payload.bookId))?.short : j.payload.system ? sysName(j.payload.system) : '';
           this.setStatus(lane, `${prov ? prov.name + ': ' : lane === 'ai' ? 'Gemini: ' : ''}${JOB_LABEL[j.kind]}${name ? ' — ' + name : ''}`);
           try {
             (this._laneOf ||= {})[j.id] = lane;
