@@ -198,7 +198,10 @@ Views.topic = async (id, tab) => {
   let body = '';
   const note = await DB.get('notes', id);
   if (tab === 'sheet') body = sheet ? Object.keys(SECTIONS).map(sec => sectionTab(t, sheet, sec, books, inQueue, note?.hl)).join('<hr class="sec-gap">') : noSheet(t, books, inQueue);
-  else if (tab === 'mindmap') body = sheet?.mindmap ? `<div class="row between mb"><span class="muted small">Made ${fmtDate(sheet.mindmap.at)} from your books</span><button class="btn sm ghost" data-act="genMindmap" data-id="${id}">Remake</button></div>${mindmapHTML(t, sheet.mindmap)}`
+  else if (tab === 'mindmap' && sheet?.mindmap) {
+    const imgs = {}; for (const f of sheet.mindmap.figs || []) if (f.img) { const d = await DB.get('media', f.img); if (d) imgs[f.img] = d.data; }
+    body = `<div class="row between mb"><span class="muted small">Made ${fmtDate(sheet.mindmap.at)} from your books</span><button class="btn sm ghost" data-act="genMindmap" data-id="${id}">Remake</button></div>${mindmapHTML(t, sheet.mindmap, imgs)}`;
+  } else if (tab === 'mindmap') body = sheet?.mindmap ? '' 
     : empty('Mind map on request', 'A one-page colourful map of this topic — causes, features, investigations, management — plus step-by-step flowcharts and the figure pages in your books. Made only for topics you ask for.', `<button class="btn primary" data-act="genMindmap" data-id="${id}">Make mind map</button>`);
   else if (tab === 'compare') body = compareTab(t, sheet, books, inQueue);
   else if (tab === 'mcqs') body = mcqTab(t, live, mcqs, st, books, inQueue);
@@ -576,6 +579,11 @@ function markTerms(html, terms) {
 }
 function searchResultsHtml(r) {
   if (r.waiting) return `<p class="muted"><span class="spin"></span>${esc(r.waiting)}</p>`;
+  const g = `<a class="btn sm ghost" target="_blank" rel="noopener" href="https://www.google.com/search?q=${encodeURIComponent(r.q)}">Search Google</a>`;
+  const top = r.ai ? `<div class="card ai-ans mb"><div class="row between"><p class="eyebrow">AI answer · from your books</p>${g}</div><div class="read">${md(r.ai)}</div></div>`
+    : r.aiWait ? `<p class="muted"><span class="spin"></span>AI is checking your books for the best answer…</p>` : '';
+  if (top) return top + searchResultsHtml({ ...r, ai: null, aiWait: false, _inner: 1 });
+  if (!r._inner && !r.results?.length) return `<div class="card"><p>Nothing found for “${esc(r.q)}”.</p><div class="row gap">${g}</div></div>`;
   if (!r.results?.length) return `<div class="card"><p>Nothing found for “${esc(r.q)}” in ${r.where === 'laptop' ? 'your laptop’s books' : 'the books on this device'}.</p><p class="muted small">Try fewer, simpler words (e.g. “normal labour”), or ask the AI.</p><button class="btn" data-act="explainSearch">Ask the AI anyway</button></div>`;
   return `${r.results.map(x => `<article class="card mt quote-card"><div class="row between wrap gap"><button class="linkbtn" data-act="openRef" data-book="${x.bookId}" data-size="${x.size || ''}" data-p="${x.p}">${esc(x.book)} — page ${x.p}</button><span class="role role-${x.role}">${esc(ROLES[x.role] || '')}</span></div>
       <blockquote class="bookquote">${markTerms(esc(x.passage), x.terms)}</blockquote>

@@ -447,3 +447,10 @@ hr.sec-gap { border: 0; border-top: 1px solid var(--line); margin: 22px 0; }
 .farrow { color: var(--c); font-weight: 700; line-height: 1; }
 @media (max-width: 860px) { .mm { grid-template-columns: 1fr; } .mm-core { order: -1; } }
 .b-SPOT { background: #ffe3e3; color: #c92a2a; }
+/* v67: calmer text — bold, not coloured */
+.read strong, b.key { color: inherit !important; font-weight: 700; }
+b.acr { color: inherit; font-weight: 650; }
+mark.kw { background: none; font-weight: 650; text-decoration: underline 1px; text-underline-offset: 3px; }
+.ai-ans { border-left: 4px solid var(--accent); }
+.mm-fig { margin: 12px 0; } .mm-fig img { width: 100%; max-width: 900px; border: 1px solid var(--line-2); border-radius: 8px; background: #fff; cursor: zoom-in; }
+.mm-fig figcaption { font-size: .85rem; color: var(--ink-2); margin-top: 4px; }

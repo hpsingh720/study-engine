@@ -70,17 +70,34 @@ function refsForPatient(m, refs = []) {
 async function bookFigures(t) {
   if (!(await DB.count('books'))) return [];
   const books = (await DB.all('books')).filter(b => ['ref', 'amc', 'mbbs'].includes(b.role));
-  const terms = topicTerms(t), out = [];
+  const stop = /^(and|the|with|of|in|for|acute|chronic|disease|disorders?|syndrome)$/i;
+  const words = [...new Set(`${t.name} ${(t.kw || []).join(' ')}`.toLowerCase().match(/[a-z]{3,}/g) || [])].filter(w => !stop.test(w));
+  const abbr = (t.name.match(/\b[A-Z]{2,6}\b/g) || []).map(x => x.toLowerCase());
+  const phrases = [t.name.replace(/\(.*?\)/g, ''), ...(t.kw || [])].map(x => x.toLowerCase().replace(/[^a-z ]/g, ' ').replace(/\s+/g, ' ').trim()).filter(x => x.split(' ').length >= 2);
+  const out = [];
   for (const b of books) {
     await DB.each('pages', 'bookId', b.id, pg => {
-      if (!/(algorithm|flow ?chart|approach to|management of|fig(?:ure|\.)\s*\d)/i.test(pg.text)) return;
-      const sc = scorePage(pg.text, terms); if (sc <= 0) return;
-      const cap = (pg.text.match(/(?:fig(?:ure|\.)\s*[\d.]+[^.\n]{0,90}|[^.\n]{0,40}(?:algorithm|flow ?chart)[^.\n]{0,60})/i) || [''])[0].replace(/\s+/g, ' ').trim();
-      out.push({ s: sc, book: b.short || b.name, bookId: b.id, size: b.size, p: pg.p, cap });
+      const re = /(?:fig(?:ure|\.)?|box)\s*\d+[.\d]*\s+([^\n]{8,170})/gi; let m;
+      while ((m = re.exec(pg.text))) {
+        const cap = m[1].toLowerCase();
+        let sc = words.filter(w => cap.includes(w)).length * 2 + abbr.filter(w => new RegExp('\\b' + w + '\\b').test(cap)).length * 2 + phrases.filter(ph => cap.includes(ph)).length * 5;
+        if (sc < 4) continue;
+        if (/treatment|management|algorithm|approach|summary|classification|criteria|pathway|flow/i.test(cap)) sc += 3;
+        out.push({ s: sc, book: b.short || b.name, bookId: b.id, size: b.size, p: pg.p, cap: m[0].replace(/\s+/g, ' ').trim().slice(0, 160) });
+      }
     });
   }
   out.sort((a, b) => b.s - a.s);
-  const seen = new Set(); return out.filter(f => { const k = f.book; if ((seen[k] = (seen[k] || 0) + 1) > 2) return false; return true; }).slice(0, 5);
+  const seen = new Set(), figs = out.filter(f => { const k = f.bookId + ':' + f.p; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 4);
+  // Keep a picture of each page, so the phone shows the real textbook figure too.
+  for (const f of figs.slice(0, 3)) {
+    try {
+      const id = `fig-${f.bookId}-${f.p}`;
+      if (!(await DB.get('media', id))) { const book = await DB.get('books', f.bookId); const c = await renderPage(book, f.p, 1500); await DB.put('media', { id, data: c.toDataURL('image/jpeg', 0.72), kind: 'figure', caption: f.cap }); }
+      f.img = id;
+    } catch (e) { console.warn('figure', e); }
+  }
+  return figs;
 }
 async function makeMindmap(t) {
   const sheet = await DB.get('sheets', t.id);
@@ -93,7 +110,7 @@ Return JSON only:
 Rules:
 - branches in this order when relevant: Definition, Causes / Risk factors, Pathophysiology, Clinical features, Investigations, Management, Complications, Prognosis / key numbers.
 - 3–7 items per branch, each max 12 words, no full sentences. Wrap the 1–2 most important words of each item in **double asterisks**.
-- flows: 1–2 step-by-step algorithms (management or diagnostic pathway, like a textbook flowchart), 4–8 steps each, each step max 12 words; use "If X → Y" for decisions.
+- flows: 1–3 COMPLETE step-by-step algorithms (management and/or diagnostic pathway, as in the textbook's flowchart) — include every step and decision, up to 14 steps each; each step max 14 words; use "If X → Y" for decisions. Do not cut management short.
 - Exam-relevant facts only. Australian practice (Murtagh/eTG) where it differs, marked "(AU)".`;
   const mm = await AI.call({ prompt, json: true });
   if (!mm || !Array.isArray(mm.branches)) throw new Error('The AI reply wasn’t a mind map — try again.');
@@ -103,12 +120,12 @@ Rules:
   s.mindmap = mm; s.updated = Date.now(); await DB.put('sheets', s);
   return mm;
 }
-function mindmapHTML(t, mm) {
+function mindmapHTML(t, mm, imgs = {}) {
   const inl = x => keyColour(texify(esc(String(x))).replace(/\*\*(.+?)\*\*/g, '<b class="key">$1</b>'));
   const br = (mm.branches || []).map((b, i) => `<section class="mm-b c${i % 8}"><h4>${esc(b.title)}</h4><ul>${(b.items || []).map(x => `<li>${inl(x)}</li>`).join('')}</ul></section>`);
   const half = Math.ceil(br.length / 2);
   const flows = (mm.flows || []).map((f, i) => `<section class="mm-flow c${(i + 3) % 8}"><h4>${esc(f.title)}</h4><div class="flow">${(f.steps || []).map(s => `<div class="fstep">${inl(s)}</div>`).join('<div class="farrow">↓</div>')}</div></section>`).join('');
-  const figs = (mm.figs || []).length ? `<section class="card mt"><h4>Flowcharts &amp; figures in your books</h4><p class="muted small">Pages where your books draw this topic as a figure or algorithm.</p>${mm.figs.map(f => `<p><button class="linkbtn" data-act="openRef" data-book="${f.bookId}" data-size="${f.size || ''}" data-p="${f.p}">${esc(f.book)} p.${f.p}</button> <span class="muted small">${esc(f.cap || '')}</span></p>`).join('')}</section>` : '';
+  const figs = (mm.figs || []).length ? `<section class="card mt"><h4>The textbook's own figures &amp; flowcharts</h4>${mm.figs.filter(f => imgs[f.img]).map(f => `<figure class="mm-fig"><img src="${imgs[f.img]}" data-act="zoomImg" alt="${esc(f.cap || '')}" loading="lazy"><figcaption>${esc(f.book)} p.${f.p} — ${esc(f.cap || '')}</figcaption></figure>`).join('')}${mm.figs.filter(f => !imgs[f.img]).map(f => `<p><button class="linkbtn" data-act="openRef" data-book="${f.bookId}" data-size="${f.size || ''}" data-p="${f.p}">${esc(f.book)} p.${f.p}</button> <span class="muted small">${esc(f.cap || '')}</span></p>`).join('')}</section>` : '';
   return `<div class="mm"><div class="mm-side">${br.slice(0, half).join('')}</div><div class="mm-core"><div class="mm-center">${esc(mm.center || t.name)}</div></div><div class="mm-side">${br.slice(half).join('')}</div></div>
     ${flows ? `<div class="mm-flows">${flows}</div>` : ''}${figs}`;
 }
@@ -118,7 +135,7 @@ const SelBar = {
   el: null, text: '', ctx: '',
   init() {
     const b = document.createElement('div'); b.id = 'selbar'; b.hidden = true;
-    b.innerHTML = '<button data-sel="ask">Ask AI</button><button data-sel="hl">Highlight</button><button data-sel="ul">Underline</button>';
+    b.innerHTML = '<button data-sel="ask">Ask AI</button><button data-sel="g">Google</button><button data-sel="hl">Highlight</button><button data-sel="ul">Underline</button>';
     document.body.appendChild(b); this.el = b;
     b.addEventListener('mousedown', e => e.preventDefault());
     b.addEventListener('click', e => { const k = e.target.dataset.sel; if (k) this.act(k); });
@@ -146,6 +163,7 @@ const SelBar = {
   async act(k) {
     const t = this.text; this.el.hidden = true; window.getSelection().removeAllRanges();
     if (k === 'ask') return askSelection(t, this.ctx);
+    if (k === 'g') return window.open('https://www.google.com/search?q=' + encodeURIComponent(t), '_blank', 'noopener');
     if (this.inQ && Practice.s) { const s = Practice.s, id = s.qs[s.idx]; ((s.hl ||= {})[id] ||= []).push(t); Practice.save(); return App.render(true); }
     const tid = (location.hash.match(/#\/topic\/([^/]+)/) || [])[1];
     if (!tid) return toast('Open a topic to keep highlights.');
@@ -173,7 +191,7 @@ Explain it in an interesting, easy way (max 220 words):
 4. **Exam angle:** what AMC/MBBS exams ask about it (Australian practice if it differs).
 5. **Test yourself:** 2 short questions, answers in brackets at the very end.
 Use **bold** for key terms. No long paragraphs.`;
-    const a = await AI.call({ prompt, json: false });
+    const a = await AI.call({ prompt, json: false, model: AI.bulkModel }); // the fast model: answers in a few seconds
     slot.innerHTML = (q ? `<p class="muted small">You asked: ${esc(q)}</p>` : '') + md(a);
     if (q) history[history.length - 1].a = a;
   } catch (e) { slot.innerHTML = `<p class="warn-t">${esc(e.message)}${/key/i.test(e.message) ? ' — add your Gemini key in Settings on this device too.' : ''}</p>`; }

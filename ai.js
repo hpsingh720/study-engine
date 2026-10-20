@@ -400,7 +400,14 @@ function cleanOcr(t) {
     return good >= Math.max(1, w.length * 0.5) || /^[-–—:;,.()\/%■•…]$/.test(w);
   }).join(' ').replace(/(\s[,;:.·])+(?=\s)/g, '').replace(/\s{2,}/g, ' ').trim();
 }
+// Short forms people type → the words books use ("complications of MI" must find "myocardial infarction").
+const MED_ABBR = { mi: 'myocardial infarction', acs: 'acute coronary syndrome', cad: 'coronary artery disease', ihd: 'ischaemic heart disease', hf: 'heart failure', ccf: 'congestive cardiac failure', af: 'atrial fibrillation', htn: 'hypertension',
+  copd: 'chronic obstructive pulmonary disease', tb: 'tuberculosis', pe: 'pulmonary embolism', dvt: 'deep vein thrombosis', ards: 'acute respiratory distress syndrome', ckd: 'chronic kidney disease', aki: 'acute kidney injury', uti: 'urinary tract infection',
+  dka: 'diabetic ketoacidosis', dm: 'diabetes mellitus', gdm: 'gestational diabetes', sle: 'systemic lupus erythematosus', ra: 'rheumatoid arthritis', cva: 'stroke', tia: 'transient ischaemic attack', gbs: 'guillain-barre syndrome',
+  ibd: 'inflammatory bowel disease', ibs: 'irritable bowel syndrome', gerd: 'gastro-oesophageal reflux', gord: 'gastro-oesophageal reflux', pud: 'peptic ulcer', ugib: 'upper gastrointestinal bleeding', pph: 'postpartum haemorrhage', aph: 'antepartum haemorrhage',
+  iugr: 'fetal growth restriction', fgr: 'fetal growth restriction', pih: 'pregnancy induced hypertension', pcos: 'polycystic ovary syndrome', bph: 'benign prostatic hyperplasia', ttp: 'thrombotic thrombocytopenic purpura', itp: 'immune thrombocytopenia', dic: 'disseminated intravascular coagulation' };
 async function searchBooks(query, max = 6) {
+  query = String(query).replace(/\b[A-Za-z]{2,4}\b/g, w => MED_ABBR[w.toLowerCase()] && !/^(pe|ra|dm|hf)$/i.test(w) || (MED_ABBR[w.toLowerCase()] && w === w.toUpperCase()) ? MED_ABBR[w.toLowerCase()] : w);
   let q = query.toLowerCase().replace(/[^a-z0-9\s&'.-]/g, ' ').replace(/\s+/g, ' ').trim();
   const allBooks = (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc', 'reader'].includes(b.role));
   const pick = pickBook(q, allBooks); q = pick.q;
@@ -543,4 +550,27 @@ async function askTutor(topic, question, context = '') {
     json: false, system: SYSTEM_TUTOR + ' Answer in short bullet points. When Indian and Australian practice differ, say both clearly.',
     prompt: `${topic ? 'Topic: ' + topic.name + '\nRevision sheet: ' + sheetCtx : ''}\n${context ? 'Context: ' + context : ''}\n\nStudent question: ${question}`
   });
+}
+
+// Online help for "Ask books": the AI rewrites the question into textbook wording, then picks the best passages and answers from them.
+async function aiSearchAssist(q, results, canSearch) {
+  const fast = { model: AI.bulkModel, json: true };
+  let all = results.slice();
+  if (canSearch) {
+    const r = await AI.call({ ...fast, prompt: `A medical student searched their textbooks for: "${q}".
+Write 3 short alternative searches using the exact words a textbook heading or sentence would use (expand abbreviations, use synonyms, e.g. "types of MI" → "classification of acute myocardial infarction type 1 type 2"). Keep any book name they gave (e.g. "from davidson").
+Return JSON {"queries":["…","…","…"]}` }).catch(() => null);
+    for (const alt of (r?.queries || []).slice(0, 3)) for (const x of await searchBooks(alt, 6).catch(() => [])) all.push(x);
+  }
+  const seen = new Set(); all = all.filter(x => { const k = x.bookId + ':' + x.p; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 14);
+  if (!all.length) {
+    const a = await AI.call({ model: AI.bulkModel, json: false, prompt: `Answer this medical question for an MBBS/AMC student in 3–6 short bullet points: ${q}\nStart with: "(Not found in your books — general knowledge)"` });
+    return { results: [], answer: a };
+  }
+  const list = all.map((x, i) => `[${i + 1}] ${x.book} p.${x.p}: ${String(x.passage).slice(0, 600)}`).join('\n');
+  const r2 = await AI.call({ ...fast, prompt: `Question: "${q}"\nPassages from the student's own textbooks:\n${list}\n\nReturn JSON {"best":[numbers of the passages that actually answer the question, best first],"answer":"the answer in 3–8 short bullet points, keeping the books' own wording where possible, each bullet ending with its passage number like [3]"}. If none answer it, best = [] and answer from general knowledge starting with "(Not in these pages)".` });
+  const best = (r2?.best || []).map(n => all[n - 1]).filter(Boolean);
+  const rest = all.filter(x => !best.includes(x));
+  const answer = String(r2?.answer || '').replace(/\[(\d+)\]/g, (m, n) => { const x = all[n - 1]; return x ? ` (${x.book} p.${x.p})` : ''; });
+  return { results: [...best, ...rest].slice(0, 10), answer };
 }

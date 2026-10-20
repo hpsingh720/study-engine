@@ -547,6 +547,15 @@ async function runSearch(q) {
     try { const id = await PageRelay.askSearch(q); const d = await PageRelay.waitFor(id, x => Array.isArray(x.results), 60000); results = d?.results || []; where = 'laptop'; if (!d) toast('Your laptop didn’t answer — is it on with the app open?', 6000); }
     catch (e) { toast(e.message, 6000); }
   }
+  if (AI.key && navigator.onLine) {
+    show({ q, results, where, aiWait: true });
+    try {
+      const canSearch = (await DB.all('books')).some(b => ['ref', 'mbbs', 'amc'].includes(b.role));
+      const r = await aiSearchAssist(q, results, canSearch);
+      show({ q, results: r.results.length ? r.results : results, where, ai: r.answer });
+      return;
+    } catch (e) { console.warn(e); }
+  }
   show({ q, results, where });
 }
 
