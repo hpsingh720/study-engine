@@ -476,40 +476,39 @@ mark.kw { background: none; font-weight: 650; text-decoration: underline 1px; te
   body.print-mm .mm-b, body.print-mm .mm-flow { break-inside: avoid; background: #fff; }
   @page { margin: 10mm; }
 }
-#print-area { position: absolute; left: -99999px; top: 0; width: 1500px; background: #fff; color: #111; }
+/* v79: one-page mind map print. Two ready-made copies (landscape + portrait), each SCALED with transform
+   (no re-wrapping of text, so what we measured is exactly what prints); the paper orientation picks one. */
+#print-area { position: absolute; left: -99999px; top: 0; background: #fff; color: #111; }
+#print-area .pa-box { overflow: hidden; position: relative; }
+#print-area .pa-in { transform-origin: 0 0; background: #fff; font-size: 14px; line-height: 1.35; }
+#print-area .pa-land .pa-in { width: 1500px; }
+#print-area .pa-port .pa-in { width: 1000px; }
 #print-area .pa-grid { display: grid; grid-template-columns: 2fr 220px 2fr; gap: 12px; align-items: center; }
 #print-area .pa-side { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }
 #print-area .pa-mid { display: grid; justify-items: center; }
-#print-area .mm-center { width: 210px; }
+#print-area .pa-port .pa-grid { grid-template-columns: 1fr 1fr 1fr; align-items: start; }
+#print-area .pa-port .pa-side { display: contents; }
+#print-area .pa-port .pa-mid { grid-column: 1 / -1; order: -1; }
 #print-area .pa-flows { display: grid; gap: 10px; margin-top: 12px; }
+#print-area .pa-port .pa-flows { grid-template-columns: 1fr !important; }
 #print-area .flow { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 4px; }
 #print-area .fstep { width: auto; flex: 0 1 auto; max-width: 48%; padding: 4px 8px; }
 #print-area .farrow { font-size: 0; } #print-area .farrow::after { content: '→'; font-size: 14px; }
 #print-area ul { margin: 0; padding-left: 16px; } #print-area li { margin: 1px 0; }
-#print-area .mm-b, #print-area .mm-flow { break-inside: avoid; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-@media print {
-  body.print-mm > *:not(#print-area) { display: none !important; }
-  body.print-mm, body.print-mm html { background: #fff !important; }
-  body.print-mm #print-area { position: static; left: 0; }
-  body.print-mm #print-area .mm-b, body.print-mm #print-area .mm-flow { background: #fff; }
-}
-#print-area .mm-center { background: #1e3a8a !important; color: #fff !important; border-radius: 18px; padding: 18px 14px; text-align: center; font-weight: 800; font-size: 20px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+#print-area .mm-b, #print-area .mm-flow { background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+#print-area .mm-center { width: 210px; background: #1e3a8a !important; color: #fff !important; border-radius: 18px; padding: 18px 14px; text-align: center; font-weight: 800; font-size: 20px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 #print-area .mm-center * { color: #fff !important; }
-
-/* v77: portrait layout for the one-page mind map (iPad Safari prints portrait by default) */
-#print-area.pa-p { width: 1000px; }
-#print-area.pa-p .pa-grid { grid-template-columns: 1fr 1fr 1fr; align-items: start; }
-#print-area.pa-p .pa-side { display: contents; }
-#print-area.pa-p .pa-mid { grid-column: 1 / -1; order: -1; }
 @media print {
-  body.print-mm #print-area { zoom: var(--zl); }
   @page { margin: 10mm; }
+  body.print-mm > *:not(#print-area) { display: none !important; }
+  body.print-mm, html:has(body.print-mm) { background: #fff !important; }
+  body.print-mm #print-area { position: static; left: 0; }
+  body.print-mm #print-area .pa-land { display: none; }
+  body.print-mm #print-area .pa-box { break-inside: avoid; page-break-inside: avoid; }
 }
-@media print and (orientation: portrait) {
-  body.print-mm #print-area { width: 1000px; zoom: var(--zp); }
-  body.print-mm #print-area .pa-grid { grid-template-columns: 1fr 1fr 1fr; align-items: start; }
-  body.print-mm #print-area .pa-side { display: contents; }
-  body.print-mm #print-area .pa-mid { grid-column: 1 / -1; order: -1; }
+@media print and (orientation: landscape) {
+  body.print-mm #print-area .pa-land { display: block; }
+  body.print-mm #print-area .pa-port { display: none; }
 }
 
 /* v78: cosmic backdrop — fixed so it stays put while scrolling (iOS ignores background-attachment: fixed) */

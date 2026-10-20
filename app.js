@@ -317,13 +317,16 @@ const A = {
     const side = mm.querySelectorAll('.mm-side'), flows = document.querySelector('.mm-flows');
     const area = document.createElement('div'); area.id = 'print-area';
     const nf = flows ? flows.children.length : 0;
-    area.innerHTML = `<div class="pa-grid"><div class="pa-side">${side[0]?.innerHTML || ''}</div><div class="pa-mid"><div class="mm-center">${mm.querySelector('.mm-center')?.innerHTML || ''}</div></div><div class="pa-side">${side[1]?.innerHTML || ''}</div></div>${nf ? `<div class="pa-flows" style="grid-template-columns:repeat(${nf},1fr)">${flows.innerHTML}</div>` : ''}`;
+    const inner = `<div class="pa-grid"><div class="pa-side">${side[0]?.innerHTML || ''}</div><div class="pa-mid"><div class="mm-center">${mm.querySelector('.mm-center')?.innerHTML || ''}</div></div><div class="pa-side">${side[1]?.innerHTML || ''}</div></div>${nf ? `<div class="pa-flows" style="grid-template-columns:repeat(${nf},1fr)">${flows.innerHTML}</div>` : ''}`;
+    area.innerHTML = `<div class="pa-box pa-land"><div class="pa-in">${inner}</div></div><div class="pa-box pa-port"><div class="pa-in">${inner}</div></div>`;
     document.body.appendChild(area);
-    // Fit one A4 landscape page: 277 × 190 mm inside the margins ≈ 1040 × 700 px.
-    // iPad/iPhone Safari ignores the page-size setting, so fit BOTH ways; the printer's orientation picks the layout.
-    const r = area.getBoundingClientRect(); area.style.setProperty('--zl', Math.min(1, 1040 / r.width, 690 / r.height));
-    area.classList.add('pa-p'); const rp = area.getBoundingClientRect(); area.classList.remove('pa-p');
-    area.style.setProperty('--zp', Math.min(1, 700 / rp.width, 1020 / rp.height));
+    // Usable page area with 10 mm margins, safe for both A4 and US Letter (iPad prints Letter):
+    // landscape ≈ 1000 × 680 px, portrait ≈ 690 × 940 px.
+    for (const [cls, W, H] of [['.pa-land', 1000, 680], ['.pa-port', 690, 940]]) {
+      const box = area.querySelector(cls), inEl = box.firstElementChild, w = inEl.offsetWidth, h = inEl.offsetHeight;
+      const s = Math.min(1, W / w, H / h);
+      inEl.style.transform = `scale(${s})`; box.style.width = Math.floor(w * s) + 'px'; box.style.height = Math.ceil(h * s) + 'px';
+    }
     document.body.classList.add('print-mm');
     setTimeout(() => { window.print(); setTimeout(() => { document.body.classList.remove('print-mm'); area.remove(); }, 800); }, 80);
   },
