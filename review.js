@@ -7,7 +7,7 @@ async function queueReview(prio = 6) {
   const queued = new Set((await DB.all('queue')).filter(j => j.kind === 'review' && j.status !== 'done').flatMap(j => j.payload.ids));
   const all = (await DB.live('mcqs')).filter(m => !m.merged && !m.reviewed && !queued.has(m.id));
   // Real bank questions first, then AI-written; batches of 8 from the same system (so the topic list fits).
-  const rank = m => ({ AMEDEX: 0, PYQ: 1, MBBS: 2, SPOT: 3, AI: 4 })[qBank(m)] ?? 5;
+  const rank = m => ({ AMEDEX: 0, PYQ: 1, UWORLD: 2, MBBS: 3, SPOT: 4, AI: 5 })[qBank(m)] ?? 6;
   all.sort((a, b) => rank(a) - rank(b) || String(a.system).localeCompare(String(b.system)));
   let n = 0, batch = [], sys = null;
   const flush = async () => { if (batch.length) { await Queue.add('review', { ids: batch.map(m => m.id), system: sys }, prio + (rank(batch[0]) > 2 ? 1 : 0)); n++; } batch = []; };
@@ -34,6 +34,7 @@ Rules:
 - drop ONLY if: garbled/unreadable text, question text missing or unanswerable, it needs a picture/table/graph that is not given (and it has no picture), or the answer is given away in the stem. For bank AI only, also drop if quality < 4 (obvious answer, silly options, not exam-relevant, not standard/Australian practice).
 - fix if usable but: options carry the book's own letters ("B Sodium valproate"), OCR typos, answer-key text mixed into the stem (e.g. "OA Phenytoin."), or the keyed answer is clearly wrong (only if certain). Keep the medical meaning of real bank questions exactly.
 - oldFormat: true for old-style stems without a patient scenario ("X is associated with…", incomplete sentence).
+- bank UWORLD (US exam): drop if it tests US-only content (US law/insurance, US screening schedules, drugs or systems not used in Australia); otherwise keep.
 - keep everything else. Real bank questions (AMEDEX/PYQ) are kept even if easy.
 Return JSON {"results":[…]}.
 
@@ -88,3 +89,37 @@ Handlers.maskimg = async function (job, ctx) {
 
 // NotebookLM: copy the question and open the subject's notebook.
 function notebookLinks() { return String(localStorage.getItem('nblm') || '').split('\n').map(l => l.split('|').map(x => x.trim())).filter(x => x[0] && /^https?:/.test(x[1] || '')).map(([name, url]) => ({ name, url })); }
+
+// Double-check: a second AI answers each question blind (without seeing the key). Agreement = trusted;
+// disagreement = "disputed", shown on the question so you check it in Murtagh / the guidelines.
+JOB_LABEL.verify = 'Double-checking answers';
+async function queueVerify(prio = 8) {
+  const queued = new Set((await DB.all('queue')).filter(j => j.kind === 'verify' && j.status !== 'done').flatMap(j => j.payload.ids));
+  const all = (await DB.live('mcqs')).filter(m => !m.merged && !m.flagged && m.verified == null && !queued.has(m.id) && !qBroken(m));
+  let n = 0;
+  for (let i = 0; i < all.length; i += 10) { await Queue.add('verify', { ids: all.slice(i, i + 10).map(m => m.id) }, prio); n++; }
+  return n;
+}
+Handlers.verify = async function (job, ctx) {
+  const qs = (await Promise.all(job.payload.ids.map(id => DB.get('mcqs', id)))).filter(m => m && !m.deleted && m.verified == null);
+  if (!qs.length) return;
+  const L = i => String.fromCharCode(65 + i);
+  const prompt = `Answer each exam question yourself (Australian AMC practice; Indian MBBS for MBBS-style ones). Think like an examiner.
+Return JSON {"results":[{"id":"…","answer":"A-E","confidence":1-5,"why":"max 15 words"}]}
+
+${qs.map(m => `[${m.id}]\n${m.stem}\n${m.options.map((o, i) => `${L(i)}) ${o}`).join('\n')}`).join('\n\n')}`;
+  const out = await bulkCall(ctx, { prompt, json: true, maxTokens: 3000 });
+  const res = Array.isArray(out?.results) ? out.results : [];
+  const clean = v => String(v ?? '').replace(/[\[\]\s"']/g, '');
+  let matched = 0;
+  for (const [i, m] of qs.entries()) {
+    const r = res.find(x => clean(x?.id) === m.id) || (res.length === qs.length ? res[i] : null); if (!r || !r.answer) continue;
+    matched++;
+    const pick = String(r.answer).trim().toUpperCase().charCodeAt(0) - 65, keyed = correctSet(m);
+    if (keyed.includes(pick)) { m.verified = 1; delete m.disputed; }
+    else if ((+r.confidence || 0) >= 4) { m.verified = 0; m.disputed = { ai: pick, why: String(r.why || '').slice(0, 120) }; }
+    else m.verified = 1;   // the second AI wasn't sure — keep the book's answer
+    await DB.put('mcqs', m);
+  }
+  if (!matched) throw new Error('Double-check reply did not match — will retry');
+};

@@ -278,7 +278,7 @@ function mcqTab(t, live, all, st, books, inQueue) {
   const n = k => live.filter(m => m.type === k).length;
   const ok = live.filter(m => !qBroken(m)), broken = live.length - ok.length;
   const nb = k => ok.filter(m => qBank(m) === k).length;
-  const bankBtns = ['AMEDEX', 'PYQ', 'AI', 'SPOT', 'MBBS'].filter(nb).map(k => `<button class="btn" data-act="practiseTopic" data-id="${t.id}" data-type="ALL" data-bank="${k}">${BANK_LABEL[k]} <small>${nb(k)}</small></button>`).join('');
+  const bankBtns = ['AMEDEX', 'PYQ', 'UWORLD', 'AI', 'SPOT', 'MBBS'].filter(nb).map(k => `<button class="btn" data-act="practiseTopic" data-id="${t.id}" data-type="ALL" data-bank="${k}">${BANK_LABEL[k]} <small>${nb(k)}</small></button>`).join('');
   const flagged = all.filter(m => m.flagged && !m.deleted).length;
   const merged = all.filter(m => m.merged && !m.deleted), combined = all.filter(m => m.src === 'merged' && !m.deleted);
   const b = st.by[t.id];
@@ -290,10 +290,6 @@ function mcqTab(t, live, all, st, books, inQueue) {
         ${bankBtns}
         <button class="btn ghost" data-act="practiseTopic" data-id="${t.id}" data-type="ALL" data-bank="all" ${ok.length ? '' : 'disabled'}>All mixed</button>
       </div></div>
-    <div class="card"><h3>Shrink & combine</h3>
-      <p class="muted">${merged.length ? `${merged.length} questions folded into ${combined.length} combined ones (originals hidden). ` : ''}Fuses overlapping <b>AI-written</b> questions into fewer, harder vignettes. Questions from AMEDEX and your books are always kept exactly as they are.</p>
-      <div class="row gap wrap">${AI.key ? `<button class="btn" data-act="mergeTopic" data-id="${t.id}" ${live.length >= 4 && !inQueue.some(j => j.kind === 'merge') ? '' : 'disabled'}>${inQueue.some(j => j.kind === 'merge') ? 'Combining…' : 'Combine overlapping questions'}</button>` : '<span class="muted small">Add your Gemini key in Settings to use this.</span>'}
-      ${merged.length ? `<button class="btn ghost" data-act="unmergeTopic" data-id="${t.id}">Undo combining</button>` : ''}</div></div>
     <div class="card"><h3>More questions</h3>
       ${inQueue.length ? `<div class="mt">${jobStatusBox(inQueue)}</div>` : `<p class="muted">${books ? 'Write 10 new AMC + 8 MBBS questions from your books (no repeats).' : 'Generate more on your laptop — they sync here.'}</p>`}
       ${books && !inQueue.length ? `<button class="btn" data-act="moreMcqs" data-id="${t.id}">+ Write more MCQs</button>` : ''}
@@ -372,6 +368,7 @@ Views.session = async () => {
           ${multi ? '<p class="pill warn">More than one answer — select all that apply</p>' : ''}
           <div class="opts">${opts}</div>
           ${revealed ? `<div class="expl ${a.ok ? 'ok' : 'bad'}"><b>${a.ok ? 'Correct' : 'Not quite — answer ' + letters(right)}</b>${md(m.expl)}${m.cite ? `<p class="muted small">Source: ${esc(m.cite)}</p>` : ''}${!a.ok ? masterBlock(m, a.c) : ''}${m.keyedBy === 'ai' && m.src !== 'ai' ? '<p class="muted small">Answer chosen by AI (the book had no key on these pages).</p>' : ''}
+            ${m.disputed ? `<p class="disputed">⚠ A second AI picked <b>${letters([m.disputed.ai])}</b> instead — ${esc(m.disputed.why)}. Check this one in Murtagh / the guidelines.</p>` : m.verified ? '<p class="muted small">✓ Answer double-checked by a second AI</p>' : ''}
             <div class="row gap mt"><button class="btn sm" data-act="askQ">Ask AI about this</button><button class="btn sm ghost" data-act="flagQ">Flag bad question</button></div></div>` : ''}
           <div class="q-nav">
             <button class="btn" data-act="prevQ" ${s.idx ? '' : 'disabled'}>Back</button>
@@ -437,7 +434,7 @@ Views.practice = async () => {
     const p = perf[k] ||= { total: 0, used: 0, ok: 0 }; p.total++; if (a) { p.used++; if (a.correct) p.ok++; }
     if (k === 'AMEDEX' || k === 'PYQ') { const q = perSys[m.system] ||= { total: 0, used: 0, ok: 0 }; q.total++; if (a) { q.used++; if (a.correct) q.ok++; } }
   }
-  const perfCards = ['AMEDEX', 'PYQ', 'AI', 'SPOT', 'MBBS'].filter(k => perf[k]).map(k => { const p = perf[k]; return `<div class="perf"><div class="row between"><b>${BANK_LABEL[k]}</b><span class="muted small">${p.used} / ${p.total} used</span></div>
+  const perfCards = ['AMEDEX', 'PYQ', 'UWORLD', 'AI', 'SPOT', 'MBBS'].filter(k => perf[k]).map(k => { const p = perf[k]; return `<div class="perf"><div class="row between"><b>${BANK_LABEL[k]}</b><span class="muted small">${p.used} / ${p.total} used</span></div>
       <div class="stack"><i class="s-ok" style="width:${pct(p.ok, p.total)}%"></i><i class="s-bad" style="width:${pct(p.used - p.ok, p.total)}%"></i></div>
       <p class="small">${p.used ? `<b>${pct(p.ok, p.used)}%</b> correct · ` : ''}${p.ok} correct · ${p.used - p.ok} incorrect · ${p.total - p.used} unused</p>
       <div class="row gap wrap"><button class="btn sm" data-act="bankPractice" data-bank="${k}" data-source="unseen" ${p.total - p.used ? '' : 'disabled'}>Unused</button><button class="btn sm" data-act="bankPractice" data-bank="${k}" data-source="mistakes" ${p.used - p.ok ? '' : 'disabled'}>Incorrect</button></div></div>`; }).join('');
@@ -462,7 +459,7 @@ Views.practice = async () => {
     <p class="label">Systems <button type="button" class="link small" data-act="pickAllSys">all / none</button></p>
     <div class="chips">${SYS_LIST.map(s => `<label class="chip check ${sel.has(s.code) ? 'on' : ''}"><input type="checkbox" name="sys" value="${s.code}" ${sel.has(s.code) ? 'checked' : ''} hidden>${s.name} <small>${counts[s.code] || 0}</small></label>`).join('')}</div>
     <div class="form-row mt">
-      <label>Bank<select name="bank">${[['real', 'Real (AMEDEX + PYQ)'], ['all', 'Everything'], ['AMEDEX', 'AMEDEX only'], ['PYQ', 'PYQ only'], ['AI', 'AI-written only'], ['SPOT', 'Image spotters'], ['MBBS', 'MBBS bank']].map(([v, l]) => `<option value="${v}" ${(f.bank || 'real') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label>Bank<select name="bank">${[['real', 'Real (AMEDEX + PYQ)'], ['all', 'Everything'], ['AMEDEX', 'AMEDEX only'], ['PYQ', 'PYQ only'], ['UWORLD', 'UWorld only'], ['AI', 'AI-written only'], ['SPOT', 'Image spotters'], ['MBBS', 'MBBS bank']].map(([v, l]) => `<option value="${v}" ${(f.bank || 'real') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label>Type<select name="type">${[['ALL', 'All mixed'], ['AMC', 'AMC only'], ['MBBS', 'MBBS only'], ['IMG', 'Images only']].map(([v, l]) => `<option value="${v}" ${f.type === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label>Questions<select name="source">${[['all', 'Any'], ['due', 'Due for revision'], ['unseen', 'Unseen only'], ['mistakes', 'Mistakes only']].map(([v, l]) => `<option value="${v}" ${f.source === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label>How many<input type="number" name="count" min="5" max="150" value="${f.count || 20}"></label>
@@ -520,7 +517,6 @@ Views.library = async () => {
       ${qc.failed ? `<button class="btn" data-act="retryFailed">Retry ${qc.failed} failed</button>` : ''}
       ${qc.done ? '<button class="btn ghost" data-act="clearDone">Clear finished</button>' : ''}
       <button class="btn" data-act="startReview">Review all questions with AI</button>
-      <button class="btn" data-act="mergeEverything">Combine questions in every topic</button>
       <button class="btn primary" data-act="genEverything" ${books.length ? '' : 'disabled'}>Generate every topic</button>
     </div></div>
     <div class="qstatus" id="qstatus">${queueLine()}</div>
@@ -580,7 +576,7 @@ function markTerms(html, terms) {
 }
 function searchResultsHtml(r) {
   if (r.waiting) return `<p class="muted"><span class="spin"></span>${esc(r.waiting)}</p>`;
-  const g = `<a class="btn sm ghost" target="_blank" rel="noopener" href="https://www.google.com/search?q=${encodeURIComponent(r.q)}">Search Google</a>` + notebookLinks().map(n => `<button class="btn sm ghost" data-act="askNblm" data-url="${esc(n.url)}" data-q="${esc(r.q)}">NotebookLM · ${esc(n.name)}</button>`).join('');
+  const g = `<a class="btn sm ghost" target="_blank" rel="noopener" href="https://www.google.com/search?q=${encodeURIComponent(r.q)}">Search Google</a>`;
   const top = r.ai ? `<div class="card ai-ans mb"><div class="row between"><p class="eyebrow">AI answer · from your books</p>${g}</div><div class="read">${md(r.ai)}</div></div>`
     : r.aiWait ? `<p class="muted"><span class="spin"></span>AI is checking your books for the best answer…</p>` : '';
   if (top) return top + searchResultsHtml({ ...r, ai: null, aiWait: false, _inner: 1 });
@@ -614,7 +610,7 @@ Views.settings = async () => {
   setTimeout(() => { const h = document.querySelector('.page-head h1'); if (h && !h.dataset.v) { h.dataset.v = 1; h.insertAdjacentHTML('beforeend', ` <small class="muted small">${APP_VERSION}</small>`); } }, 0);
   const prefs = await Prefs.get();
   const last = +localStorage.getItem('sb_last') || 0;
-  return `<div class="page"><header class="page-head"><div><h1>Settings</h1></div><a class="btn" href="#/library">Library & background jobs ›</a></header>
+  return `<div class="page"><header class="page-head"><div><h1>Settings</h1></div><div class="row gap"><a class="btn" href="#/help">Help ›</a><a class="btn" href="#/library">Library & background jobs ›</a></div></header>
   <form class="card" data-submit="saveAI"><h3>Gemini (writes sheets & questions)</h3>
     <p class="muted small">Get a free key at aistudio.google.com → “Get API key”. The free key has daily limits; the app paces itself and waits when it hits them. Your Gemini app subscription does not raise these API limits — turning on billing for the key does. Only needed on the laptop.</p>
     <label>API key<input type="password" name="key" value="${esc(AI.key)}" autocomplete="off" placeholder="AIza…"></label>
@@ -624,9 +620,6 @@ Views.settings = async () => {
     <p class="muted small">Importing thousands of questions is simple work, so it uses the cheaper "lite" model, which has much higher free limits. Sheets and new questions use the main model.</p>
     <div class="row gap mt"><button class="btn primary">Save</button><button type="button" class="btn" data-act="testKey">Test key & list models</button></div>
     <p class="muted small" id="key-msg"></p></form>
-  <section class="card mt"><h3>NotebookLM (search your books on Google's servers)</h3>
-    <p class="muted small">Make one notebook per subject at notebooklm.google.com, upload that subject's PDFs, then paste one line per notebook: <b>name | link</b>. Ask books then shows a button that copies your question and opens the notebook.</p>
-    <textarea data-change="nblm" rows="4" placeholder="OBG | https://notebooklm.google.com/notebook/…&#10;Medicine | https://notebooklm.google.com/notebook/…">${esc(localStorage.getItem('nblm') || '')}</textarea></section>
   <form class="card mt" data-submit="saveProviders"><h3>Extra free AI — make it faster</h3>
     <p class="muted small">Each free service you add works <b>at the same time</b> as Gemini on importing question banks, image questions and reading scanned pages, so the work finishes several times faster. Sign up (free), create an API key, paste it here and click Test. Topic sheets and new MCQs use Gemini for best quality; when Gemini’s free allowance runs out for the day, Mistral takes over.</p>
     ${Providers.list().map(p => `<div class="prov">
@@ -668,3 +661,32 @@ Views.settings = async () => {
   <section class="card mt"><h3>Appearance</h3><div class="seg">${['auto', 'light', 'dark'].map(k => `<button class="${(localStorage.getItem('theme') || 'auto') === k ? 'on' : ''}" data-act="theme" data-k="${k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}</div></section>
   </div>`;
 };
+
+// ---------------- Help: how to use and look after the app (works offline) ----------------
+Views.help = async () => `<div class="page help"><header class="page-head"><div><p class="eyebrow">Study Engine ${APP_VERSION}</p><h1>How to use &amp; look after the app</h1></div></header>
+  <section class="card"><h3>Daily study</h3><ol>
+    <li><b>Read</b> your topic from your own notes.</li>
+    <li>Open the topic → <b>Mind map</b> (press <i>Make mind map</i> only for topics you want one for) → <b>AMC · Murtagh</b> once.</li>
+    <li><b>Questions</b> → <i>Real questions (AMEDEX + PYQ)</i>. In the test: select words to highlight, ✕ to cross out options.</li>
+    <li>Wrong answer → read the explanation → <i>Ask AI about this</i> if unclear. ⚠ on a question = a second AI disagreed with the key: check that one in Murtagh / guidelines.</li>
+    <li><b>Practice</b> page: <i>Unused</i> / <i>Incorrect</i> per bank, and your % by system. Biweekly test when it's due.</li>
+    <li>Anywhere: select text → <b>Ask AI</b>, <b>Google</b>, <b>Highlight</b>, <b>Underline</b>.</li>
+    <li><b>Ask books</b>: exact lines from your books + an AI answer with page numbers (needs internet for the AI part).</li></ol></section>
+  <section class="card mt"><h3>Question tags</h3><p><span class="btag b-AMEDEX">AMEDEX</span> <span class="btag b-PYQ">PYQ</span> <span class="btag b-UWORLD">UWorld</span> <span class="btag b-AI">AI-written</span> <span class="btag b-SPOT">Image spotter</span> <span class="btag b-MBBS">MBBS bank</span></p>
+    <p class="muted small">Broken questions (garbled, missing picture) are hidden automatically. Restore hidden ones from a topic's Questions tab.</p></section>
+  <section class="card mt"><h3>Keep it running (laptop)</h3><ul>
+    <li>Keep the app tab open, laptop plugged in, screen on (dim it). Windows: screen-off and sleep → <i>Never</i> when plugged in.</li>
+    <li>Hostel WiFi: switch on <b>1.1.1.1 / WARP</b> first.</li>
+    <li>Library → <i>Laptop load</i>: Balanced for daytime, Fastest at night if it stays cool.</li>
+    <li>New question bank or book: drop the PDF in <b>Library</b> (UWorld PDFs are tagged UWorld automatically), then press <i>Review all questions with AI</i>.</li></ul></section>
+  <section class="card mt"><h3>If something goes wrong</h3><ul>
+    <li><b>Page frozen</b> for more than 3 minutes → press Ctrl + R. Work continues where it stopped.</li>
+    <li><b>“Limit reached / resting”</b> → normal; free AI allowances refill daily (about 12:30 pm India time).</li>
+    <li><b>An AI key stops working</b> → Settings → that key → Test. A key can be replaced with a new free one (aistudio.google.com/apikey).</li>
+    <li><b>Phone / iPad shows an old version</b> → close the app and reopen it; still old → clear the site's data in Chrome settings, reopen (Sync restores your data).</li>
+    <li><b>Ask AI says all AIs are busy</b> → wait a minute, or use the Google button.</li>
+    <li><b>Sync dot red</b> → check internet; Settings → Sync → Test.</li></ul></section>
+  <section class="card mt"><h3>Protect your work</h3><ul>
+    <li>Once a week: <b>Settings → Backup → Download backup</b> and keep the file in Google Drive.</li>
+    <li>Keep the app files zip and your GitHub login safe — the app lives at hpsingh720.github.io/study-engine.</li>
+    <li>Never share your API keys or the Supabase keys with anyone.</li></ul></section></div>`;

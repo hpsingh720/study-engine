@@ -1,5 +1,5 @@
 // Offline support: cache the app shell and libraries; never cache API calls.
-const CACHE = 'study-engine-v71';
+const CACHE = 'study-engine-v74';
 const LIBS = 'study-engine-libs'; // libraries kept across app updates
 const SHELL = ['./', 'index.html', 'styles.css', 'manifest.webmanifest', 'icon.svg', 'icon-180.png', 'icon-512.png',
   'util.js', 'seed.js', 'db.js', 'semantic.js', 'quality.js', 'embed-worker.js', 'ai.js', 'providers.js', 'engine.js', 'review.js', 'sync.js', 'practice.js', 'planner.js', 'notes.js', 'views.js', 'app.js',

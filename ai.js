@@ -8,7 +8,7 @@ const COLS = {
 };
 const ROLES = {
   ref: 'Reference textbook', mbbs: 'MBBS textbook', amc: 'AMC / Australian source',
-  'mcq-mbbs': 'MCQ book (MBBS)', 'mcq-amc': 'Question bank (AMC / AMEDEX)', practical: 'Practical / spotter book', reader: 'Reading copy only (phone / iPad)'
+  'mcq-mbbs': 'MCQ book (MBBS)', 'mcq-amc': 'Question bank (AMC / AMEDEX)', 'mcq-uworld': 'Question bank (UWorld)', practical: 'Practical / spotter book', reader: 'Reading copy only (phone / iPad)'
 };
 const SECTIONS = {
   patho: 'Pathophysiology', clinical: 'Clinical features', investigations: 'Investigations',
@@ -547,10 +547,24 @@ Reply in this order:
 If the passages don't contain the answer, say so plainly and give the standard textbook definition, marked "(general knowledge)".` });
 }
 
+// Questions you ask while studying must answer in seconds, even while the background work keeps the keys busy:
+// ask your key and both friends' keys at once (fast Lite models) and take the first reply; then try the other free AIs.
+async function fastAI({ prompt, json = false, system }) {
+  const cap = (pr, ms) => Promise.race([pr, new Promise((_, no) => setTimeout(() => no(new Error('slow')), ms))]);
+  const gem = Providers.active().filter(p => /generativelanguage/.test(p.base || '') && !p.ocrOnly);
+  const quick = [AI.key ? AI.call({ prompt, json, system, model: AI.bulkModel }) : Promise.reject(new Error('no key')),
+    ...gem.slice(0, 2).map(p => Providers.call({ ...p, model: /lite/.test(p.model) ? p.model : AI.bulkModel }, { prompt, json, system, maxTokens: 2000 }))];
+  try { return await cap(Promise.any(quick), 20000); } catch (e) {}
+  for (const p of Providers.active().filter(p => !p.ocrOnly && !p.ocrApi && !gem.includes(p))) {
+    try { return await cap(Providers.call(p, { prompt, json, system, maxTokens: 2000 }), 20000); } catch (e) {}
+  }
+  throw new Error('All the AIs are busy right now — try again in a minute.');
+}
+
 async function askTutor(topic, question, context = '') {
   const sheet = topic ? await DB.get('sheets', topic.id) : null;
-  const sheetCtx = sheet ? JSON.stringify({ sections: sheet.sections, comparison: sheet.comparison }).slice(0, 16000) : '';
-  return AI.call({
+  const sheetCtx = sheet ? JSON.stringify({ sections: sheet.sections, comparison: sheet.comparison }).slice(0, 5000) : '';
+  return fastAI({
     json: false, system: SYSTEM_TUTOR + ' Answer in short bullet points. When Indian and Australian practice differ, say both clearly.',
     prompt: `${topic ? 'Topic: ' + topic.name + '\nRevision sheet: ' + sheetCtx : ''}\n${context ? 'Context: ' + context : ''}\n\nStudent question: ${question}`
   });

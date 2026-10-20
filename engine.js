@@ -11,6 +11,7 @@ const JOB_LABEL = {
 
 function guessRole(name) {
   const n = name.toLowerCase();
+  if (/uworld|\buw\b|usmle|step ?2/.test(n)) return 'mcq-uworld';
   if (/amedex|qbank|q-bank|recall|anthology|handbook.*mcq|amc.*mcq|mcq.*amc/.test(n)) return 'mcq-amc';
   if (/mcq|question|self.?assess|pretest|review/.test(n)) return 'mcq-mbbs';
   if (/practical|spotter|ecg|x-?ray|radiolog|instrument|specimen|osce|atlas|image/.test(n)) return 'practical';
@@ -481,7 +482,7 @@ async function saveImported(raw, book, firstPage, canvases, scannedSrc) {
       const crop = cropBox(canvases[m.figure.image], m.figure.box_2d);
       if (crop) { img = 'img-' + uid(); await DB.put('media', { id: img, data: await compressImage(crop, 1200, 0.8), kind: 'qbank' }); }
     }
-    const forcedType = img ? 'IMG' : (book.role === 'mcq-amc' ? 'AMC' : (m.type === 'AMC' ? 'AMC' : 'MBBS'));
+    const forcedType = img ? 'IMG' : (book.role === 'mcq-amc' || book.role === 'mcq-uworld' ? 'AMC' : (m.type === 'AMC' ? 'AMC' : 'MBBS'));
     const pg = +m.page || firstPage;
     const q = cleanMcq(m, t, { type: forcedType, src: `${book.short} p.${pg}`, img, system: t?.system || '' });
     if (q) { list.push(q); if (scannedSrc && m.hasFigure && !img) q._fig = pg; }
@@ -536,7 +537,7 @@ const Queue = {
     // Topic sheets and new MCQs need a big, careful model: Gemini first; Mistral takes over while Gemini is out for the day.
     if ((j.kind === 'sheet' || j.kind === 'mcqgen') && prov.big) return true; // a second Gemini key writes sheets like the main one
     if (j.kind === 'sheet' || j.kind === 'mcqgen') return prov.id === 'mistral' && (j.noGemini || Date.now() < (this.paused.ai || 0)) && (j.kind === 'mcqgen' || j.prio < 6 || !this._localBusy);
-    if (j.kind === 'mcqtext' || j.kind === 'review') return true;
+    if (j.kind === 'mcqtext' || j.kind === 'review' || j.kind === 'verify') return true;
     if (prov.vision && (j.kind === 'mcqvision' || j.kind === 'practical' || j.kind === 'ocr' || j.kind === 'figure')) return true;
     return false;
   },

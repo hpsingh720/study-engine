@@ -10,7 +10,8 @@ const ROUTES = [
   [/^#\/library$/, () => Views.library()],
   [/^#\/progress$/, () => Views.progress()],
   [/^#\/settings$/, () => Views.settings()],
-  [/^#\/search$/, () => Views.search()]
+  [/^#\/search$/, () => Views.search()],
+  [/^#\/help$/, () => Views.help()]
 ];
 
 const App = {
@@ -290,7 +291,7 @@ const A = {
   },
   async startReview() {
     localStorage.setItem('reviewOn', '1');
-    const n = await queueReview(), k = await queueMasks();
+    const n = await queueReview(), k = await queueMasks(); await queueVerify();
     toast(n ? `Reviewing questions in ${n} batches (+ ${k} pictures) — runs in the background with your free AI keys. Watch Library.` : 'All questions are already reviewed.', 7000);
     App.render(true);
   },
@@ -751,7 +752,7 @@ async function init() {
   setTimeout(() => Queue.reviveLibFails().then(n => n && toast(`Gave ${n} jobs another go (the page reader hadn't downloaded)`, 6000)).catch(console.warn), 8000);
   setTimeout(() => Queue.autoRetry().catch(console.warn), 60000); setInterval(() => Queue.autoRetry().catch(console.warn), 2 * 3600000);
   setTimeout(() => queueEmbeds().then(n => n && Queue.kick()).catch(console.warn), 30000); setInterval(() => queueEmbeds().then(n => n && Queue.kick()).catch(console.warn), 3600000);
-  setInterval(() => { if (localStorage.getItem('reviewOn') && (Date.now() - (window._rvT || 0)) > 3500e3) { window._rvT = Date.now(); queueReview().then(() => queueMasks()).catch(console.warn); } }, 600000);
+  setInterval(() => { if (localStorage.getItem('reviewOn') && (Date.now() - (window._rvT || 0)) > 3500e3) { window._rvT = Date.now(); queueReview().then(() => queueMasks()).then(() => queueVerify()).catch(console.warn); } }, 600000);
   setTimeout(() => queueRefs().catch(console.warn), 20000); setInterval(() => queueRefs().catch(console.warn), 3600000);
   if (Sync.on()) { Sync.run(); setInterval(() => Sync.run(), 120000); document.addEventListener('visibilitychange', () => { if (!document.hidden) Sync.run(); }); }
   else Sync.set('off');

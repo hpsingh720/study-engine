@@ -2,12 +2,13 @@
 function qBank(m) {
   const s = String(m.src || '');
   if (!s || s === 'ai' || s === 'merged' || m.gen) return 'AI';
+  if (/uworld|\buw\b|usmle|step ?2/i.test(s)) return 'UWORLD';
   if (/annotated|handbook|recall|pyq|past ?paper/i.test(s)) return 'PYQ';
   if (m.spot || (m.type === 'IMG' && /prac|spotter|osce|atlas|bailey|love|davidson|harrison|clinical|image/i.test(s))) return 'SPOT';
   if (m.type === 'MBBS') return 'MBBS';
   return 'AMEDEX';
 }
-const BANK_LABEL = { AMEDEX: 'AMEDEX', PYQ: 'PYQ', AI: 'AI-written', MBBS: 'MBBS bank', SPOT: 'Image spotter' };
+const BANK_LABEL = { AMEDEX: 'AMEDEX', PYQ: 'PYQ', AI: 'AI-written', MBBS: 'MBBS bank', SPOT: 'Image spotter', UWORLD: 'UWorld' };
 function bankTag(m) { const k = qBank(m); return `<span class="btag b-${k}">${BANK_LABEL[k]}</span>`; }
 
 // Options that still carry the book's own letters ("B Sodium valproate") would clash with the app's letters.
@@ -191,7 +192,7 @@ Explain it in an interesting, easy way (max 220 words):
 4. **Exam angle:** what AMC/MBBS exams ask about it (Australian practice if it differs).
 5. **Test yourself:** 2 short questions, answers in brackets at the very end.
 Use **bold** for key terms. No long paragraphs.`;
-    const a = await AI.call({ prompt, json: false, model: AI.bulkModel }); // the fast model: answers in a few seconds
+    const a = await fastAI({ prompt, json: false }); // the fast model: answers in a few seconds
     slot.innerHTML = (q ? `<p class="muted small">You asked: ${esc(q)}</p>` : '') + md(a);
     if (q) history[history.length - 1].a = a;
   } catch (e) { slot.innerHTML = `<p class="warn-t">${esc(e.message)}${/key/i.test(e.message) ? ' — add your Gemini key in Settings on this device too.' : ''}</p>`; }
