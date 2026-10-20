@@ -41,8 +41,11 @@ ${block}`;
   const out = await bulkCall(ctx, { prompt, json: true, maxTokens: 6000 });
   const res = Array.isArray(out?.results) ? out.results : Array.isArray(out) ? out : [];
   if (!res.length) throw new Error('AI returned no review');
-  for (const m of qs) {
-    const r = res.find(x => x && String(x.id) === m.id); if (!r) continue;
+  const clean = v => String(v ?? '').replace(/[\[\]\s"']/g, '');
+  let matched = 0;
+  for (const [i, m] of qs.entries()) {
+    const r = res.find(x => x && clean(x.id) === m.id) || (res.length === qs.length && !res.some(x => qs.some(q => clean(x?.id) === q.id)) ? res[i] : null);
+    if (!r) continue; matched++;
     m.reviewed = Date.now(); m.review = { v: r.verdict, why: String(r.reason || '').slice(0, 80), q: +r.quality || null };
     if (r.oldFormat) m.oldFormat = 1;
     if (r.topic) { const t = byName.get(String(r.topic).toLowerCase().trim()); if (t && t.id !== m.topicId) { m.movedFrom = m.topicId; m.topicId = t.id; m.system = t.system; } }
@@ -53,6 +56,7 @@ ${block}`;
     }
     await DB.put('mcqs', m);
   }
+  if (!matched) throw new Error('AI review reply did not match the questions — will retry');
 };
 
 // Pictures: read the words printed on them and cover any that give the answer away (shown again after answering).
