@@ -383,7 +383,7 @@ Return JSON: {"items":[{"box_2d":[0,0,1000,1000],"caption":"","topicId":"","stem
       const mediaId = 'img-' + uid();
       await DB.put('media', { id: mediaId, data: await compressImage(crop, 1200, 0.8), kind: 'spotter', caption: it.caption || '' });
       const t = topics[it.topicId] || await matchTopic(`${it.caption || ''} ${it.stem} ${(it.options || []).join(' ')} ${it.explanation || ''}`);
-      const m = cleanMcq(it, t, { type: 'IMG', src: `${book.short} p.${p}`, img: mediaId, system: t?.system || '' });
+      const m = cleanMcq(it, t, { type: 'IMG', src: `${book.short} p.${p}`, img: mediaId, system: t?.system || '' }); m.spot = 1;
       if (m) list.push(m);
     }
     await DB.putMany('mcqs', list);

@@ -1,0 +1,180 @@
+// Question tags (AMEDEX / PYQ / AI / MBBS), broken-question detection, small text fixes, mind maps and the select-to-ask bar.
+function qBank(m) {
+  const s = String(m.src || '');
+  if (!s || s === 'ai' || s === 'merged' || m.gen) return 'AI';
+  if (/annotated|handbook|recall|pyq|past ?paper/i.test(s)) return 'PYQ';
+  if (m.spot || (m.type === 'IMG' && /prac|spotter|osce|atlas|bailey|love|davidson|harrison|clinical|image/i.test(s))) return 'SPOT';
+  if (m.type === 'MBBS') return 'MBBS';
+  return 'AMEDEX';
+}
+const BANK_LABEL = { AMEDEX: 'AMEDEX', PYQ: 'PYQ', AI: 'AI-written', MBBS: 'MBBS bank', SPOT: 'Image spotter' };
+function bankTag(m) { const k = qBank(m); return `<span class="btag b-${k}">${BANK_LABEL[k]}</span>`; }
+
+// Options that still carry the book's own letters ("B Sodium valproate") would clash with the app's letters.
+function cleanOpt(o, all) {
+  const lab = /^\s*\(?[A-Ea-e]\s*[).:\]]?\s+(?=\S)/;
+  return all.every(x => lab.test(x)) ? String(o).replace(lab, '') : String(o);
+}
+
+// Why a question can't be used as it is (shown hidden from practice until it's repaired).
+const FIG_RE = /\b(figure|fig\.|photograph|photo|picture|image|illustrated|accompanying|shown below|shown above|is shown|are shown|table below|following table|graph|ecg below)\b/i;
+function qBroken(m) {
+  const stem = String(m.stem || '').trim(), opts = (m.options || []).map(String);
+  if (opts.length < 2) return 'missing options';
+  if (stem.length < 25 && !m.img) return 'question text missing';
+  if (/^[O0]?[A-E][\s.)]/.test(stem) && !/\?/.test(stem) && stem.length < 60) return 'question text missing';
+  const junk = t => /[A-Za-z]\(\)|\(\)[A-Za-z]|[{}|$\\]|[^\x00-\x7F°±≤≥µ×–—‘’“”…·•→↑↓′″αβγδμ]{2,}/.test(t);
+  if (opts.filter(junk).length >= 2 || (opts.join('').length < opts.length * 3 && opts.length >= 4)) return 'garbled options';
+  const bad = (stem.match(/[^A-Za-z0-9\s.,;:()'"%/+\-–?°±≤≥µ×’‘“”]/g) || []).length;
+  if (bad > Math.max(6, stem.length * 0.06)) return 'garbled question';
+  if (!m.img && FIG_RE.test(stem)) return 'picture missing';
+  return '';
+}
+
+// "Severe anaemia" written in capitals for emphasis → normal case, underlined (acronyms like WHO, ECG stay).
+const EMPH = new Set('most best least except not never always only first initial next likely unlikely appropriate inappropriate correct incorrect true false recommend recommended important immediate immediately definitive commonest common useful contraindicated indicated initially earliest single main major principal characteristic diagnostic preferred'.split(' '));
+function unshout(h) { return h.replace(/\b([A-Z]{3,})\b/g, (w, x) => EMPH.has(x.toLowerCase()) ? `<u>${x.toLowerCase()}</u>` : w); }
+
+// AI text sometimes comes with maths codes ("$\rightarrow$", "\text{ mmol/L}", "10^9") — show them as real symbols.
+function texify(h) {
+  const G = { alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', mu: 'µ', kappa: 'κ', lambda: 'λ' };
+  return h.replace(/\$([^$\n]{1,160})\$/g, (m, g) => /\\|\^|_|\{/.test(g) ? g : m)
+    .replace(/\\(?:text|mathrm|textbf|mathbf|operatorname|textit)\s*\{([^{}]*)\}/g, '$1')
+    .replace(/\\(?:rightarrow|to|longrightarrow|Rightarrow|implies)\b/g, '→').replace(/\\(?:leftarrow|Leftarrow)\b/g, '←')
+    .replace(/\\uparrow\b/g, '↑').replace(/\\downarrow\b/g, '↓').replace(/\\(?:geq?|ge)\b/g, '≥').replace(/\\(?:leq?|le)\b/g, '≤')
+    .replace(/\\times\b/g, '×').replace(/\\pm\b/g, '±').replace(/\\approx\b/g, '≈').replace(/\\sim\b/g, '~').replace(/\\%/g, '%')
+    .replace(/\\(alpha|beta|gamma|delta|mu|kappa|lambda)\b/g, (m, g) => G[g]).replace(/\\[,; ]/g, ' ')
+    .replace(/\^\{([^{}]{1,14})\}/g, '<sup>$1</sup>').replace(/_\{([^{}]{1,14})\}/g, '<sub>$1</sub>')
+    .replace(/([A-Za-z0-9)])\^([0-9+\-−]{1,3})/g, '$1<sup>$2</sup>')
+    .replace(/\b(\d{2})\+([0-6])(?=\s*(?:weeks?|wks?|days?|\/40|w\b))/gi, '$1<sup>+$2</sup>');
+}
+
+// Colour the words that matter in notes: acronyms (SIADH, HPOA), 'quoted' terms, and the user's own highlights.
+function keyColour(h, user = []) {
+  let out = h.replace(/(^|[\s(>])(?:'|&#39;|‘)([^'’&<]{3,40})(?:'|&#39;|’)(?=[\s.,;:)<&]|$)/g, '$1<mark class="kw">$2</mark>')
+    .replace(/\b([A-Z][A-Z0-9]{2,6}s?)\b(?![^<]*>)/g, (w) => /^(THE|AND|FOR|WITH|NOT|ALL|ANY|USE)$/.test(w) ? w : `<b class="acr">${w}</b>`);
+  for (const u of user) { const e = esc(u.t); if (e.length < 3) continue; out = out.split(e).join(`<mark class="${u.k === 'ul' ? 'uul' : 'uhl'}">${e}</mark>`); }
+  return out;
+}
+
+// Wrap the user's highlights inside a question stem (exam tool, lasts for this test only).
+function applyMarks(html, list = []) { for (const t of list) { const e = esc(t); if (e.length > 1) html = html.split(e).join(`<mark class="uhl">${e}</mark>`); } return html; }
+
+// Book references must suit the patient: no children's textbooks for adults.
+function refsForPatient(m, refs = []) {
+  const age = +((String(m.stem).match(/(\d{1,2})[- ](?:year|yr)[- ]old/i) || [])[1] || 0);
+  return refs.filter(r => !(age >= 16 && /nelson|ghai|paediatric|pediatric/i.test(r.book || '')));
+}
+
+// ---------- Mind maps (made only when asked) ----------
+async function bookFigures(t) {
+  if (!(await DB.count('books'))) return [];
+  const books = (await DB.all('books')).filter(b => ['ref', 'amc', 'mbbs'].includes(b.role));
+  const terms = topicTerms(t), out = [];
+  for (const b of books) {
+    await DB.each('pages', 'bookId', b.id, pg => {
+      if (!/(algorithm|flow ?chart|approach to|management of|fig(?:ure|\.)\s*\d)/i.test(pg.text)) return;
+      const sc = scorePage(pg.text, terms); if (sc <= 0) return;
+      const cap = (pg.text.match(/(?:fig(?:ure|\.)\s*[\d.]+[^.\n]{0,90}|[^.\n]{0,40}(?:algorithm|flow ?chart)[^.\n]{0,60})/i) || [''])[0].replace(/\s+/g, ' ').trim();
+      out.push({ s: sc, book: b.short || b.name, bookId: b.id, size: b.size, p: pg.p, cap });
+    });
+  }
+  out.sort((a, b) => b.s - a.s);
+  const seen = new Set(); return out.filter(f => { const k = f.book; if ((seen[k] = (seen[k] || 0) + 1) > 2) return false; return true; }).slice(0, 5);
+}
+async function makeMindmap(t) {
+  const sheet = await DB.get('sheets', t.id);
+  const notes = sheet ? Object.entries(sheet.sections || {}).map(([k, v]) => `## ${SECTIONS[k] || k}\n${['ref', 'mbbs', 'amc'].map(c => asText(v?.[c])).join('\n')}`).join('\n').slice(0, 15000) : '';
+  const prompt = `Make a colourful revision MIND MAP for the topic "${t.name}" for a medical student (Indian MBBS + Australian AMC).
+${notes ? 'Use these notes from their textbooks:\n' + notes : 'Use standard textbook knowledge (Davidson, Harrison, Bailey & Love, Murtagh).'}
+
+Return JSON only:
+{"center":"${t.name}","branches":[{"title":"Definition","items":["..."]}],"flows":[{"title":"Management of …","steps":["…","If … → …"]}]}
+Rules:
+- branches in this order when relevant: Definition, Causes / Risk factors, Pathophysiology, Clinical features, Investigations, Management, Complications, Prognosis / key numbers.
+- 3–7 items per branch, each max 12 words, no full sentences. Wrap the 1–2 most important words of each item in **double asterisks**.
+- flows: 1–2 step-by-step algorithms (management or diagnostic pathway, like a textbook flowchart), 4–8 steps each, each step max 12 words; use "If X → Y" for decisions.
+- Exam-relevant facts only. Australian practice (Murtagh/eTG) where it differs, marked "(AU)".`;
+  const mm = await AI.call({ prompt, json: true });
+  if (!mm || !Array.isArray(mm.branches)) throw new Error('The AI reply wasn’t a mind map — try again.');
+  mm.figs = await bookFigures(t).catch(() => []);
+  mm.at = Date.now();
+  const s = sheet || { id: t.id, sections: {} };
+  s.mindmap = mm; s.updated = Date.now(); await DB.put('sheets', s);
+  return mm;
+}
+function mindmapHTML(t, mm) {
+  const inl = x => keyColour(texify(esc(String(x))).replace(/\*\*(.+?)\*\*/g, '<b class="key">$1</b>'));
+  const br = (mm.branches || []).map((b, i) => `<section class="mm-b c${i % 8}"><h4>${esc(b.title)}</h4><ul>${(b.items || []).map(x => `<li>${inl(x)}</li>`).join('')}</ul></section>`);
+  const half = Math.ceil(br.length / 2);
+  const flows = (mm.flows || []).map((f, i) => `<section class="mm-flow c${(i + 3) % 8}"><h4>${esc(f.title)}</h4><div class="flow">${(f.steps || []).map(s => `<div class="fstep">${inl(s)}</div>`).join('<div class="farrow">↓</div>')}</div></section>`).join('');
+  const figs = (mm.figs || []).length ? `<section class="card mt"><h4>Flowcharts &amp; figures in your books</h4><p class="muted small">Pages where your books draw this topic as a figure or algorithm.</p>${mm.figs.map(f => `<p><button class="linkbtn" data-act="openRef" data-book="${f.bookId}" data-size="${f.size || ''}" data-p="${f.p}">${esc(f.book)} p.${f.p}</button> <span class="muted small">${esc(f.cap || '')}</span></p>`).join('')}</section>` : '';
+  return `<div class="mm"><div class="mm-side">${br.slice(0, half).join('')}</div><div class="mm-core"><div class="mm-center">${esc(mm.center || t.name)}</div></div><div class="mm-side">${br.slice(half).join('')}</div></div>
+    ${flows ? `<div class="mm-flows">${flows}</div>` : ''}${figs}`;
+}
+
+// ---------- Select any text → Ask AI / highlight / underline ----------
+const SelBar = {
+  el: null, text: '', ctx: '',
+  init() {
+    const b = document.createElement('div'); b.id = 'selbar'; b.hidden = true;
+    b.innerHTML = '<button data-sel="ask">Ask AI</button><button data-sel="hl">Highlight</button><button data-sel="ul">Underline</button>';
+    document.body.appendChild(b); this.el = b;
+    b.addEventListener('mousedown', e => e.preventDefault());
+    b.addEventListener('click', e => { const k = e.target.dataset.sel; if (k) this.act(k); });
+    const check = () => setTimeout(() => this.check(), 10);
+    document.addEventListener('mouseup', check); document.addEventListener('touchend', check); document.addEventListener('keyup', check);
+    document.addEventListener('scroll', () => { if (!this.el.hidden) this.place(); }, true);
+  },
+  check() {
+    const sel = window.getSelection(), t = sel && sel.toString().trim();
+    if (!t || t.length < 2 || t.length > 500 || !sel.rangeCount) { this.el.hidden = true; return; }
+    const node = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement);
+    const host = node && node.closest('.read, .q-stem, .expl, .bookquote, .mm, .cmp, .master, .opt-t, .doubt');
+    if (!host || host.closest('#selbar')) { this.el.hidden = true; return; }
+    this.text = t; this.ctx = host.textContent.replace(/\s+/g, ' ').slice(0, 900); this.inQ = !!host.closest('.q-stem, .opt-t');
+    this.el.querySelector('[data-sel="ul"]').hidden = this.inQ;
+    this.el.hidden = false; this.place();
+  },
+  place() {
+    const sel = window.getSelection(); if (!sel.rangeCount) return;
+    const r = sel.getRangeAt(0).getBoundingClientRect();
+    const w = this.el.offsetWidth || 220;
+    this.el.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2)) + 'px';
+    this.el.style.top = (r.top > 60 ? r.top - 48 : r.bottom + 8) + 'px';
+  },
+  async act(k) {
+    const t = this.text; this.el.hidden = true; window.getSelection().removeAllRanges();
+    if (k === 'ask') return askSelection(t, this.ctx);
+    if (this.inQ && Practice.s) { const s = Practice.s, id = s.qs[s.idx]; ((s.hl ||= {})[id] ||= []).push(t); Practice.save(); return App.render(true); }
+    const tid = (location.hash.match(/#\/topic\/([^/]+)/) || [])[1];
+    if (!tid) return toast('Open a topic to keep highlights.');
+    const n = await getNote(tid); (n.hl ||= []).push({ t, k }); await DB.put('notes', n); App.render(true);
+  }
+};
+async function askSelection(text, ctx, history = []) {
+  const box = document.getElementById('asksel-out');
+  if (!box) openModal(`<form data-submit="askSelMore"><p class="eyebrow">Ask AI</p><h3>“${esc(text.slice(0, 120))}”</h3><div id="asksel-out" class="read"></div>
+    <div class="row gap mt"><input name="q" placeholder="Ask a follow-up…" style="flex:1;min-width:0" autocomplete="off"><button class="btn primary">Ask</button></div>
+    <div class="row end mt"><button type="button" class="btn" data-act="closeModal">Close</button></div></form>`);
+  const out = document.getElementById('asksel-out');
+  window._askSel = { text, ctx, history };
+  const q = history.length ? history[history.length - 1].q : null;
+  out.insertAdjacentHTML('beforeend', `<div class="asksel-a"><p class="muted"><span class="spin"></span>Thinking…</p></div>`);
+  const slot = out.lastElementChild;
+  try {
+    const prev = history.slice(0, -1).map(h => `Q: ${h.q}\nA: ${h.a}`).join('\n');
+    const prompt = q ? `Earlier we discussed "${text}" (context: ${ctx}).\n${prev}\nStudent's follow-up: ${q}\nAnswer briefly and clearly (max 150 words), with **bold** key terms; use an arrow chain (A → B → C) if it helps.`
+      : `A medical student (Indian MBBS, preparing for the Australian AMC exam) selected this text while studying: "${text}"\nSurrounding text: ${ctx}\n
+Explain it in an interesting, easy way (max 220 words):
+1. **In one line:** what it means in plain words.
+2. **How it works:** the mechanism as a short arrow chain (A → B → C), or a tiny step list.
+3. **Remember it:** an analogy or memory hook.
+4. **Exam angle:** what AMC/MBBS exams ask about it (Australian practice if it differs).
+5. **Test yourself:** 2 short questions, answers in brackets at the very end.
+Use **bold** for key terms. No long paragraphs.`;
+    const a = await AI.call({ prompt, json: false });
+    slot.innerHTML = (q ? `<p class="muted small">You asked: ${esc(q)}</p>` : '') + md(a);
+    if (q) history[history.length - 1].a = a;
+  } catch (e) { slot.innerHTML = `<p class="warn-t">${esc(e.message)}${/key/i.test(e.message) ? ' — add your Gemini key in Settings on this device too.' : ''}</p>`; }
+}

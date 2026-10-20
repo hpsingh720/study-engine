@@ -18,8 +18,10 @@ const Practice = {
     return last;
   },
 
-  async pool({ topicIds, systems, type = 'ALL', source = 'all', count = 20, weightMistakes = false }) {
-    let all = (await DB.live('mcqs')).filter(m => !m.flagged && !m.merged);
+  async pool({ topicIds, systems, type = 'ALL', source = 'all', count = 20, weightMistakes = false, bank = 'all' }) {
+    let all = (await DB.live('mcqs')).filter(m => !m.flagged && !m.merged && !qBroken(m));
+    if (bank === 'real') all = all.filter(m => ['AMEDEX', 'PYQ'].includes(qBank(m)));
+    else if (bank !== 'all') all = all.filter(m => qBank(m) === bank);
     if (topicIds) { const set = new Set(topicIds); all = all.filter(m => set.has(m.topicId)); }
     if (systems?.length) all = all.filter(m => systems.includes(m.system));
     if (type !== 'ALL') all = all.filter(m => m.type === type);

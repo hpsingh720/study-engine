@@ -19,6 +19,7 @@ const App = {
     const y = window.scrollY;
     const h = location.hash || '#/';
     clearInterval(this.timer);
+    document.body.classList.toggle('examfull', h.startsWith('#/session'));
     for (const [re, fn] of ROUTES) {
       const m = h.match(re);
       if (!m) continue;
@@ -226,7 +227,7 @@ const A = {
   async practiseTopic(el) {
     const t = await DB.get('topics', el.dataset.id);
     sessionStorage.setItem('leftTab', 'compare');
-    await Practice.start({ kind: 'topic', title: t.name, mode: 'tutor', topicId: t.id, topicIds: [t.id], type: el.dataset.type, count: 60, weightMistakes: true });
+    await Practice.start({ kind: 'topic', title: t.name + (el.dataset.bank && el.dataset.bank !== 'all' ? ' · ' + (BANK_LABEL[el.dataset.bank] || 'Real questions') : ''), mode: 'tutor', topicId: t.id, topicIds: [t.id], type: el.dataset.type, bank: el.dataset.bank || 'all', count: 60, weightMistakes: true });
   },
   async moreMcqs(el) { await Queue.add('mcqgen', { topicId: el.dataset.id }, 0); toast('Writing more questions…'); App.render(true); },
   async unflagAll(el) { for (const m of await DB.byIndex('mcqs', 'topicId', el.dataset.id)) if (m.flagged) { m.flagged = 0; await DB.put('mcqs', m); } App.render(true); },
@@ -273,9 +274,26 @@ const A = {
     if (left && !confirm(`${left} question${left === 1 ? '' : 's'} not answered. Finish anyway?`)) return;
     await Practice.finish(); App.render();
   },
+  strikeOpt(el) { const s = Practice.s, id = s.qs[s.idx], i = +el.dataset.i; const a = ((s.strike ||= {})[id] ||= []); const k = a.indexOf(i); k >= 0 ? a.splice(k, 1) : a.push(i); Practice.save(); App.render(true); },
+  toggleQnav() { sessionStorage.setItem('qnav', sessionStorage.getItem('qnav') === '1' ? '' : '1'); App.render(true); },
+  async bankPractice(el) {
+    const b = el.dataset.bank, src = el.dataset.source;
+    await Practice.start({ kind: 'custom', chosen: true, mode: 'tutor', title: `${BANK_LABEL[b]} · ${src === 'unseen' ? 'unused' : 'incorrect'}`, bank: b, source: src, count: 40 });
+  },
+  async hideExam(el) { const p = await Prefs.get(); if (p.exams[+el.dataset.i]) p.exams[+el.dataset.i].hidden = true; await DB.put('prefs', p); App.render(true); },
+  async genMindmap(el) {
+    const t = await DB.get('topics', el.dataset.id); if (!t) return;
+    el.disabled = true; el.innerHTML = '<span class="spin"></span>Making the mind map… (about a minute)';
+    try { await makeMindmap(t); toast('Mind map ready'); }
+    catch (e) { toast(e.message + (/key/i.test(e.message) ? ' — add your Gemini key in Settings on this device, or make it on the laptop.' : ''), 7000); }
+    App.render(true);
+  },
   async askQ() {
     const s = Practice.s; const m = await DB.get('mcqs', s.qs[s.idx]);
-    openModal(`<form data-submit="askQSend"><h3>Ask about this question</h3><textarea name="q" rows="3">Why is ${letters(correctSet(m))} correct and not ${letters(s.ans[m.id]?.c ?? 0)}?</textarea>
+    const a = s.ans[m.id], R = letters(correctSet(m));
+    const q0 = a?.ok ? `Explain in depth why ${R} is correct: the key clue in the question, the mechanism / reasoning behind it, and how to recognise it next time. Then one line on why each other option is wrong.`
+      : `Why is ${R} correct and not ${letters(a?.c ?? 0)}? First explain fully why ${R} is right (key clue + mechanism), then why my choice is wrong.`;
+    openModal(`<form data-submit="askQSend"><h3>Ask about this question</h3><textarea name="q" rows="3">${esc(q0)}</textarea>
       <div id="askq-out" class="read mt"></div><div class="row gap mt end"><button type="button" class="btn" data-act="closeModal">Close</button><button class="btn primary">Ask</button></div></form>`);
   },
   async masterQ(el) {
@@ -556,6 +574,11 @@ const F = {
       App.render(true);
     } catch (e) { toast(e.message, 5000); btn.disabled = false; btn.textContent = 'Ask'; }
   },
+  async askSelMore(form) {
+    const q = new FormData(form).get('q').trim(); if (!q || !window._askSel) return;
+    form.q.value = ''; const st = window._askSel; st.history.push({ q });
+    await askSelection(st.text, st.ctx, st.history);
+  },
   async askQSend(form) {
     const q = new FormData(form).get('q'); const out = $('#askq-out');
     const s = Practice.s; const m = await DB.get('mcqs', s.qs[s.idx]); const t = m.topicId ? await DB.get('topics', m.topicId) : null;
@@ -568,7 +591,7 @@ const F = {
   },
   async customPractice(form) {
     const d = new FormData(form);
-    const f = { systems: d.getAll('sys'), type: d.get('type'), source: d.get('source'), count: Math.max(5, Math.min(150, +d.get('count') || 20)), mode: d.get('mode') };
+    const f = { systems: d.getAll('sys'), type: d.get('type'), source: d.get('source'), bank: d.get('bank') || 'real', count: Math.max(5, Math.min(150, +d.get('count') || 20)), mode: d.get('mode') };
     localStorage.setItem('pform', JSON.stringify(f));
     await Practice.start({ ...MODES[f.mode] || MODES.tutor, chosen: true, kind: 'custom', title: f.systems.length === 1 ? sysName(f.systems[0]) : f.systems.length ? `${f.systems.length} systems` : 'All systems', ...f, weightMistakes: f.source === 'all', mode: (MODES[f.mode] || MODES.tutor).mode });
   },
@@ -693,6 +716,7 @@ async function init() {
   try { await Queue.splitTextJobs(); } catch (e) { console.warn(e); }
   try { const n = await Queue.convertVisionToOcr(); if (n) setTimeout(() => toast(`Switched ${n} scanned question-bank jobs to the faster read-then-import route`, 6000), 1500); } catch (e) { console.warn(e); }
   if (AI.key && !localStorage.getItem('gem_picked')) { try { await AI.autoPick(); localStorage.setItem('gem_picked', '1'); } catch (e) {} }
+  try { SelBar.init(); } catch (e) { console.warn(e); }
   Queue.listeners.add(() => { const q = $('#qstatus'); if (q) q.innerHTML = queueLine(); const nb = $('#nav-q'); if (nb) nb.hidden = !(Queue.running.local || Queue.running.ai); });
   await App.render();
   Queue.kick();

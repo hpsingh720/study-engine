@@ -1,4 +1,4 @@
-const APP_VERSION = 'v65';
+const APP_VERSION = 'v66';
 // Small helpers shared across the app.
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -45,7 +45,7 @@ function asText(v) {
 function md(src) {
   const s = asText(src);
   if (!s.trim()) return '';
-  const inline = t => esc(t)
+  const inline = t => unshout(texify(esc(t)))
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[\s(])\*([^*\n]+)\*/g, '$1<em>$2</em>')
     .replace(/\[([^\]\n]{1,60}?p\.?\s?\d+[^\]\n]{0,20})\]/g, '<span class="cite">$1</span>')

@@ -30,9 +30,10 @@ Views.today = async () => {
   const [prefs, topics, st, bw, books, sheets] = await Promise.all([Prefs.get(), DB.live('topics'), loadStats(), biweeklyStatus(), hasBooks(), DB.all('sheets')]);
   const sheetSet = new Set(sheets.map(s => s.id));
   const d = new Date();
-  const exams = prefs.exams.map(e => {
+  const exams = prefs.exams.map((e, i) => {
+    if (e.hidden) return '';
     const n = daysUntil(e.date);
-    return `<div class="card count"><p class="eyebrow">${esc(e.name)}</p><div class="big">${n == null ? '—' : n < 0 ? 'Done' : n}<span>${n >= 0 ? ' days' : ''}</span></div><p class="muted">${e.date ? new Date(e.date + 'T00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }) : 'Set a date in Settings'}</p></div>`;
+    return `<div class="card count"><button class="x" data-act="hideExam" data-i="${i}" title="Remove this countdown" aria-label="Remove">✕</button><p class="eyebrow">${esc(e.name)}</p><div class="big">${n == null ? '—' : n < 0 ? 'Done' : n}<span>${n >= 0 ? ' days' : ''}</span></div><p class="muted">${e.date ? new Date(e.date + 'T00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }) : 'Set a date in Settings'}</p></div>`;
   }).join('');
   const goal = prefs.daily || 30;
   const focus = prefs.focus || 'CVS';
@@ -181,20 +182,24 @@ Views.system = async (code) => {
 };
 
 // ---------------- Topic ----------------
-const TOPIC_TABS = [...Object.entries(SECTIONS), ['compare', 'AMC changes'], ['mcqs', 'MCQs'], ['notes', 'Notes'], ['ask', 'Ask AI']];
+const TOPIC_TABS = [['mindmap', 'Mind map'], ['compare', 'AMC · Murtagh'], ['mcqs', 'Questions'], ['sheet', 'Full notes'], ['notes', 'My notes']];
 
 Views.topic = async (id, tab) => {
   const t = await DB.get('topics', id);
   if (!t) return empty('Topic not found', 'It may have been deleted.', '<a class="btn" href="#/systems">Back to systems</a>');
   localStorage.setItem('lastTopic', id);
-  tab = tab || localStorage.getItem('lastTab') || 'patho';
-  if (!TOPIC_TABS.some(([k]) => k === tab)) tab = 'patho';
+  tab = tab || localStorage.getItem('lastTab') || 'mindmap';
+  if (SECTIONS[tab]) tab = 'sheet';
+  if (!TOPIC_TABS.some(([k]) => k === tab) && tab !== 'ask') tab = 'mindmap';
   localStorage.setItem('lastTab', tab);
   const [sheet, books, mcqs, st, queue] = await Promise.all([DB.get('sheets', id), hasBooks(), DB.byIndex('mcqs', 'topicId', id), loadStats(), DB.all('queue')]);
   const live = mcqs.filter(m => !m.deleted && !m.flagged && !m.merged);
   const inQueue = queue.filter(j => j.payload?.topicId === id && j.status !== 'done');
   let body = '';
-  if (SECTIONS[tab]) body = sectionTab(t, sheet, tab, books, inQueue);
+  const note = await DB.get('notes', id);
+  if (tab === 'sheet') body = sheet ? Object.keys(SECTIONS).map(sec => sectionTab(t, sheet, sec, books, inQueue, note?.hl)).join('<hr class="sec-gap">') : noSheet(t, books, inQueue);
+  else if (tab === 'mindmap') body = sheet?.mindmap ? `<div class="row between mb"><span class="muted small">Made ${fmtDate(sheet.mindmap.at)} from your books</span><button class="btn sm ghost" data-act="genMindmap" data-id="${id}">Remake</button></div>${mindmapHTML(t, sheet.mindmap)}`
+    : empty('Mind map on request', 'A one-page colourful map of this topic — causes, features, investigations, management — plus step-by-step flowcharts and the figure pages in your books. Made only for topics you ask for.', `<button class="btn primary" data-act="genMindmap" data-id="${id}">Make mind map</button>`);
   else if (tab === 'compare') body = compareTab(t, sheet, books, inQueue);
   else if (tab === 'mcqs') body = mcqTab(t, live, mcqs, st, books, inQueue);
   else if (tab === 'notes') body = await notesTab(t);
@@ -238,53 +243,49 @@ function colBooks(sheet, c) {
   return [...new Set((sheet.sources || []).filter(s => s.col === c).map(s => s.book))].join(', ') || 'general knowledge';
 }
 
-function sectionTab(t, sheet, sec, books, inQueue) {
+function sectionTab(t, sheet, sec, books, inQueue, hl = []) {
   if (!sheet) return noSheet(t, books, inQueue);
   const editing = Views._edit === t.id + sec;
-  const cols = ['ref', 'mbbs', 'amc'].map(c => `<section class="col col-${c}">
+  const cols = ['ref', 'mbbs'].map(c => `<section class="col col-${c}">
       <header><span class="dot"></span><b>${COLS[c].label}</b><small>${esc(colBooks(sheet, c))}</small></header>
       ${editing ? `<textarea class="edit" data-col="${c}" rows="14">${esc(asText(sheet.sections?.[sec]?.[c]))}</textarea>`
-                : `<div class="read">${md(sheet.sections?.[sec]?.[c]) || '<p class="muted">Not covered.</p>'}</div>`}
+                : `<div class="read">${keyColour(md(sheet.sections?.[sec]?.[c]), hl || []) || '<p class="muted">Not covered.</p>'}</div>`}
     </section>`).join('');
   return `<div class="row between mb"><h2 class="h2">${SECTIONS[sec]}</h2>
     <div class="row gap">${editing ? `<button class="btn" data-act="cancelEdit">Cancel</button><button class="btn primary" data-act="saveEdit" data-id="${t.id}" data-sec="${sec}">Save</button>`
       : `<button class="btn ghost" data-act="editSheet" data-id="${t.id}" data-sec="${sec}">Edit</button>`}</div></div>
-    <div class="cols3">${cols}</div>
-    ${sheet.comparison?.bottomLine && sec === 'management' ? `<a class="callout amc mt" href="#/topic/${t.id}/compare"><b>What changes for AMC</b><p>${esc(sheet.comparison.bottomLine)}</p><span class="link">Open comparison ›</span></a>` : ''}`;
+    <div class="cols2">${cols}</div>`;
 }
 
 function comparisonHTML(sheet, compact = false) {
   const c = sheet?.comparison || {};
-  const rows = (c.rows || []).map(r => `<div class="cmp-row">
-      <div class="cmp-aspect">${esc(r.aspect)}</div>
-      <div class="cmp-in"><span class="cmp-l">India</span>${md(r.india)}</div>
-      <div class="cmp-au"><span class="cmp-l">Australia</span>${md(r.australia)}</div>
-      ${r.trap ? `<div class="cmp-trap"><span class="cmp-l">Exam trap</span>${md(r.trap)}</div>` : ''}
-    </div>`).join('');
+  const rows = (c.rows || []).map(r => `<tr><th>${esc(r.aspect)}</th><td>${keyColour(md(r.india))}</td><td class="au">${keyColour(md(r.australia))}</td></tr>`).join('');
   return `<div class="callout amc"><b>Bottom line for AMC</b>${md(c.bottomLine) || '<p class="muted">—</p>'}</div>
-    <div class="cmp ${compact ? 'compact' : ''}"><div class="cmp-row cmp-headrow"><div>Aspect</div><div>Indian MBBS answer</div><div>Australian / AMC answer</div><div>How AMC tests it</div></div>${rows || '<p class="muted pad">No differences listed.</p>'}</div>
-    ${c.mustKnow?.length ? `<h4 class="mt">Australia-only must-knows</h4><div class="read">${md(c.mustKnow)}</div>` : ''}
-    ${c.same ? `<h4 class="mt">Same in both — skip</h4><div class="read">${md(c.same)}</div>` : ''}`;
+    ${rows ? `<div class="dtable-wrap"><table class="dtable"><thead><tr><th></th><th>India (MBBS)</th><th>Australia (AMC)</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="muted">No differences listed.</p>'}
+    ${c.mustKnow?.length ? `<h4 class="mt">Australia-only must-knows</h4><div class="read">${keyColour(md(c.mustKnow))}</div>` : ''}`;
 }
 
 function compareTab(t, sheet, books, inQueue) {
   if (!sheet) return noSheet(t, books, inQueue);
-  return `<div class="row between mb"><h2 class="h2">AMC changes</h2><span class="muted small">Read this right after your notes — no need to reread the topic in Murtagh.</span></div>${comparisonHTML(sheet)}`;
+  const au = Object.keys(SECTIONS).map(sec => { const v = sheet.sections?.[sec]?.amc; return asText(v).trim() ? `<section class="card mt"><h4>${SECTIONS[sec]}</h4><div class="read">${keyColour(md(v))}</div></section>` : ''; }).join('');
+  return `<div class="row between mb"><h2 class="h2">AMC · Murtagh</h2><span class="muted small">Read this once after your own notes.</span></div>${comparisonHTML(sheet)}${au ? `<h3 class="mt">What Murtagh &amp; Australian sources say</h3>${au}` : ''}`;
 }
 
 function mcqTab(t, live, all, st, books, inQueue) {
   const n = k => live.filter(m => m.type === k).length;
+  const ok = live.filter(m => !qBroken(m)), broken = live.length - ok.length;
+  const nb = k => ok.filter(m => qBank(m) === k).length;
+  const bankBtns = ['AMEDEX', 'PYQ', 'AI', 'SPOT', 'MBBS'].filter(nb).map(k => `<button class="btn" data-act="practiseTopic" data-id="${t.id}" data-type="ALL" data-bank="${k}">${BANK_LABEL[k]} <small>${nb(k)}</small></button>`).join('');
   const flagged = all.filter(m => m.flagged && !m.deleted).length;
   const merged = all.filter(m => m.merged && !m.deleted), combined = all.filter(m => m.src === 'merged' && !m.deleted);
   const b = st.by[t.id];
   return `<div class="grid-2">
     <div class="card"><h3>Practise this topic</h3>
-      <p class="muted">${live.length} questions · ${n('AMC')} AMC · ${n('MBBS')} MBBS · ${n('IMG')} image · your accuracy ${accTxt(b)}</p>
+      <p class="muted">${ok.length} questions · ${nb('AMEDEX')} AMEDEX · ${nb('PYQ')} PYQ · ${nb('AI')} AI-written · your accuracy ${accTxt(b)}${broken ? ` · <span class="warn-t">${broken} broken ones hidden</span>` : ''}</p>
       <div class="row gap wrap">
-        <button class="btn primary" data-act="practiseTopic" data-id="${t.id}" data-type="ALL" ${live.length ? '' : 'disabled'}>All mixed</button>
-        <button class="btn" data-act="practiseTopic" data-id="${t.id}" data-type="AMC" ${n('AMC') ? '' : 'disabled'}>AMC only</button>
-        <button class="btn" data-act="practiseTopic" data-id="${t.id}" data-type="MBBS" ${n('MBBS') ? '' : 'disabled'}>MBBS only</button>
-        <button class="btn" data-act="practiseTopic" data-id="${t.id}" data-type="IMG" ${n('IMG') ? '' : 'disabled'}>Images only</button>
+        <button class="btn primary" data-act="practiseTopic" data-id="${t.id}" data-type="ALL" data-bank="real" ${nb('AMEDEX') + nb('PYQ') ? '' : 'disabled'}>Real questions (AMEDEX + PYQ)</button>
+        ${bankBtns}
+        <button class="btn ghost" data-act="practiseTopic" data-id="${t.id}" data-type="ALL" data-bank="all" ${ok.length ? '' : 'disabled'}>All mixed</button>
       </div></div>
     <div class="card"><h3>Shrink & combine</h3>
       <p class="muted">${merged.length ? `${merged.length} questions folded into ${combined.length} combined ones (originals hidden). ` : ''}Fuses overlapping <b>AI-written</b> questions into fewer, harder vignettes. Questions from AMEDEX and your books are always kept exactly as they are.</p>
@@ -344,30 +345,27 @@ Views.session = async () => {
     let cls = '';
     if (revealed) { if (right.includes(i)) cls = 'right'; else if (chosenArr.includes(i)) cls = 'wrong'; else cls = 'dim'; }
     else if (chosenArr.includes(i)) cls = 'sel';
-    return `<button class="opt ${cls}" data-act="pick" data-i="${i}" ${revealed ? 'disabled' : ''}><span class="opt-l">${String.fromCharCode(65 + i)}</span><span class="opt-t">${esc(o)}</span></button>`;
+    const struck = (s.strike?.[m.id] || []).includes(i);
+    return `<div class="optrow ${struck ? 'struck' : ''}"><button class="opt ${cls}" data-act="pick" data-i="${i}" ${revealed ? 'disabled' : ''}><span class="opt-l">${String.fromCharCode(65 + i)}</span><span class="opt-t">${texify(esc(cleanOpt(o, m.options)))}</span></button>${revealed ? '' : `<button class="strike" data-act="strikeOpt" data-i="${i}" title="Cross out this option" aria-label="Cross out">✕</button>`}</div>`;
   }).join('');
   const last = s.idx === s.qs.length - 1;
   const nav = s.qs.map((id, i) => `<button class="navq ${i === s.idx ? 'cur' : ''} ${s.ans[id] ? (s.mode === 'tutor' ? (s.ans[id].ok ? 'ok' : 'bad') : 'done') : ''}" data-act="gotoQ" data-i="${i}">${i + 1}</button>`).join('');
-  const leftTab = sessionStorage.getItem('leftTab') || 'compare';
-  const left = sheet ? `<div class="seg">${[['compare', 'AMC changes'], ['management', 'Management'], ['pearls', 'Pearls']].map(([k, l]) => `<button class="${leftTab === k ? 'on' : ''}" data-act="leftTab" data-k="${k}">${l}</button>`).join('')}</div>
-      <div class="guide">${leftTab === 'compare' ? comparisonHTML(sheet, true) : ['ref', 'mbbs', 'amc'].map(c => `<div class="col col-${c} mini"><header><span class="dot"></span><b>${COLS[c].label}</b></header><div class="read">${md(sheet.sections?.[leftTab]?.[c])}</div></div>`).join('')}</div>`
-    : `<h3>Questions</h3><div class="navgrid">${nav}</div><p class="muted small mt">${s.mode === 'exam' ? 'Exam mode — answers and explanations at the end.' : 'Tutor mode — explanation after each answer.'}</p>`;
-  const pane = sessionStorage.getItem('pane') || 'q';
-  return `<div class="session pane-${pane}">
+  const showNav = sessionStorage.getItem('qnav') === '1';
+  return `<div class="session exam-like">
     <div class="session-bar">
       <div><p class="eyebrow">${esc(s.title)}</p><b>Question ${s.idx + 1} of ${s.qs.length}</b></div>
       <div class="row gap">${s.limit ? `<span class="timer" id="timer"></span>` : ''}
-      <div class="seg only-mobile"><button class="${pane === 'guide' ? 'on' : ''}" data-act="pane" data-p="guide">${sheet ? 'AMC guide' : 'Overview'}</button><button class="${pane === 'q' ? 'on' : ''}" data-act="pane" data-p="q">Question</button></div>
+      <button class="btn sm ghost" data-act="toggleQnav">${showNav ? 'Hide' : 'All'} questions</button>
       <button class="btn sm" data-act="endSession">${s.mode === 'exam' ? 'Finish test' : 'End'}</button></div>
     </div>
     ${bar(pct(Object.keys(s.ans).length, s.qs.length))}
-    <div class="split">
-      <aside class="split-left card">${left}</aside>
-      <main class="split-right">
+    ${showNav ? `<div class="card navcard"><div class="navgrid">${nav}</div></div>` : ''}
+    <div class="qwrap">
         <div class="q-card card">
-          <div class="row between"><span class="tag tag-${m.type.toLowerCase()}">${TYPE_LABEL[m.type] || m.type}</span><span class="muted small">${esc(m.src && m.src !== 'ai' ? m.src : sysName(m.system))}</span></div>
+          <div class="row between">${bankTag(m)}<span class="muted small">${esc(m.src && m.src !== 'ai' ? m.src : sysName(m.system))}</span></div>
           ${img ? `<figure class="q-img"><img src="${img}" data-act="zoomImg" alt="Question image"></figure>` : ''}
-          <div class="q-stem">${md(m.stem)}</div>
+          <div class="q-stem">${applyMarks(md(m.stem), s.hl?.[m.id])}</div>
+          ${s.idx === 0 && !Object.keys(s.ans).length ? '<p class="muted small">Tip: select words in the question to highlight them · ✕ crosses out an option.</p>' : ''}
           ${multi ? '<p class="pill warn">More than one answer — select all that apply</p>' : ''}
           <div class="opts">${opts}</div>
           ${revealed ? `<div class="expl ${a.ok ? 'ok' : 'bad'}"><b>${a.ok ? 'Correct' : 'Not quite — answer ' + letters(right)}</b>${md(m.expl)}${m.cite ? `<p class="muted small">Source: ${esc(m.cite)}</p>` : ''}${!a.ok ? masterBlock(m, a.c) : ''}${m.keyedBy === 'ai' && m.src !== 'ai' ? '<p class="muted small">Answer chosen by AI (the book had no key on these pages).</p>' : ''}
@@ -378,8 +376,6 @@ Views.session = async () => {
               : last ? `<button class="btn primary" data-act="endSession">See results</button>` : `<button class="btn primary" data-act="nextQ">Next</button>`}
           </div>
         </div>
-        ${sheet ? `<div class="card navcard"><div class="navgrid">${nav}</div></div>` : ''}
-      </main>
     </div></div>`;
 };
 
@@ -388,11 +384,12 @@ function masterBlock(m, chosen) {
   const ms = m.master;
   const c = chosen == null ? '' : JSON.stringify(Array.isArray(chosen) ? chosen : [chosen]);
   const link = r => `<button class="linkbtn" data-act="openRef" data-book="${r.bookId}" data-size="${r.size || ''}" data-p="${r.p}">${esc(r.book)} p.${r.p}</button>`;
-  if (!ms) return `<div class="master" id="master-${m.id}">${m.masterLine ? `<p><b>Master this:</b> ${esc(m.masterLine)}</p>` : ''}${m.refs?.length ? `<p class="small"><b>Read first:</b> ${m.refs.map(link).join(' · ')}</p>` : ''}<button class="btn sm primary" data-act="masterQ" data-id="${m.id}" data-ch='${c}'>Where do I master this?</button></div>`;
-  return `<div class="master" id="master-${m.id}"><p class="eyebrow">Master this so it can’t trap you again</p>
-    ${ms.points?.length ? `<ul>${ms.points.map(p => `<li>${esc(p)}</li>`).join('')}</ul>` : ''}
-    ${ms.trap ? `<p class="small"><b>The trap:</b> ${esc(ms.trap)}</p>` : ''}
-    ${ms.read?.length ? `<p class="small"><b>Read first:</b> ${ms.read.map(r => `${link(r)}${r.why ? ` <span class="muted">— ${esc(r.why)}</span>` : ''}`).join(' · ')}</p>` : ''}</div>`;
+  const refs = refsForPatient(m, m.refs || []);
+  if (!ms) return `<div class="master" id="master-${m.id}">${m.masterLine ? `<p><b>Key point:</b> ${esc(m.masterLine)}</p>` : ''}${refs.length ? `<p class="small"><b>Read:</b> ${refs.map(link).join(' · ')}</p>` : ''}<button class="btn sm primary" data-act="masterQ" data-id="${m.id}" data-ch='${c}'>Where do I master this?</button></div>`;
+  const read = refsForPatient(m, ms.read || []);
+  return `<div class="master" id="master-${m.id}"><p class="eyebrow">Key points</p>
+    ${ms.points?.length ? `<ul>${ms.points.slice(0, 3).map(p => `<li>${keyColour(texify(esc(p)))}</li>`).join('')}</ul>` : ''}
+    ${read.length ? `<p class="small"><b>Read:</b> ${read.map(link).join(' · ')}</p>` : ''}</div>`;
 }
 
 async function resultsView(s) {
@@ -429,7 +426,19 @@ async function renderResults(test, live = false) {
 // ---------------- Practice ----------------
 Views.practice = async () => {
   const [st, bw, tests, all, dueS] = await Promise.all([loadStats(), biweeklyStatus(), DB.live('tests'), DB.live('mcqs'), dueSet()]);
-  const mcqs = all.filter(m => !m.merged);
+  const mcqs = all.filter(m => !m.merged && !m.flagged && !qBroken(m));
+  // UWorld-style performance: used / correct / incorrect per question bank and per system.
+  const perf = {}, perSys = {};
+  for (const m of mcqs) {
+    const k = qBank(m), a = st.last[m.id];
+    const p = perf[k] ||= { total: 0, used: 0, ok: 0 }; p.total++; if (a) { p.used++; if (a.correct) p.ok++; }
+    if (k === 'AMEDEX' || k === 'PYQ') { const q = perSys[m.system] ||= { total: 0, used: 0, ok: 0 }; q.total++; if (a) { q.used++; if (a.correct) q.ok++; } }
+  }
+  const perfCards = ['AMEDEX', 'PYQ', 'AI', 'SPOT', 'MBBS'].filter(k => perf[k]).map(k => { const p = perf[k]; return `<div class="perf"><div class="row between"><b>${BANK_LABEL[k]}</b><span class="muted small">${p.used} / ${p.total} used</span></div>
+      <div class="stack"><i class="s-ok" style="width:${pct(p.ok, p.total)}%"></i><i class="s-bad" style="width:${pct(p.used - p.ok, p.total)}%"></i></div>
+      <p class="small">${p.used ? `<b>${pct(p.ok, p.used)}%</b> correct · ` : ''}${p.ok} correct · ${p.used - p.ok} incorrect · ${p.total - p.used} unused</p>
+      <div class="row gap wrap"><button class="btn sm" data-act="bankPractice" data-bank="${k}" data-source="unseen" ${p.total - p.used ? '' : 'disabled'}>Unused</button><button class="btn sm" data-act="bankPractice" data-bank="${k}" data-source="mistakes" ${p.used - p.ok ? '' : 'disabled'}>Incorrect</button></div></div>`; }).join('');
+  const sysRows = SYS_LIST.filter(x => perSys[x.code]).map(x => { const q = perSys[x.code]; const acc = q.used ? pct(q.ok, q.used) : null; return `<div class="srow"><span class="srow-n">${x.name}</span><div class="stack"><i class="s-ok" style="width:${pct(q.ok, q.total)}%"></i><i class="s-bad" style="width:${pct(q.used - q.ok, q.total)}%"></i></div><span class="small ${acc != null && acc < 50 ? 'warn-t' : 'muted'}">${acc == null ? '—' : acc + '%'} · ${q.used}/${q.total}</span></div>`; }).join('');
   const counts = {}; mcqs.forEach(m => { counts[m.system] = (counts[m.system] || 0) + 1; });
   const f = JSON.parse(localStorage.getItem('pform') || '{}');
   const sel = new Set(f.systems || []);
@@ -443,11 +452,14 @@ Views.practice = async () => {
     <div class="card"><div class="card-head"><h3>Mistake bank</h3><span class="pill">${st.mistakes}</span></div>
       <p class="muted">Questions whose last attempt was wrong. Get them right to clear them.</p><button class="btn" data-act="startMistakes" ${st.mistakes ? '' : 'disabled'}>Review mistakes</button></div>
   </section>
+  ${perfCards ? `<section class="card mt"><div class="card-head"><h3>Your question banks</h3><span class="muted small">green = correct · red = incorrect · grey = unused</span></div><div class="perf-grid">${perfCards}</div>
+    ${sysRows ? `<h4 class="mt">AMEDEX + PYQ by system</h4><div class="srows">${sysRows}</div>` : ''}</section>` : ''}
   <form class="card mt" data-submit="customPractice">
     <h3>Build a set</h3>
     <p class="label">Systems <button type="button" class="link small" data-act="pickAllSys">all / none</button></p>
     <div class="chips">${SYS_LIST.map(s => `<label class="chip check ${sel.has(s.code) ? 'on' : ''}"><input type="checkbox" name="sys" value="${s.code}" ${sel.has(s.code) ? 'checked' : ''} hidden>${s.name} <small>${counts[s.code] || 0}</small></label>`).join('')}</div>
     <div class="form-row mt">
+      <label>Bank<select name="bank">${[['real', 'Real (AMEDEX + PYQ)'], ['all', 'Everything'], ['AMEDEX', 'AMEDEX only'], ['PYQ', 'PYQ only'], ['AI', 'AI-written only'], ['SPOT', 'Image spotters'], ['MBBS', 'MBBS bank']].map(([v, l]) => `<option value="${v}" ${(f.bank || 'real') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label>Type<select name="type">${[['ALL', 'All mixed'], ['AMC', 'AMC only'], ['MBBS', 'MBBS only'], ['IMG', 'Images only']].map(([v, l]) => `<option value="${v}" ${f.type === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label>Questions<select name="source">${[['all', 'Any'], ['due', 'Due for revision'], ['unseen', 'Unseen only'], ['mistakes', 'Mistakes only']].map(([v, l]) => `<option value="${v}" ${f.source === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label>How many<input type="number" name="count" min="5" max="150" value="${f.count || 20}"></label>
@@ -543,7 +555,8 @@ async function aiSearchStatus() {
   const n = await DB.count('vecs').catch(() => 0);
   if (Semantic.failed) return `<p class="muted small mt">Offline AI search couldn’t start (${esc(Semantic.failed.slice(0, 80))}) — word search still works.</p>`;
   return n ? `<p class="muted small mt">✓ Offline AI search on — it matches meaning, not just words (${n.toLocaleString()} passages ready; works without internet).</p>`
-    : `<p class="muted small mt">Offline AI search is being prepared in the background (on the laptop, or for reading copies on this device). Until then, word search is used.</p>`;
+    : (await DB.count('books')) ? `<p class="muted small mt">Offline AI search is being prepared in the background. Until then, word search is used.</p>`
+    : `<p class="muted small mt">Searches from this device are answered by your laptop’s offline AI search — keep the app open on the laptop.</p>`;
 }
 Views.search = async () => {
   let recent = []; try { recent = JSON.parse(localStorage.getItem('recentSearch') || '[]'); } catch (e) {}
