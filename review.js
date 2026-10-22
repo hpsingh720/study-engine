@@ -141,3 +141,101 @@ async function fillMindmapFigs() {
   }
   return n;
 }
+
+// ---------- Third opinion on disputed answers ----------
+// When the second AI disagreed, a third AI (seeing the book's key, the dispute and the explanation) decides.
+// Book key upheld → the warning disappears. Otherwise the warning stays, with the reason.
+JOB_LABEL.arbit = 'Third opinion on disputed answers';
+async function queueArbit(prio = 7.5) {
+  const queued = new Set((await DB.all('queue')).filter(j => j.kind === 'arbit' && j.status !== 'done').flatMap(j => j.payload.ids));
+  const all = (await DB.live('mcqs')).filter(m => m.disputed && !m.arbit && !queued.has(m.id));
+  let n = 0;
+  for (let i = 0; i < all.length; i += 6) { await Queue.add('arbit', { ids: all.slice(i, i + 6).map(m => m.id) }, prio); n++; }
+  return n;
+}
+Handlers.arbit = async function (job, ctx) {
+  const qs = (await Promise.all(job.payload.ids.map(id => DB.get('mcqs', id)))).filter(m => m && m.disputed && !m.arbit);
+  if (!qs.length) return;
+  const L = i => String.fromCharCode(65 + i);
+  const prompt = `You are the senior examiner settling disputes between an answer key and a reviewer. For each question decide which answer is correct by current guidelines (Australian AMC practice; Indian MBBS for MBBS-style). Real exam banks (AMEDEX, recalls) are usually right — overturn the key only when it is clearly wrong.
+Return JSON {"results":[{"id":"…","correct":"A-E","winner":"key|reviewer|unclear","why":"max 25 words, the deciding fact"}]}
+
+${qs.map(m => `[${m.id}] (${BANK_LABEL[qBank(m)] || ''})
+${m.stem}
+${m.options.map((o, i) => `${L(i)}) ${o}`).join('\n')}
+Key: ${letters(correctSet(m))}. Reviewer chose: ${L(m.disputed.ai)} — "${m.disputed.why}"
+Key's explanation: ${String(m.expl || '').slice(0, 600)}`).join('\n\n')}`;
+  const out = await bulkCall(ctx, { prompt, json: true, maxTokens: 3000 });
+  const res = Array.isArray(out?.results) ? out.results : [];
+  const clean = v => String(v ?? '').replace(/[\[\]\s"']/g, '');
+  let matched = 0;
+  for (const [i, m] of qs.entries()) {
+    const r = res.find(x => clean(x?.id) === m.id) || (res.length === qs.length ? res[i] : null); if (!r) continue;
+    matched++;
+    const pick = String(r.correct || '').trim().toUpperCase().charCodeAt(0) - 65;
+    const keyWins = r.winner === 'key' || (r.winner !== 'reviewer' && correctSet(m).includes(pick));
+    m.arbit = { winner: keyWins ? 'key' : r.winner === 'reviewer' ? 'reviewer' : 'unclear', why: String(r.why || '').slice(0, 200), at: Date.now() };
+    if (keyWins) { m.verified = 1; m.upheld = { ai: m.disputed.ai, why: m.arbit.why }; delete m.disputed; }
+    await DB.put('mcqs', m);
+  }
+  if (!matched) throw new Error('Third-opinion reply did not match — will retry');
+};
+
+// ---------- New questions on the SAME concepts (for system tests) ----------
+// Like NEET practice: the test repeats questions you did, plus fresh ones built on the same ideas.
+JOB_LABEL.twins = 'Writing new questions on concepts you studied';
+async function queueTwins(system, prio = 3) {
+  const last = await Practice.lastByQ();
+  const have = new Set((await DB.live('mcqs')).filter(m => m.twinOf).map(m => m.twinOf));
+  const queued = new Set((await DB.all('queue')).filter(j => j.kind === 'twins' && j.status !== 'done').flatMap(j => j.payload.ids));
+  const done = new Set((await DB.live('topics')).filter(t => t.done && (!system || t.system === system)).map(t => t.id));
+  const src = (await DB.live('mcqs')).filter(m => done.has(m.topicId) && last[m.id] && !m.twinOf && !have.has(m.id) && !queued.has(m.id) && !m.flagged && !qBroken(m) && ['AMEDEX', 'PYQ', 'UWORLD', 'MBBS'].includes(qBank(m)));
+  // Wrong answers first — those concepts need another go.
+  src.sort((a, b) => (last[a.id].correct - last[b.id].correct) || (last[a.id].ts - last[b.id].ts));
+  let n = 0;
+  for (let i = 0; i < Math.min(src.length, 60); i += 6) { await Queue.add('twins', { ids: src.slice(i, i + 6).map(m => m.id) }, prio); n++; }
+  return n;
+}
+Handlers.twins = async function (job, ctx) {
+  const qs = (await Promise.all(job.payload.ids.map(id => DB.get('mcqs', id)))).filter(Boolean);
+  if (!qs.length) return;
+  const L = i => String.fromCharCode(65 + i);
+  const prompt = `For EACH question below, write ONE new exam question that tests the SAME concept from a different angle — new patient, new vignette, ask a different step (e.g. diagnosis → next step, or a look-alike that must be told apart). Same style and difficulty, same number of options, single best answer, plausible distractors. Australian practice for AMC-style (5 options), Indian MBBS for MBBS-style (4 options). Never copy the original wording.
+Return JSON {"mcqs":[{"of":"<original id>","type":"AMC|MBBS","stem":"","options":[""],"answer":"A","explanation":"Answer: … then why, then one line per wrong option","master":"the one fact to know"}]}
+
+${qs.map(m => `[${m.id}] (${m.type})
+${m.stem}
+${m.options.map((o, i) => `${L(i)}) ${o}`).join('\n')}
+Answer: ${letters(correctSet(m))}`).join('\n\n')}`;
+  const out = await bulkCall(ctx, { prompt, json: true, maxTokens: 6000 });
+  const clean = v => String(v ?? '').replace(/[\[\]\s"']/g, '');
+  const list = [];
+  for (const [i, r] of (Array.isArray(out?.mcqs) ? out.mcqs : []).entries()) {
+    const orig = qs.find(m => m.id === clean(r.of)) || qs[i]; if (!orig) continue;
+    const topic = await DB.get('topics', orig.topicId);
+    const m = cleanMcq({ ...r, type: orig.type === 'MBBS' ? 'MBBS' : 'AMC' }, topic || { id: orig.topicId, system: orig.system });
+    if (m) { m.twinOf = orig.id; m.gen = 'twin'; list.push(m); }
+  }
+  if (!list.length) throw new Error('No new questions came back — will retry');
+  await DB.putMany('mcqs', list);
+};
+
+// System test: done topics of one system — questions you did (wrong ones first), unseen ones, and the new same-concept ones.
+async function startSystemTest(system, count = 40) {
+  const topics = (await DB.live('topics')).filter(t => t.system === system);
+  const done = new Set(topics.filter(t => t.done).map(t => t.id));
+  if (!done.size) return toast('Finish at least one topic of this system first (topic → its questions → mark done).', 6000);
+  const all = (await DB.live('mcqs')).filter(m => done.has(m.topicId) && !m.flagged && !m.merged && !qBroken(m));
+  const last = await Practice.lastByQ();
+  const seen = shuffle(all.filter(m => last[m.id] && !m.twinOf)).sort((a, b) => last[a.id].correct - last[b.id].correct);
+  const twins = shuffle(all.filter(m => m.twinOf));
+  const fresh = shuffle(all.filter(m => !last[m.id] && !m.twinOf));
+  const take = (arr, n) => arr.splice(0, Math.max(0, n));
+  let ids = [...take(seen, Math.round(count * 0.45)), ...take(twins, Math.round(count * 0.3)), ...take(fresh, Math.round(count * 0.25))];
+  for (const rest of [seen, twins, fresh]) if (ids.length < count) ids.push(...take(rest, count - ids.length));
+  ids = shuffle(ids).map(m => m.id);
+  if (!ids.length) return toast('No questions for these topics yet.');
+  queueTwins(system).then(n => n && Queue.kick()).catch(() => {});   // more same-concept questions for next time
+  const full = done.size === topics.length;
+  await Practice.start({ kind: 'systest', title: `${sysName(system)} — ${full ? 'full system' : done.size + '/' + topics.length + ' topics'} test`, ids, count: ids.length });
+}

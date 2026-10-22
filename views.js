@@ -368,7 +368,8 @@ Views.session = async () => {
           ${multi ? '<p class="pill warn">More than one answer — select all that apply</p>' : ''}
           <div class="opts">${opts}</div>
           ${revealed ? `<div class="expl ${a.ok ? 'ok' : 'bad'}"><b>${a.ok ? 'Correct' : 'Not quite — answer ' + letters(right)}</b>${md(m.expl)}${m.cite ? `<p class="muted small">Source: ${esc(m.cite)}</p>` : ''}${!a.ok ? masterBlock(m, a.c) : ''}${m.keyedBy === 'ai' && m.src !== 'ai' ? '<p class="muted small">Answer chosen by AI (the book had no key on these pages).</p>' : ''}
-            ${m.disputed ? `<p class="disputed">⚠ A second AI picked <b>${letters([m.disputed.ai])}</b> instead — ${esc(m.disputed.why)}. Check this one in Murtagh / the guidelines.</p>` : m.verified ? '<p class="muted small">✓ Answer double-checked by a second AI</p>' : ''}
+            ${m.disputed ? (m.arbit ? `<p class="disputed">⚠ Two AIs think <b>${letters([m.disputed.ai])}</b>, not the key — ${esc(m.arbit.why || m.disputed.why)}. Check this one in Murtagh / the guidelines.</p>` : `<p class="disputed">⚠ A second AI picked <b>${letters([m.disputed.ai])}</b> instead — ${esc(m.disputed.why)}. A third AI will settle it soon; until then, check Murtagh / the guidelines.</p>`)
+              : m.upheld ? `<p class="muted small">✓ Answer confirmed by a third AI — ${esc(m.upheld.why)}</p>` : m.verified ? '<p class="muted small">✓ Answer double-checked by a second AI</p>' : ''}
             <div class="row gap mt"><button class="btn sm" data-act="askQ">Ask AI about this</button><button class="btn sm ghost" data-act="flagQ">Flag bad question</button></div></div>` : ''}
           <div class="q-nav">
             <button class="btn" data-act="prevQ" ${s.idx ? '' : 'disabled'}>Back</button>
@@ -440,6 +441,12 @@ Views.practice = async () => {
       <div class="row gap wrap"><button class="btn sm" data-act="bankPractice" data-bank="${k}" data-source="unseen" ${p.total - p.used ? '' : 'disabled'}>Unused</button><button class="btn sm" data-act="bankPractice" data-bank="${k}" data-source="mistakes" ${p.used - p.ok ? '' : 'disabled'}>Incorrect</button></div></div>`; }).join('');
   const sysRows = SYS_LIST.filter(x => perSys[x.code]).map(x => { const q = perSys[x.code]; const acc = q.used ? pct(q.ok, q.used) : null; return `<div class="srow"><span class="srow-n">${x.name}</span><div class="stack"><i class="s-ok" style="width:${pct(q.ok, q.total)}%"></i><i class="s-bad" style="width:${pct(q.used - q.ok, q.total)}%"></i></div><span class="small ${acc != null && acc < 50 ? 'warn-t' : 'muted'}">${acc == null ? '—' : acc + '%'} · ${q.used}/${q.total}</span></div>`; }).join('');
   const counts = {}; mcqs.forEach(m => { counts[m.system] = (counts[m.system] || 0) + 1; });
+  // NEET-style: topic → its questions → (whole system done) → system tests mixing old, unseen and same-concept new questions.
+  const topicsAll = await DB.live('topics');
+  const sysT = SYS_LIST.map(x => { const ts = topicsAll.filter(t => t.system === x.code); return { ...x, n: ts.length, d: ts.filter(t => t.done).length }; }).filter(x => x.d);
+  const sysTests = `<section class="card mt"><div class="card-head"><h3>System tests</h3><span class="muted small">like NEET chapter tests</span></div>
+    <p class="muted small">Study a topic → do its questions → mark it done. Then test the whole system: questions you already did (wrong ones first), ones you haven't seen, and new AI questions on the same concepts.</p>
+    ${sysT.length ? `<div class="srows">${sysT.map(x => `<div class="srow srow4"><span class="srow-n">${x.name}</span><div class="stack"><i class="s-ok" style="width:${pct(x.d, x.n)}%"></i></div><span class="small muted">${x.d}/${x.n} topics${x.d === x.n ? ' ✓' : ''}</span><button class="btn sm ${x.d === x.n ? 'primary' : ''}" data-act="systemTest" data-sys="${x.code}">Test</button></div>`).join('')}</div>` : '<p class="muted small">Finish your first topic to unlock its system test.</p>'}</section>`;
   const f = JSON.parse(localStorage.getItem('pform') || '{}');
   const sel = new Set(f.systems || []);
   const recent = tests.sort((a, b) => b.date - a.date).slice(0, 8);
@@ -452,6 +459,7 @@ Views.practice = async () => {
     <div class="card"><div class="card-head"><h3>Mistake bank</h3><span class="pill">${st.mistakes}</span></div>
       <p class="muted">Questions whose last attempt was wrong. Get them right to clear them.</p><button class="btn" data-act="startMistakes" ${st.mistakes ? '' : 'disabled'}>Review mistakes</button></div>
   </section>
+  ${sysTests}
   ${perfCards ? `<section class="card mt"><div class="card-head"><h3>Your question banks</h3><span class="muted small">green = correct · red = incorrect · grey = unused</span></div><div class="perf-grid">${perfCards}</div>
     ${sysRows ? `<h4 class="mt">AMEDEX + PYQ by system</h4><div class="srows">${sysRows}</div>` : ''}</section>` : ''}
   <form class="card mt" data-submit="customPractice">
@@ -586,10 +594,12 @@ function markTerms(html, terms) {
   return html;
 }
 function searchResultsHtml(r) {
-  const g = `<a class="btn sm ghost" target="_blank" rel="noopener" href="https://www.google.com/search?q=${encodeURIComponent(r.q)}">Search Google</a>`;
-  const quickBox = r.quick && !r.ai ? `<div class="card ai-ans mb"><div class="row between"><p class="eyebrow">Quick answer · internet AI</p>${g}</div><div class="read">${md(r.quick)}</div><p class="muted small">${r.waiting || r.aiWait || !r.results ? 'Exact lines from your books are coming below…' : 'Exact lines from your books are below.'}</p></div>` : '';
+  const g = `<div class="row gap wrap"><a class="btn sm ghost" target="_blank" rel="noopener" href="https://www.google.com/search?q=${encodeURIComponent(r.q)}">Search Google</a><a class="btn sm ghost" target="_blank" rel="noopener" href="https://www.google.com/search?tbm=isch&q=${encodeURIComponent(r.q + (/guideline|management|algorithm|approach|classification|staging/i.test(r.q) ? ' flowchart' : ''))}">Google Images</a></div>`;
+  const qk = typeof r.quick === 'string' ? { text: r.quick } : r.quick;
+  const flowHtml = f => `<section class="mm-flow c3 mt"><h4>${esc(f.title || 'Flowchart')}</h4><div class="flow">${f.steps.map(s => `<div class="fstep">${md(String(s)).replace(/^<p>|<\/p>$/g, '')}</div>`).join('<div class="farrow">↓</div>')}</div></section>`;
+  const quickBox = qk?.text ? `<div class="card ai-ans mb"><div class="row between wrap gap"><p class="eyebrow">Quick answer · internet AI</p>${g}</div><div class="read">${md(qk.text)}</div>${qk.flow ? flowHtml(qk.flow) + '<p class="muted small">Flowchart written by AI from the guideline — check the original with “Google Images”.</p>' : ''}<p class="muted small">${r.waiting || r.aiWait ? 'Exact lines from your books are coming below…' : r.results?.length || r.ai ? 'From your books ↓' : ''}</p></div>` : '';
   if (r.waiting) return quickBox + `<p class="muted"><span class="spin"></span>${esc(r.waiting)}</p>`;
-  const top = r.ai ? `<div class="card ai-ans mb"><div class="row between"><p class="eyebrow">AI answer · from your books</p>${g}</div><div class="read">${md(r.ai)}</div></div>`
+  const top = r.ai ? `<div class="card ai-ans mb"><div class="row between wrap gap"><p class="eyebrow">AI answer · from your books</p>${qk?.text ? '' : g}</div><div class="read">${md(r.ai)}</div></div>`
     : r.aiWait ? `<p class="muted"><span class="spin"></span>AI is checking your books for the best answer…</p>` : '';
   if (top || quickBox) return quickBox + top + searchResultsHtml({ ...r, ai: null, aiWait: false, quick: null, _inner: 1 });
   if (!r._inner && !r.results?.length) return `<div class="card"><p>Nothing found for “${esc(r.q)}”.</p><div class="row gap">${g}</div></div>`;

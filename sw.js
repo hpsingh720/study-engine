@@ -1,5 +1,5 @@
 // Offline support: cache the app shell and libraries; never cache API calls.
-const CACHE = 'study-engine-v80';
+const CACHE = 'study-engine-v81';
 const LIBS = 'study-engine-libs'; // libraries kept across app updates
 const SHELL = ['./', 'index.html', 'styles.css', 'manifest.webmanifest', 'icon.svg', 'icon-180.png', 'icon-512.png',
   'util.js', 'seed.js', 'db.js', 'semantic.js', 'quality.js', 'embed-worker.js', 'ai.js', 'providers.js', 'engine.js', 'review.js', 'sync.js', 'practice.js', 'planner.js', 'notes.js', 'views.js', 'app.js',
@@ -18,11 +18,12 @@ self.addEventListener('install', e => {
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k.startsWith('study-engine-v') && k !== CACHE).map(k => caches.delete(k))))); self.clients.claim(); });
 self.addEventListener('fetch', e => {
   const u = new URL(e.request.url);
-  if (e.request.method !== 'GET' || /googleapis\.com|supabase\.co|huggingface\.co|hf\.co/.test(u.hostname)) return; // the AI model caches itself
+  const font = /^fonts\.(googleapis|gstatic)\.com$/.test(u.hostname);
+  if (e.request.method !== 'GET' || (!font && /googleapis\.com|supabase\.co|huggingface\.co|hf\.co/.test(u.hostname))) return; // the AI model caches itself
   // App files: network first (so updates arrive), cache fallback offline. Libraries: cache first.
-  const lib = /cdnjs|jsdelivr|unpkg|tessdata/.test(u.hostname);
+  const lib = font || /cdnjs|jsdelivr|unpkg|tessdata/.test(u.hostname);
   e.respondWith(lib
-    ? caches.match(e.request).then(r => r || fetch(e.request).then(res => { if (res.ok) { const c = res.clone(); caches.open(LIBS).then(k => k.put(e.request, c)); } return res; }))
+    ? caches.match(e.request).then(r => r || fetch(e.request).then(res => { if (res.ok || res.type === 'opaque') { const c = res.clone(); caches.open(LIBS).then(k => k.put(e.request, c)); } return res; }))
     : fetch(u.origin === location.origin ? new Request(e.request, { cache: 'no-cache' }) : e.request).then(res => { if (res.ok && u.origin === location.origin) { const c = res.clone(); caches.open(CACHE).then(k => k.put(e.request, c)); } return res; })
         .catch(() => caches.match(e.request).then(r => r || (e.request.mode === 'navigate' ? caches.match('index.html') : Response.error()))));
 });

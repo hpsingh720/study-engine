@@ -181,15 +181,21 @@ const BookText = {
         const chunks = Math.ceil(pages.length / this.CH), ver = pages.length + ':' + pages.reduce((n, x) => n + x[1].length, 0);
         index.push({ id: b.id, name: b.name, short: b.short, role: b.role, size: b.size, pages: pages.length, chunks, ver, system: b.system || null });
         if (localStorage.getItem('bt_' + b.id) === ver) continue;
-        sent++; window._btMsg = `Sending book text to your phone/iPad: ${b.short || b.name}…`;
-        for (let c = 0; c < chunks; c += 4) {
-          const rows = [];
-          for (let k = c; k < Math.min(chunks, c + 4); k++) rows.push({ id: `booktext:${b.id}:${k}`, store: 'booktext', data: { id: `${b.id}:${k}`, bookId: b.id, k, ver, pages: pages.slice(k * this.CH, (k + 1) * this.CH) }, updated: Date.now(), deleted: false });
-          await this.post(rows);
+        sent++;
+        // One part at a time (≈150 KB), 3 tries each, and it remembers where it got to — weak Wi-Fi just resumes later.
+        const doneKey = 'btk_' + b.id, prog = JSON.parse(localStorage.getItem(doneKey) || '{}');
+        if (prog.ver !== ver) { prog.ver = ver; prog.k = 0; }
+        for (let k = prog.k || 0; k < chunks; k++) {
+          window._btMsg = `Sending book text to your phone/iPad: ${b.short || b.name} (${Math.round(k / chunks * 100)}%)`;
+          const row = { id: `booktext:${b.id}:${k}`, store: 'booktext', data: { id: `${b.id}:${k}`, bookId: b.id, k, ver, pages: pages.slice(k * this.CH, (k + 1) * this.CH) }, updated: Date.now(), deleted: false };
+          for (let t = 0; ; t++) { try { await this.post([row]); break; } catch (e) { if (t >= 2) throw e; await sleep(3000 * (t + 1)); } }
+          prog.k = k + 1; localStorage.setItem(doneKey, JSON.stringify(prog));
         }
         localStorage.setItem('bt_' + b.id, ver);
       }
-      await this.post([{ id: 'booktext:index', store: 'booktext', data: { id: 'index', books: index, at: Date.now() }, updated: Date.now(), deleted: false }]);
+      // One list per device, so a phone with one book never overwrites the laptop's list.
+      let dev = localStorage.getItem('devId'); if (!dev) { dev = uid(); localStorage.setItem('devId', dev); }
+      await this.post([{ id: 'booktext:index:' + dev, store: 'booktext', data: { id: 'index:' + dev, books: index, at: Date.now() }, updated: Date.now(), deleted: false }]);
       localStorage.setItem('bt_sharedAt', Date.now()); localStorage.removeItem('bt_err');
       if (sent) toast(`✓ Book text sent to your phone/iPad (${index.length} books). On them: Ask books → download book text.`, 12000);
     } catch (e) { console.warn('book text share', e); localStorage.setItem('bt_err', e.message); toast('Couldn’t send book text to your phone/iPad: ' + e.message, 10000); } finally { this.busy = false; window._btMsg = ''; }
@@ -197,15 +203,19 @@ const BookText = {
   // Phone / iPad side (devices without the processed books).
   async fetch(onMsg = () => {}) {
     if (!Sync.on() || !navigator.onLine || this.busy) return 0;
-    if ((await this.ownBooks()).length) return 0;
+    const own = await this.ownBooks();
     this.busy = true; let got = 0;
     try {
       const { url } = Sync.cfg(), H = { headers: Sync.headers(), signal: AbortSignal.timeout(30000) };
-      const r = await fetch(`${url}/rest/v1/records?select=data&id=eq.booktext:index`, H);
+      const r = await fetch(`${url}/rest/v1/records?select=data&store=eq.booktext&id=like.booktext:index*`, H);
       if (!r.ok) return 0;
-      const idx = (await r.json())[0]?.data; if (!idx?.books?.length) return 0;
+      const lists = (await r.json()).map(x => x.data).filter(d => d?.books?.length).sort((a, b) => (b.books.length - a.books.length) || (b.at - a.at));
+      const seen = new Set(), idx = { books: [] };
+      for (const l of lists) for (const b of l.books) if (!seen.has(b.id)) { seen.add(b.id); idx.books.push(b); }
+      if (!idx.books.length) return 0;
       const have = this.remote();
       for (const b of idx.books) {
+        if (own.some(o => o.id === b.id || (o.size && o.size === b.size))) continue;   // this device already has that book itself
         const old = have.find(x => x.id === b.id);
         if (old && old.ver === b.ver && old.complete) continue;
         for (let k = 0; k < b.chunks; k += 5) {

@@ -146,12 +146,16 @@ const SelBar = {
     b.addEventListener('mousedown', e => e.preventDefault());
     b.addEventListener('click', e => { const k = e.target.dataset.sel; if (k) this.act(k); });
     const check = () => setTimeout(() => this.check(), 10);
-    document.addEventListener('mouseup', check); document.addEventListener('touchend', check); document.addEventListener('keyup', check);
+    document.addEventListener('mouseup', check); document.addEventListener('keyup', check);
+    // Phones: dragging the selection handles fires no touch events — follow the selection itself, and wait until it settles.
+    let t = 0; document.addEventListener('selectionchange', () => { clearTimeout(t); t = setTimeout(() => this.check(), 450); });
+    this.touch = matchMedia('(pointer: coarse)').matches; if (this.touch) b.classList.add('touch');
+    b.addEventListener('touchstart', e => { const k = e.target.closest('[data-sel]')?.dataset.sel; if (k) { e.preventDefault(); this.act(k); } }, { passive: false });
     document.addEventListener('scroll', () => { if (!this.el.hidden) this.place(); }, true);
   },
   check() {
     const sel = window.getSelection(), t = sel && sel.toString().trim();
-    if (!t || t.length < 2 || t.length > 500 || !sel.rangeCount) { this.el.hidden = true; return; }
+    if (!t || t.length < 2 || t.length > 800 || !sel.rangeCount) { this.el.hidden = true; return; }
     const node = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement);
     const host = node && node.closest('.read, .q-stem, .expl, .bookquote, .mm, .cmp, .master, .opt-t, .doubt');
     if (!host || host.closest('#selbar')) { this.el.hidden = true; return; }
@@ -160,6 +164,7 @@ const SelBar = {
     this.el.hidden = false; this.place();
   },
   place() {
+    if (this.touch) return;   // phones/iPad: the bar sits at the bottom, clear of the phone's own Copy/Select-all menu
     const sel = window.getSelection(); if (!sel.rangeCount) return;
     const r = sel.getRangeAt(0).getBoundingClientRect();
     const w = this.el.offsetWidth || 220;
@@ -167,6 +172,7 @@ const SelBar = {
     this.el.style.top = (r.top > 60 ? r.top - 48 : r.bottom + 8) + 'px';
   },
   async act(k) {
+    const live = window.getSelection()?.toString().trim(); if (live && live.length >= 2) this.text = live;
     const t = this.text; this.el.hidden = true; window.getSelection().removeAllRanges();
     if (k === 'ask') return askSelection(t, this.ctx);
     if (k === 'g') return window.open('https://www.google.com/search?q=' + encodeURIComponent(t), '_blank', 'noopener');

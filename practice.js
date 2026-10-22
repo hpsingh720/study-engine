@@ -55,7 +55,7 @@ const Practice = {
   },
 
   async _start(opts) {
-    const qs = await this.pool(opts);
+    const qs = opts.ids?.length ? opts.ids : await this.pool(opts);
     if (!qs.length) { toast('No questions here yet. Generate MCQs or upload a question bank first.'); return false; }
     this.s = {
       id: uid(), kind: opts.kind || 'custom', title: opts.title || 'Practice', mode: opts.mode || 'tutor',

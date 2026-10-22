@@ -171,6 +171,8 @@ const A = {
   async doneTopic(el) {
     const t = await DB.get('topics', el.dataset.id);
     t.done = 1; t.doneAt = Date.now(); await DB.put('topics', t);
+    const sysTopics = (await DB.live('topics')).filter(x => x.system === t.system);
+    if (sysTopics.every(x => x.done)) { setTimeout(() => toast(`🎉 All ${sysTopics.length} ${sysName(t.system)} topics done — take the System test (Practice page) after these questions.`, 9000), 1500); queueTwins(t.system).then(n => n && Queue.kick()).catch(() => {}); }
     const has = (await DB.byIndex('mcqs', 'topicId', t.id)).some(m => !m.deleted && !m.flagged);
     sessionStorage.setItem('leftTab', 'compare'); sessionStorage.setItem('pane', 'q');
     if (has) await Practice.start({ kind: 'topic', title: t.name, mode: 'tutor', topicId: t.id, topicIds: [t.id], count: 60 });
@@ -290,7 +292,7 @@ const A = {
   },
   async startReview() {
     localStorage.setItem('reviewOn', '1');
-    const n = await queueReview(), k = await queueMasks(); await queueVerify();
+    const n = await queueReview(), k = await queueMasks(); await queueVerify(); await queueArbit();
     toast(n ? `Reviewing questions in ${n} batches (+ ${k} pictures) — runs in the background with your free AI keys. Watch Library.` : 'All questions are already reviewed.', 7000);
     App.render(true);
   },
@@ -304,6 +306,7 @@ const A = {
     await A.openRef({ dataset: { book: btn.dataset.book, size: btn.dataset.size, p: String(cur) }, textContent: '' });
   },
   remotePage(el) { const p = +el.dataset.p; if (p >= 1) openRemotePage(el.dataset.book, p, el.dataset.label); },
+  async systemTest(el) { await startSystemTest(el.dataset.sys); },
   async btFetch(el) {
     if (!Sync.on()) return toast('Turn on Sync in Settings first (same address and key as the laptop).', 6000);
     el.disabled = true; el.innerHTML = '<span class="spin"></span>Downloading…';
@@ -597,8 +600,11 @@ async function runSearch(q) {
   // Quick internet AI answer straight away; the exact book lines follow when the search finishes.
   let quick = null;
   show({ q, waiting: 'Searching your books…' });
-  if (navigator.onLine) fastAI({ prompt: `Medical exam question from an MBBS/AMC student: "${q}". Answer ONLY in 4–10 short bullet points (max 14 words each), **bold** key terms, standard textbook facts (Australian practice if it differs). No intro sentence.` })
-    .then(a => { quick = a; const st = Views._lastSearch || { q }; if (st.q === q && !st.ai) show({ ...st, quick: a }); }).catch(() => {});
+  if (navigator.onLine) fastAI({ json: true, prompt: `Medical exam question from an MBBS/AMC student: "${q}".
+Return JSON {"points":["…"],"flow":null}.
+- points: 4–10 short bullet points (max 16 words each), **bold** key terms, accurate current textbook/guideline facts (Australian practice if it differs). No intro sentence.
+- flow: if the question is about a guideline, management, algorithm, approach, staging or classification, ALSO give it as the guideline's own flowchart: {"title":"<guideline name + year, e.g. EAU Urolithiasis 2024 — kidney stone removal>","steps":["Kidney stone > 20 mm → 1st PCNL; 2nd RIRS or SWL","10–20 mm → SWL or endourology","…"]} — 4–14 steps, each max 18 words, decisions as "If X → Y" or "size/stage → treatment", in the order the guideline's diagram reads. Only real guideline content. Otherwise null.` })
+    .then(a => { const pts = Array.isArray(a?.points) ? a.points : null; quick = pts ? { text: pts.map(x => '- ' + x).join('\n'), flow: a.flow && Array.isArray(a.flow.steps) && a.flow.steps.length ? a.flow : null } : { text: String(a || '') }; const st = Views._lastSearch || { q }; if (st.q === q) show({ ...st, quick }); }).catch(() => {});
   let results = await searchBooks(q).catch(() => []), where = 'here';
   if (!results.length && Sync.on() && !(await searchableBooks()).some(b => b.role !== 'reader')) {
     // Books live on the laptop: ask it to search.
@@ -786,6 +792,14 @@ async function init() {
   try { const n = await Queue.convertVisionToOcr(); if (n) setTimeout(() => toast(`Switched ${n} scanned question-bank jobs to the faster read-then-import route`, 6000), 1500); } catch (e) { console.warn(e); }
   if (AI.key && !localStorage.getItem('gem_picked')) { try { await AI.autoPick(); localStorage.setItem('gem_picked', '1'); } catch (e) {} }
   try { SelBar.init(); } catch (e) { console.warn(e); }
+  // Opening quote — written out in cursive, then fades (about 2.5 s; tap to skip).
+  try {
+    const sp = document.createElement('div'); sp.id = 'splash';
+    sp.innerHTML = `<div class="sp-q">${['I fear not the man who has practiced', '10,000 kicks once, but I fear the man', 'who has practiced one kick 10,000 times.'].map((l, i) => `<span style="--d:${i * 0.5}s">${l}</span>`).join('')}<em style="--d:1.5s">— Bruce Lee</em></div>`;
+    document.body.appendChild(sp);
+    const bye = () => { sp.classList.add('out'); setTimeout(() => sp.remove(), 600); };
+    sp.addEventListener('click', bye); setTimeout(bye, 2300);
+  } catch (e) {}
   Queue.listeners.add(() => { const q = $('#qstatus'); if (q) q.innerHTML = queueLine(); const nb = $('#nav-q'); if (nb) nb.hidden = !(Queue.running.local || Queue.running.ai); });
   await App.render();
   Queue.kick();
@@ -799,6 +813,9 @@ async function init() {
   setTimeout(() => Queue.autoRetry().catch(console.warn), 60000); setInterval(() => Queue.autoRetry().catch(console.warn), 2 * 3600000);
   setTimeout(() => queueEmbeds().then(n => n && Queue.kick()).catch(console.warn), 30000); setInterval(() => queueEmbeds().then(n => n && Queue.kick()).catch(console.warn), 3600000);
   setInterval(() => { if (localStorage.getItem('reviewOn') && (Date.now() - (window._rvT || 0)) > 3500e3) { window._rvT = Date.now(); queueReview().then(() => queueMasks()).then(() => queueVerify()).catch(console.warn); } }, 600000);
+  // Disputed answers get a third opinion (on the device with the books — the laptop).
+  const arb = () => BookText.ownBooks().then(b => b.length && queueArbit().then(n => n && Queue.kick())).catch(console.warn);
+  setTimeout(arb, 45000); setInterval(arb, 1800000);
   setInterval(() => fillMindmapFigs().catch(console.warn), 300000); setTimeout(() => fillMindmapFigs().catch(console.warn), 25000);
   setTimeout(() => queueRefs().catch(console.warn), 20000); setInterval(() => queueRefs().catch(console.warn), 3600000);
   if (Sync.on()) { Sync.run(); setInterval(() => Sync.run(), 120000); document.addEventListener('visibilitychange', () => { if (!document.hidden) Sync.run(); }); }

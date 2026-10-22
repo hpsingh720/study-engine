@@ -526,3 +526,18 @@ img.brand-mark { padding: 0; background: none; object-fit: cover; }
 #print-area { --surface: #fff; --surface-2: #f7f8fd; --sunk: #eef0f7; --ink: #111; --ink-2: #333; --muted: #555; --line: #d8dbe8; --line-2: #c4c8da; --bg: #fff; color: #111; color-scheme: light; }
 #print-area .fstep { background: #fff !important; color: #111 !important; }
 #print-area .mm-b li, #print-area .mm-flow, #print-area .fstep * { color: #111; }
+/* v81: phone/iPad selection bar — fixed at the bottom, big buttons, clear of the phone's own menu */
+#selbar.touch { left: 50% !important; top: auto !important; transform: translateX(-50%); bottom: calc(78px + env(safe-area-inset-bottom)); background: #1b2347; border: 1px solid #3a4680; border-radius: 14px; padding: 5px; }
+#selbar.touch button { padding: 11px 13px; font-size: .95rem; }
+body.examfull #selbar.touch { bottom: calc(96px + env(safe-area-inset-bottom)); }
+.srow.srow4 { grid-template-columns: 150px 1fr 110px auto; }
+@media (max-width: 600px) { .srow.srow4 { grid-template-columns: 1fr auto; } .srow.srow4 .stack { grid-column: 1 / -1; order: 3; } }
+/* v81: opening quote */
+#splash { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; padding: 24px; background: radial-gradient(800px 500px at 80% 0%, rgba(124, 92, 255, .25), transparent 60%), radial-gradient(700px 500px at 0% 100%, rgba(40, 150, 210, .18), transparent 60%), #0a0e1d; color: #eef0ff; transition: opacity .55s ease; cursor: pointer; }
+#splash.out { opacity: 0; pointer-events: none; }
+#splash .sp-q { font-family: "Dancing Script", "Snell Roundhand", "Segoe Script", "Brush Script MT", cursive; font-size: clamp(1.35rem, 5.2vw, 2.4rem); line-height: 1.45; text-align: center; max-width: 34ch; }
+#splash .sp-q span, #splash .sp-q em { display: block; clip-path: inset(0 100% 0 0); animation: sp-write .55s var(--d) ease-out forwards; }
+#splash .sp-q em { font-style: normal; font-size: .7em; opacity: .75; margin-top: .4em; animation-duration: .4s; }
+@keyframes sp-write { to { clip-path: inset(0 0 0 0); } }
+@media (prefers-reduced-motion: reduce) { #splash .sp-q span, #splash .sp-q em { animation: none; clip-path: none; } }
+@media print { #splash { display: none !important; } }
