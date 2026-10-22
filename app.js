@@ -792,13 +792,17 @@ async function init() {
   try { const n = await Queue.convertVisionToOcr(); if (n) setTimeout(() => toast(`Switched ${n} scanned question-bank jobs to the faster read-then-import route`, 6000), 1500); } catch (e) { console.warn(e); }
   if (AI.key && !localStorage.getItem('gem_picked')) { try { await AI.autoPick(); localStorage.setItem('gem_picked', '1'); } catch (e) {} }
   try { SelBar.init(); } catch (e) { console.warn(e); }
-  // Opening quote — written out in cursive, then fades (about 2.5 s; tap to skip).
+  // Opening: the logo appears, un-draws itself, then the quote is written in simple handwriting and stays long enough to read (tap to skip).
   try {
     const sp = document.createElement('div'); sp.id = 'splash';
-    sp.innerHTML = `<div class="sp-q">${['I fear not the man who has practiced', '10,000 kicks once, but I fear the man', 'who has practiced one kick 10,000 times.'].map((l, i) => `<span style="--d:${i * 0.5}s">${l}</span>`).join('')}<em style="--d:1.5s">— Bruce Lee</em></div>`;
+    sp.innerHTML = `<svg class="sp-logo" viewBox="0 0 512 512" aria-hidden="true"><defs><linearGradient id="spP" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#b7c3ff"/><stop offset="1" stop-color="#6a5ae0"/></linearGradient></defs>
+      <circle class="sp-planet" cx="256" cy="256" r="104" fill="url(#spP)"/>
+      <ellipse class="sp-ring" pathLength="1" cx="256" cy="262" rx="196" ry="58" fill="none" stroke="#9fb0ff" stroke-width="14" transform="rotate(-18 256 262)"/>
+      <path class="sp-ecg" pathLength="1" d="M120 262 H200 L222 222 L246 316 L272 190 L294 262 H392" fill="none" stroke="#fff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div class="sp-q">${['I fear not the man who has practiced', '10,000 kicks once,', 'but I fear the man who has practiced', 'one kick 10,000 times.'].map((l, i) => `<span style="--d:${2.3 + i * 0.75}s">${l}</span>`).join('')}<em style="--d:5.4s">— Bruce Lee</em></div>`;
     document.body.appendChild(sp);
-    const bye = () => { sp.classList.add('out'); setTimeout(() => sp.remove(), 600); };
-    sp.addEventListener('click', bye); setTimeout(bye, 2300);
+    const bye = () => { sp.classList.add('out'); setTimeout(() => sp.remove(), 800); };
+    sp.addEventListener('click', bye); setTimeout(bye, 9000);
   } catch (e) {}
   Queue.listeners.add(() => { const q = $('#qstatus'); if (q) q.innerHTML = queueLine(); const nb = $('#nav-q'); if (nb) nb.hidden = !(Queue.running.local || Queue.running.ai); });
   await App.render();

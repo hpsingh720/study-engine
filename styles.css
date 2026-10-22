@@ -532,12 +532,22 @@ img.brand-mark { padding: 0; background: none; object-fit: cover; }
 body.examfull #selbar.touch { bottom: calc(96px + env(safe-area-inset-bottom)); }
 .srow.srow4 { grid-template-columns: 150px 1fr 110px auto; }
 @media (max-width: 600px) { .srow.srow4 { grid-template-columns: 1fr auto; } .srow.srow4 .stack { grid-column: 1 / -1; order: 3; } }
-/* v81: opening quote */
-#splash { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; padding: 24px; background: radial-gradient(800px 500px at 80% 0%, rgba(124, 92, 255, .25), transparent 60%), radial-gradient(700px 500px at 0% 100%, rgba(40, 150, 210, .18), transparent 60%), #0a0e1d; color: #eef0ff; transition: opacity .55s ease; cursor: pointer; }
+/* v82: opening — logo fades in, un-draws, then the quote is handwritten and held to read */
+#splash { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; align-content: center; justify-content: center; padding: 16px; background: radial-gradient(800px 500px at 80% 0%, rgba(124, 92, 255, .22), transparent 60%), radial-gradient(700px 500px at 0% 100%, rgba(40, 150, 210, .15), transparent 60%), #0a0e1d; color: #eef0ff; transition: opacity .8s ease; cursor: pointer; }
+#splash > * { grid-area: 1 / 1; }
 #splash.out { opacity: 0; pointer-events: none; }
-#splash .sp-q { font-family: "Dancing Script", "Snell Roundhand", "Segoe Script", "Brush Script MT", cursive; font-size: clamp(1.35rem, 5.2vw, 2.4rem); line-height: 1.45; text-align: center; max-width: 34ch; }
-#splash .sp-q span, #splash .sp-q em { display: block; clip-path: inset(0 100% 0 0); animation: sp-write .55s var(--d) ease-out forwards; }
-#splash .sp-q em { font-style: normal; font-size: .7em; opacity: .75; margin-top: .4em; animation-duration: .4s; }
-@keyframes sp-write { to { clip-path: inset(0 0 0 0); } }
-@media (prefers-reduced-motion: reduce) { #splash .sp-q span, #splash .sp-q em { animation: none; clip-path: none; } }
+.sp-logo { width: min(38vw, 170px); height: auto; opacity: 0; animation: sp-in .6s .1s ease-out forwards, sp-gone .6s 1.9s ease-in forwards; }
+.sp-ecg { stroke-dasharray: 1; stroke-dashoffset: 0; animation: sp-undraw .7s 1.25s ease-in forwards; }
+.sp-ring { stroke-dasharray: 1; stroke-dashoffset: 0; animation: sp-undraw .8s 1.35s ease-in forwards; }
+.sp-planet { transform-origin: 256px 256px; animation: sp-shrink .7s 1.5s ease-in forwards; }
+@keyframes sp-in { from { opacity: 0; transform: scale(.92); } to { opacity: 1; transform: none; } }
+@keyframes sp-gone { to { opacity: 0; } }
+@keyframes sp-undraw { to { stroke-dashoffset: -1; } }
+@keyframes sp-shrink { to { transform: scale(.2); opacity: 0; } }
+#splash .sp-q { font-family: "Caveat", "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive; font-weight: 500; font-size: clamp(1.3rem, 5.4vw, 2.6rem); line-height: 1.45; text-align: center; letter-spacing: .01em; }
+#splash .sp-q span { white-space: nowrap; }
+#splash .sp-q span, #splash .sp-q em { display: block; opacity: 0; clip-path: inset(0 100% 0 0); animation: sp-write .7s var(--d) ease-out forwards; }
+#splash .sp-q em { font-style: normal; font-size: .75em; color: #b7c0ea; margin-top: .5em; }
+@keyframes sp-write { from { opacity: 1; clip-path: inset(0 100% 0 0); } to { opacity: 1; clip-path: inset(0 0 0 0); } }
+@media (prefers-reduced-motion: reduce) { #splash * { animation-duration: .01s !important; } }
 @media print { #splash { display: none !important; } }
