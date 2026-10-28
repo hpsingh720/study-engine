@@ -134,11 +134,40 @@ public class LectureRecorderPlugin extends Plugin {
         call.resolve(r);
     }
 
+    /**
+     * Whether a lecture is being recorded right now.
+     *
+     * The web page needs this because the Quick Settings tile can start a recording with no page
+     * loaded at all — on opening the app it must adopt that recording rather than show an idle
+     * Start button over a running microphone.
+     */
     @PluginMethod
-    public void isRecording(PluginCall call) {
+    public void getState(PluginCall call) {
         JSObject r = new JSObject();
         r.put("available", true);
+        r.put("recording", RecorderService.isRunning());
+        r.put("label", RecorderService.runningLabel());
+        r.put("startedAt", RecorderService.runningSince());
         call.resolve(r);
+    }
+
+    /**
+     * Mirror the upcoming classes so the tile can name a recording without the web app running.
+     * Stored as plain JSON: date, start, end, topic.
+     */
+    @PluginMethod
+    public void setSchedule(PluginCall call) {
+        try {
+            com.getcapacitor.JSArray classes = call.getArray("classes");
+            getContext()
+                .getSharedPreferences(RecordTileService.PREFS, android.content.Context.MODE_PRIVATE)
+                .edit()
+                .putString(RecordTileService.KEY_CLASSES, classes == null ? "" : classes.toString())
+                .apply();
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Could not save the schedule: " + e.getMessage());
+        }
     }
 
     static void emitChunk(String path, int index, boolean last) {

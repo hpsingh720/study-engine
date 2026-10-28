@@ -47,6 +47,16 @@ public class RecorderService extends Service {
     private long startedAt = 0L;
     private boolean running = false;
 
+    // The Quick Settings tile and the web page both need to know whether a lecture is in progress,
+    // and neither holds a reference to this instance.
+    private static volatile boolean active = false;
+    private static volatile String activeLabel = "";
+    private static volatile long activeSince = 0L;
+
+    public static boolean isRunning() { return active; }
+    public static String runningLabel() { return activeLabel; }
+    public static long runningSince() { return activeSince; }
+
     private final Handler handler = new Handler(Looper.getMainLooper());
     private PowerManager.WakeLock wakeLock;
 
@@ -105,6 +115,7 @@ public class RecorderService extends Service {
 
         running = true;
         startedAt = System.currentTimeMillis();
+        active = true; activeLabel = label; activeSince = startedAt;
         handler.postDelayed(rotate, chunkSeconds * 1000L);
         LectureRecorderPlugin.emitState(true, label, startedAt);
         return START_STICKY;
@@ -204,6 +215,7 @@ public class RecorderService extends Service {
 
         releaseWakeLock();
         LectureRecorderPlugin.emitState(false, label, startedAt);
+        active = false; activeLabel = ""; activeSince = 0L;
         chunkIndex = 0;
         startedAt = 0L;
     }
