@@ -1,0 +1,19 @@
+{
+  "appId": "com.hpsingh720.studyengine",
+  "appName": "Study Engine",
+  "webDir": "www",
+  "server": {
+    "url": "https://hpsingh720.github.io/study-engine/",
+    "cleartext": false,
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_icon",
+      "iconColor": "#6c7cff"
+    }
+  }
+}

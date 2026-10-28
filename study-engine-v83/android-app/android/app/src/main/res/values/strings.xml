@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Study Engine</string>
+    <string name="title_activity_main">Study Engine</string>
+    <string name="package_name">com.hpsingh720.studyengine</string>
+    <string name="custom_url_scheme">com.hpsingh720.studyengine</string>
+</resources>
