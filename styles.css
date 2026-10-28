@@ -551,3 +551,25 @@ body.examfull #selbar.touch { bottom: calc(96px + env(safe-area-inset-bottom)); 
 @keyframes sp-write { from { opacity: 1; clip-path: inset(0 100% 0 0); } to { opacity: 1; clip-path: inset(0 0 0 0); } }
 @media (prefers-reduced-motion: reduce) { #splash * { animation-duration: .01s !important; } }
 @media print { #splash { display: none !important; } }
+
+/* ---------- College lectures & class roster (v83) ---------- */
+.rec-live { border-color: color-mix(in srgb, var(--danger, #e5484d) 45%, transparent); }
+.rec-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--danger, #e5484d); animation: recpulse 1.6s ease-in-out infinite; flex: none; }
+@keyframes recpulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.82); } }
+
+.transcript { white-space: pre-wrap; font-size: .92rem; line-height: 1.6; opacity: .85; max-height: 50vh; overflow: auto; }
+
+.roster { width: 100%; border-collapse: collapse; font-size: .92rem; }
+.roster th { text-align: left; padding: .45rem .4rem; opacity: .6; font-weight: 600; }
+.roster td { padding: .3rem .4rem; border-top: 1px solid var(--line, rgba(128,140,180,.25)); vertical-align: middle; }
+.roster td input { width: 100%; padding: .35rem .45rem; font-size: .92rem; }
+.roster tr.unclear td { background: color-mix(in srgb, var(--danger, #e5484d) 12%, transparent); }
+
+.opts { margin: .5rem 0 0; padding-left: 1.3rem; }
+.opts li { padding: .15rem 0; }
+.opts li.right { font-weight: 600; }
+.opts li.right::after { content: ' ✓'; opacity: .7; }
+
+@media (max-width: 560px) {
+  .roster th:nth-child(4), .roster td:nth-child(4) { display: none; }
+}

@@ -451,6 +451,11 @@ Return JSON: {"duplicates":[{"keep":0,"drop":[3]}],"combined":[{"from":[1,4],"im
   async mcqgen(job, ctx) {
     const t = await DB.get('topics', job.payload.topicId); if (!t) return;
     await Gen.mcqs(t, job.payload.amc ?? 10, job.payload.mbbs ?? 8, ctx);
+  },
+  // Turn a finished lecture transcript into questions (see lectures.js).
+  async lectureMcqs(job) {
+    if (typeof Lectures === 'undefined') return;
+    await Lectures.generate(job.payload.lectureId);
   }
 };
 

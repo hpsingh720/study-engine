@@ -822,6 +822,9 @@ async function init() {
   setTimeout(arb, 45000); setInterval(arb, 1800000);
   setInterval(() => fillMindmapFigs().catch(console.warn), 300000); setTimeout(() => fillMindmapFigs().catch(console.warn), 25000);
   setTimeout(() => queueRefs().catch(console.warn), 20000); setInterval(() => queueRefs().catch(console.warn), 3600000);
+  // College lectures: pick up any recording still running, and refresh the night-before reminders.
+  Lectures.init().catch(console.warn);
+  setTimeout(() => Timetable.init().catch(console.warn), 4000);
   if (Sync.on()) { Sync.run(); setInterval(() => Sync.run(), 120000); document.addEventListener('visibilitychange', () => { if (!document.hidden) Sync.run(); }); }
   else Sync.set('off');
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {

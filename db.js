@@ -1,12 +1,12 @@
 // IndexedDB storage. Books/pages/queue stay on the device that has the books;
 // everything in SYNCED is shared across devices through Supabase.
-const SYNCED = ['topics', 'sheets', 'mcqs', 'media', 'attempts', 'tests', 'notes', 'prefs'];
+const SYNCED = ['topics', 'sheets', 'mcqs', 'media', 'attempts', 'tests', 'notes', 'prefs', 'lectures', 'classes'];
 let _db;
 
 function openDB() {
   if (_db) return Promise.resolve(_db);
   return new Promise((res, rej) => {
-    const r = indexedDB.open('amc-engine', 2);
+    const r = indexedDB.open('amc-engine', 3);
     r.onupgradeneeded = () => {
       const db = r.result;
       const mk = (n, opts, idx = []) => {
@@ -28,6 +28,8 @@ function openDB() {
       mk('notes', { keyPath: 'id' }, [['dirty', '_dirty']]);
       mk('prefs', { keyPath: 'id' }, [['dirty', '_dirty']]);
       mk('vecs', { keyPath: ['bookId', 'p', 'c'] }, [['bookId', 'bookId']]); // offline AI search index
+      mk('lectures', { keyPath: 'id' }, [['dirty', '_dirty']]);             // recorded college lectures
+      mk('classes', { keyPath: 'id' }, [['dirty', '_dirty'], ['date', 'date']]); // imported class rosters
     };
     r.onblocked = () => { try { toast('Close the app’s other tabs, then reload, to finish updating.', 8000); } catch (e) {} };
     r.onsuccess = () => { _db = r.result; _db.onversionchange = () => { _db.close(); location.reload(); }; res(_db); };
