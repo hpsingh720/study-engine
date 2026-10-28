@@ -16,10 +16,26 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // Sign with a key that lives in the repo rather than the throwaway one each CI run invents.
+    // Without this every build gets a different signature and Android refuses to update the app,
+    // failing with "App not installed" and forcing an uninstall that wipes the local data.
+    // This is a self-signed key for sideloading onto one phone, not a Play Store upload key.
+    signingConfigs {
+        shared {
+            storeFile file('studyengine.keystore')
+            storePassword 'studyengine'
+            keyAlias 'studyengine'
+            keyPassword 'studyengine'
+        }
+    }
     buildTypes {
+        debug {
+            signingConfig signingConfigs.shared
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.shared
         }
     }
 }
