@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - 'android-app/**'
+      - 'study-engine-v83/android-app/**'
       - '.github/workflows/android.yml'
 
 jobs:
@@ -23,15 +23,15 @@ jobs:
           java-version: '21'
 
       - name: Install Capacitor
-        working-directory: android-app
+        working-directory: study-engine-v83/android-app
         run: npm install --no-audit --no-fund
 
       - name: Copy web assets and plugin config into the Android project
-        working-directory: android-app
+        working-directory: study-engine-v83/android-app
         run: npx cap sync android
 
       - name: Build debug APK
-        working-directory: android-app/android
+        working-directory: study-engine-v83/android-app/android
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
@@ -40,6 +40,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: study-engine-apk
-          path: android-app/android/app/build/outputs/apk/debug/app-debug.apk
+          path: study-engine-v83/android-app/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 90
