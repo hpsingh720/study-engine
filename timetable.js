@@ -123,6 +123,7 @@ Return JSON: {"subject":"","rows":[{"date":"","start":"","end":"","topic":"","fa
 
     await DB.putMany('classes', rows);
     await this.schedule();
+    await this.pushToTile();
     return rows.length;
   },
 
@@ -133,6 +134,7 @@ Return JSON: {"subject":"","rows":[{"date":"","start":"","end":"","topic":"","fa
     if (patch.topic) c.unclear = false;
     await DB.put('classes', c);
     await this.schedule();
+    await this.pushToTile();
   },
 
   async remove(id) {
@@ -141,6 +143,7 @@ Return JSON: {"subject":"","rows":[{"date":"","start":"","end":"","topic":"","fa
     c.deleted = 1;
     await DB.put('classes', c);
     await this.schedule();
+    await this.pushToTile();
   },
 
   // ---------- the night-before reminder ----------
@@ -217,5 +220,20 @@ Return JSON: {"subject":"","rows":[{"date":"","start":"","end":"","topic":"","fa
         || null;
   },
 
-  async init() { await this.schedule(); }
+  /**
+   * Copy the next fortnight's classes to the Android side.
+   *
+   * The Quick Settings tile starts a recording with no web page loaded, so it cannot reach
+   * IndexedDB. This is how it knows to call the recording "Hypertension" rather than "Lecture 2pm".
+   */
+  async pushToTile() {
+    const n = Lectures.native();
+    if (!n?.setSchedule) return;
+    try {
+      const classes = (await this.upcoming(14)).map(c => ({ date: c.date, start: c.start, end: c.end, topic: c.topic }));
+      await n.setSchedule({ classes });
+    } catch (e) { console.warn('could not mirror the roster to the tile', e); }
+  },
+
+  async init() { await this.schedule(); await this.pushToTile(); }
 };

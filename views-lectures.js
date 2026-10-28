@@ -121,7 +121,7 @@ Views.timetable = async () => {
     <div class="card">
       <h2>Add a roster</h2>
       <p class="muted small">Photograph the printed sheet flat, in good light — one subject at a time. Each new roster for the same subject and month replaces the old one.</p>
-      <input type="file" id="roster-file" accept="image/*,.pdf" capture="environment">
+      <input type="file" id="roster-file" accept="image/*,application/pdf">
       <button class="btn full primary mt" data-act="rosterRead">Read this roster</button>
     </div>
     ${days ? `<h3 class="mt">Next 30 days</h3>${days}` : empty('Nothing scheduled', 'Add a roster above and your classes appear here.')}

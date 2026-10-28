@@ -6,7 +6,8 @@ const JOB_LABEL = {
   refs: 'Linking questions to book pages',
   embed: 'Preparing offline AI search',
   extract: 'Reading book', ocr: 'OCR scanned pages', mcqtext: 'Importing MCQs', mcqvision: 'Importing MCQs from photos',
-  practical: 'Making image spotters', figure: 'Attaching question pictures', sheet: 'Writing topic sheet', mcqgen: 'Writing MCQs', merge: 'Combining questions'
+  practical: 'Making image spotters', figure: 'Attaching question pictures', sheet: 'Writing topic sheet', mcqgen: 'Writing MCQs', merge: 'Combining questions',
+  lectureMcqs: 'Writing questions from a lecture'
 };
 
 function guessRole(name) {

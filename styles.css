@@ -544,8 +544,10 @@ body.examfull #selbar.touch { bottom: calc(96px + env(safe-area-inset-bottom)); 
 @keyframes sp-gone { to { opacity: 0; } }
 @keyframes sp-undraw { to { stroke-dashoffset: -1; } }
 @keyframes sp-shrink { to { transform: scale(.2); opacity: 0; } }
-#splash .sp-q { font-family: "Caveat", "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive; font-weight: 500; font-size: clamp(1.3rem, 5.4vw, 2.6rem); line-height: 1.45; text-align: center; letter-spacing: .01em; }
-#splash .sp-q span { white-space: nowrap; }
+/* The longest line ("but I fear the man who has practiced") sets the size: at 5.4vw it ran wider
+   than the screen and nowrap clipped its last letter. Narrower scaling plus side padding fits it. */
+#splash .sp-q { font-family: "Caveat", "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive; font-weight: 500; font-size: clamp(1.05rem, 4.1vw, 2.3rem); line-height: 1.45; text-align: center; letter-spacing: .01em; max-width: 100%; padding: 0 5vw; box-sizing: border-box; }
+#splash .sp-q span { white-space: normal; text-wrap: balance; }
 #splash .sp-q span, #splash .sp-q em { display: block; opacity: 0; clip-path: inset(0 100% 0 0); animation: sp-write .7s var(--d) ease-out forwards; }
 #splash .sp-q em { font-style: normal; font-size: .75em; color: #b7c0ea; margin-top: .5em; }
 @keyframes sp-write { from { opacity: 1; clip-path: inset(0 100% 0 0); } to { opacity: 1; clip-path: inset(0 0 0 0); } }

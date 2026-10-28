@@ -388,10 +388,42 @@ Return JSON: {"mcqs":[{"stem":"","options":["","","",""],"answer":0,"explanation
 
   _paint() { if (location.hash.startsWith('#/lectures')) App.render(true); },
 
+  /**
+   * Adopt a recording the Quick Settings tile started.
+   *
+   * The tile can start the microphone with no page loaded, so on opening the app there may be a
+   * live recording with no lecture record behind it. Without this the app would show an idle
+   * Start button while the service was already running, and the audio would go nowhere.
+   */
+  async adoptNative() {
+    const n = this.native();
+    if (!n?.getState) return;
+    let st;
+    try { st = await n.getState(); } catch (e) { return; }
+    if (!st?.recording) return;
+    if (await this.current()) return; // already ours
+
+    const topic = (st.label || '').trim() || 'Lecture';
+    const match = (await Timetable.todays()).find(c => c.topic === topic);
+
+    const l = {
+      id: 'lec-' + uid(),
+      topic,
+      faculty: match?.faculty || '', subject: match?.subject || '',
+      started: st.startedAt || Date.now(), ended: null,
+      chunks: 0, transcript: '', seconds: 0, unclearSeconds: 0,
+      state: 'recording', error: '',
+      topicId: '', mcqIds: [], generated: 0, fromTile: 1
+    };
+    await this.save(l);
+    await DB.meta('activeLecture', l.id);
+  },
+
   /** Wire up the native events once, at boot. Survives page reloads mid-lecture. */
   async init() {
     const n = this.native();
     if (!n) return;
+    await this.adoptNative();
     n.addListener('chunk', d => this.onChunk({ path: d.path, last: d.last }));
     n.addListener('recorderError', async d => {
       const l = await this.current();
