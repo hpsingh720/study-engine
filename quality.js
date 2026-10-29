@@ -51,15 +51,60 @@ function texify(h) {
 }
 
 // Colour the words that matter in notes: acronyms (SIADH, HPOA), 'quoted' terms, and the user's own highlights.
+/**
+ * Wrap ONE occurrence of a phrase, counting only text that is actually on the page.
+ *
+ * A plain split/join marked every occurrence — highlighting "PR" lit up every PR in the topic —
+ * and happily rewrote the inside of tags, so selecting a word like "class" or "mark" corrupted the
+ * markup. This walks the html in tag and text runs, counts occurrences in the text runs alone, and
+ * wraps the nth. If that occurrence cannot be found (the selection crossed a tag boundary) it
+ * falls back to the first, which is better than marking all of them.
+ */
+function markNth(html, needle, nth, cls, idx) {
+  if (!needle || needle.length < 2) return html;
+  const open = `<mark class="${cls}" data-hl="${idx}">`;
+  const parts = String(html).split(/(<[^>]*>)/);
+  const wrap = want => {
+    let seen = 0, hit = false;
+    const out = parts.map(s => {
+      if (hit || s.startsWith('<')) return s;
+      let res = '', pos = 0;
+      for (;;) {
+        const at = s.indexOf(needle, pos);
+        if (at === -1) { res += s.slice(pos); break; }
+        if (seen === want) {
+          res += s.slice(pos, at) + open + needle + '</mark>' + s.slice(at + needle.length);
+          hit = true; seen++; break;
+        }
+        seen++; res += s.slice(pos, at + needle.length); pos = at + needle.length;
+      }
+      return res;
+    }).join('');
+    return hit ? out : null;
+  };
+  return wrap(nth >= 0 ? nth : 0) ?? wrap(0) ?? html;
+}
+
 function keyColour(h, user = []) {
   let out = h.replace(/(^|[\s(>])(?:'|&#39;|‘)([^'’&<]{3,40})(?:'|&#39;|’)(?=[\s.,;:)<&]|$)/g, '$1<mark class="kw">$2</mark>')
     .replace(/\b([A-Z][A-Z0-9]{2,6}s?)\b(?![^<]*>)/g, (w) => /^(THE|AND|FOR|WITH|NOT|ALL|ANY|USE)$/.test(w) ? w : `<b class="acr">${w}</b>`);
-  for (const u of user) { const e = esc(u.t); if (e.length < 3) continue; out = out.split(e).join(`<mark class="${u.k === 'ul' ? 'uul' : 'uhl'}">${e}</mark>`); }
+  user.forEach((u, i) => {
+    const e = esc(u.t);
+    if (e.length < 3) return;
+    out = markNth(out, e, Number.isInteger(u.n) ? u.n : 0, u.k === 'ul' ? 'uul' : 'uhl', i);
+  });
   return out;
 }
 
 // Wrap the user's highlights inside a question stem (exam tool, lasts for this test only).
-function applyMarks(html, list = []) { for (const t of list) { const e = esc(t); if (e.length > 1) html = html.split(e).join(`<mark class="uhl">${e}</mark>`); } return html; }
+function applyMarks(html, list = []) {
+  list.forEach((t, i) => {
+    const e = esc(typeof t === 'string' ? t : t.t);
+    const n = typeof t === 'string' ? 0 : (Number.isInteger(t.n) ? t.n : 0);
+    if (e.length > 1) html = markNth(html, e, n, 'uhl', i);
+  });
+  return html;
+}
 
 // Book references must suit the patient: no children's textbooks for adults.
 function refsForPatient(m, refs = []) {
@@ -162,6 +207,15 @@ const SelBar = {
     const host = node && node.closest('.read, .q-stem, .expl, .bookquote, .mm, .cmp, .master, .opt-t, .doubt, .dtable, .mdt, .callout');
     if (!host || host.closest('#selbar')) { this.el.hidden = true; return; }
     this.text = t; this.ctx = host.textContent.replace(/\s+/g, ' ').slice(0, 900); this.inQ = !!host.closest('.q-stem, .opt-t');
+    // Which occurrence of this phrase was picked, counted in the host's own text — so marking one
+    // "PR" marks that one and not every PR on the page.
+    this.nth = 0;
+    try {
+      const pre = document.createRange();
+      pre.selectNodeContents(host);
+      pre.setEnd(sel.getRangeAt(0).startContainer, sel.getRangeAt(0).startOffset);
+      this.nth = pre.toString().split(t).length - 1;
+    } catch (e) { this.nth = 0; }
     this.el.querySelector('[data-sel="ul"]').hidden = this.inQ;
     this.el.hidden = false; this.place();
   },
@@ -178,10 +232,40 @@ const SelBar = {
     const t = this.text; this.el.hidden = true; window.getSelection().removeAllRanges();
     if (k === 'ask') return askSelection(t, this.ctx);
     if (k === 'g') return window.open('https://www.google.com/search?q=' + encodeURIComponent(t), '_blank', 'noopener');
-    if (this.inQ && Practice.s) { const s = Practice.s, id = s.qs[s.idx]; ((s.hl ||= {})[id] ||= []).push(t); Practice.save(); return App.render(true); }
+    const nth = this.nth || 0;
+    if (this.inQ && Practice.s) { const s = Practice.s, id = s.qs[s.idx]; ((s.hl ||= {})[id] ||= []).push({ t, n: nth }); Practice.save(); return App.render(true); }
     const tid = (location.hash.match(/#\/topic\/([^/]+)/) || [])[1];
     if (!tid) return toast('Open a topic to keep highlights.');
-    const n = await getNote(tid); (n.hl ||= []).push({ t, k }); await DB.put('notes', n); App.render(true);
+    const note = await getNote(tid); (note.hl ||= []).push({ t, k, n: nth }); await DB.put('notes', note); App.render(true);
+  },
+
+  /**
+   * Tap a highlight to take it off again.
+   *
+   * Wired here rather than through data-act, because a mark sits inside the text and a click on it
+   * should not also count as a click on whatever contains it.
+   */
+  initRemove() {
+    document.addEventListener('click', async e => {
+      const m = e.target.closest('mark[data-hl]');
+      if (!m) return;
+      e.preventDefault(); e.stopPropagation();
+      const i = +m.dataset.hl;
+
+      if (Practice.s && m.closest('.q-stem, .opt-t')) {
+        const s = Practice.s, id = s.qs[s.idx], list = (s.hl ||= {})[id] || [];
+        if (i >= 0 && i < list.length) { list.splice(i, 1); Practice.save(); App.render(true); }
+        return;
+      }
+      const tid = (location.hash.match(/#\/topic\/([^/]+)/) || [])[1];
+      if (!tid) return;
+      const note = await getNote(tid);
+      if (!Array.isArray(note.hl) || i < 0 || i >= note.hl.length) return;
+      note.hl.splice(i, 1);
+      await DB.put('notes', note);
+      toast('Highlight removed');
+      App.render(true);
+    }, true);
   }
 };
 async function askSelection(text, ctx, history = []) {
@@ -198,13 +282,12 @@ async function askSelection(text, ctx, history = []) {
   const slot = out.lastElementChild;
   try {
     const prev = history.slice(0, -1).map(h => `Q: ${h.q}\nA: ${h.a}`).join('\n');
-    const prompt = q ? `Earlier we discussed "${text}" (context: ${ctx}).\n${prev}\nStudent's follow-up: ${q}\nAnswer ONLY in short bullet points (max 120 words), **bold** key terms; an arrow chain (A → B → C) if it helps; add a Hindi/Punjabi mnemonic (in English letters) if useful.`
+    const prompt = q ? `Earlier we discussed "${text}" (context: ${ctx}).\n${prev}\nStudent's follow-up: ${q}\nAnswer ONLY in short bullet points (max 120 words), **bold** key terms; an arrow chain (A → B → C) if it helps.`
       : `A medical student (Indian MBBS, preparing for the Australian AMC exam) selected this text while studying: "${text}"\nSurrounding text: ${ctx}\n
 Explain it ONLY in short bullet points (max 12 words each, max 200 words total) — never paragraphs:
 **What it is** – 1–2 points in plain words.
 **How it works** – the mechanism as an arrow chain (A → B → C).
 **Key facts** – 3–6 points (numbers, criteria, components as a list).
-**Remember it** – one mnemonic in English, and one fun mnemonic in Hindi or Punjabi written in English letters.
 **Exam angle** – 1–2 points on what AMC/MBBS asks (Australian practice if different).
 **Test yourself** – 2 short questions; answers in brackets at the end.
 Use **bold** for key terms.`;

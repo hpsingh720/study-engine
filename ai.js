@@ -170,6 +170,36 @@ function scorePage(text, terms) {
   return score;
 }
 
+/**
+ * The pages this topic actually sits on, when the contents page told us.
+ *
+ * Keyword retrieval is a guess; a topic built from a book's contents knows its book and its page,
+ * so read those directly. It is the difference between questions written from Ghai and questions
+ * written from memory that happen to be about the same subject.
+ */
+async function ownPages(topic, span = 12) {
+  if (!topic?.bookId || !topic?.bookPage) return [];
+  const b = await DB.get('books', topic.bookId);
+  if (!b) return [];
+
+  // Where the printed page number sits in the scan: the same offset the whole book shares.
+  const sibling = (await DB.live('topics'))
+    .filter(t => t.bookId === topic.bookId && t.bookPage > topic.bookPage)
+    .sort((a, c) => a.bookPage - c.bookPage)[0];
+  const last = sibling ? Math.min(sibling.bookPage - 1, topic.bookPage + span * 2) : topic.bookPage + span;
+
+  const out = [];
+  let chars = 0;
+  for (let p = topic.bookPage; p <= last && out.length < span; p++) {
+    const pg = await DB.get('pages', [topic.bookId, p]);
+    if (!pg?.text) continue;
+    out.push({ bookId: b.id, p, text: pg.text, book: b.short || b.name, own: 1 });
+    chars += pg.text.length;
+    if (chars > 34000) break;
+  }
+  return out;
+}
+
 async function retrieve(topic, col, maxPages = 6, maxChars = 32000) {
   const books = (await DB.all('books')).filter(b => b.role === col);
   if (!books.length) return [];
@@ -210,6 +240,20 @@ function excerptBlock(pages) {
   return pages.map(x => `[${x.book} p.${x.p}]\n${x.text.slice(0, 9000)}`).join('\n\n');
 }
 
+/** Take pages until a character budget runs out, trimming the last one rather than dropping it. */
+function budget(pages, chars) {
+  const out = [];
+  let used = 0;
+  for (const p of pages) {
+    if (used >= chars) break;
+    const room = chars - used;
+    const text = p.text.length > room ? p.text.slice(0, room) : p.text;
+    out.push({ ...p, text });
+    used += text.length;
+  }
+  return out;
+}
+
 async function topicListText() {
   const ts = await DB.live('topics');
   return ts.map(t => `${t.id}|${t.name}`).join('\n');
@@ -225,6 +269,16 @@ const Gen = {
     src.ref = await retrieve(topic, 'ref', 6, 30000);
     src.mbbs = await retrieve(topic, 'mbbs', 5, 24000);
     src.amc = await retrieve(topic, 'amc', 6, 30000);
+
+    // The topic's own pages go into their book's own column, ahead of what keyword search found
+    // there, without displacing the other columns.
+    const ownSheet = (await ownPages(topic)).slice(0, 5);
+    if (ownSheet.length) {
+      const b = await DB.get('books', topic.bookId);
+      const col = ['ref', 'mbbs', 'amc'].includes(b?.role) ? b.role : 'ref';
+      const already = new Set(src[col].map(x => x.bookId + ':' + x.p));
+      src[col] = [...budget(ownSheet, 14000), ...src[col].filter(x => !already.has(x.bookId + ':' + x.p))].slice(0, 10);
+    }
     const block = c => src[c].length ? excerptBlock(src[c]) : '(no excerpts uploaded for this column)';
     const prompt = `TOPIC: ${topic.name}  (system: ${sysName})
 
@@ -263,12 +317,24 @@ Return JSON exactly in this shape:
 
   async mcqs(topic, nAmc = 10, nMbbs = 8, ctx) {
     const sheet = await DB.get('sheets', topic.id);
-    let pages = [];
+    // The topic's own pages, when the contents gave them, PLUS whatever retrieval finds elsewhere.
+    // Not instead of: the other books give the better questions on plenty of topics, and the point
+    // is that this book is in the mix, not that it crowds the rest out.
+    const own = (await ownPages(topic)).slice(0, 6);
+    const others = [];
     if (sheet?.sources?.length) {
-      for (const s of sheet.sources.slice(0, 10)) { const pg = await DB.get('pages', [s.bookId, s.p]); if (pg) pages.push({ ...s, text: pg.text }); }
+      for (const s of sheet.sources.slice(0, 10)) {
+        if (own.some(o => o.bookId === s.bookId && o.p === s.p)) continue;
+        const pg = await DB.get('pages', [s.bookId, s.p]);
+        if (pg) others.push({ ...s, text: pg.text });
+      }
     } else {
-      pages = [...await retrieve(topic, 'ref', 4, 18000), ...await retrieve(topic, 'mbbs', 3, 12000), ...await retrieve(topic, 'amc', 4, 18000)];
+      const more = [...await retrieve(topic, 'ref', 4, 18000), ...await retrieve(topic, 'mbbs', 3, 12000), ...await retrieve(topic, 'amc', 4, 18000)];
+      others.push(...more.filter(m => !own.some(o => o.bookId === m.bookId && o.p === m.p)));
     }
+    // Give this topic's own pages a guaranteed share rather than the whole budget: without the cap
+    // six pages of one book fill 45,000 characters on their own and nothing else is ever seen.
+    const pages = [...budget(own, 16000), ...budget(others, 29000)];
     const existing = (await DB.byIndex('mcqs', 'topicId', topic.id)).filter(m => !m.deleted).slice(-50).map(m => '- ' + m.stem.slice(0, 110)).join('\n');
     const sheetText = sheet ? JSON.stringify({ management: sheet.sections?.management, comparison: sheet.comparison }).slice(0, 14000) : '';
     const real = (await DB.byIndex('mcqs', 'topicId', topic.id)).filter(m => !m.deleted && !m.flagged && ['AMEDEX', 'PYQ'].includes(qBank(m)) && !qBroken(m) && !m.oldFormat).slice(0, 4);
@@ -300,6 +366,22 @@ Return JSON: {"mcqs":[{"type":"AMC","stem":"","options":["","","","",""],"answer
     const out = ctx?.provider ? await Providers.call(ctx.provider, { prompt, system: SYSTEM_TUTOR, temperature: 0.55, maxTokens: 12000 }) : await AI.call({ prompt, system: SYSTEM_TUTOR, temperature: 0.55 });
     const list = (out.mcqs || []).map(m => cleanMcq(m, topic)).filter(Boolean);
     await DB.putMany('mcqs', list);
+
+    // Record what these were actually written from, so the topic can say so plainly rather than
+    // leaving it a guess whether the book was used at all.
+    try {
+      const by = {};
+      for (const p of pages) (by[p.book] ||= []).push(p.p);
+      const t2 = await DB.get('topics', topic.id);
+      if (t2) {
+        t2.srcUsed = {
+          at: Date.now(),
+          books: Object.entries(by).map(([book, ps]) => ({ book, from: Math.min(...ps), to: Math.max(...ps), n: ps.length }))
+        };
+        await DB.put('topics', t2);
+      }
+    } catch (e) { console.warn('could not record sources', e); }
+
     return list.length;
   }
 };
@@ -574,7 +656,7 @@ async function askTutor(topic, question, context = '') {
   const sheet = topic ? await DB.get('sheets', topic.id) : null;
   const sheetCtx = sheet ? JSON.stringify({ sections: sheet.sections, comparison: sheet.comparison }).slice(0, 5000) : '';
   return fastAI({
-    json: false, system: SYSTEM_TUTOR + ' Answer ONLY in short bullet points (max 14 words each), never paragraphs. Bold key terms. Add one memorable mnemonic (English, plus a fun Hindi/Punjabi one in English letters) when there is a list to remember. When Indian and Australian practice differ, say both clearly.',
+    json: false, system: SYSTEM_TUTOR + ' Answer ONLY in short bullet points (max 14 words each), never paragraphs. Bold key terms. Only give a mnemonic if there is a genuine list to memorise and the mnemonic is a real, standard one — never invent a jokey one. When Indian and Australian practice differ, say both clearly.',
     prompt: `${topic ? 'Topic: ' + topic.name + '\nRevision sheet: ' + sheetCtx : ''}\n${context ? 'Context: ' + context : ''}\n\nStudent question: ${question}`
   });
 }

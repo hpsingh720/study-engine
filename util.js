@@ -1,4 +1,6 @@
-const APP_VERSION = 'v94';
+const APP_VERSION = 'v98';
+// A topic stops earning new questions at this many: beyond it the model repeats itself.
+const MCQ_CAP = 60;
 // Small helpers shared across the app.
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -121,7 +123,8 @@ function dragModal(box, grip) {
     box.style.margin = '0';
     box.style.left = r.left + 'px';
     box.style.top = r.top + 'px';
-    box.style.width = r.width + 'px';
+    // Keep whatever size it has been pulled to; only pin where it sits.
+    if (!box.style.width) box.style.width = r.width + 'px';
     ox = r.left; oy = r.top; sx = p.clientX; sy = p.clientY; on = true;
     box.classList.add('dragging');
     e.preventDefault();

@@ -605,3 +605,7 @@ body.examfull #selbar.touch { bottom: calc(96px + env(safe-area-inset-bottom)); 
 }
 .modal-box.dragging { cursor: grabbing; user-select: none; }
 .modal-box.dragging .modal-grip { cursor: grabbing; }
+
+/* Drag it aside, and pull the corner to make it bigger. */
+.modal-box.light { resize: both; min-width: 280px; min-height: 180px; max-width: 96vw; }
+.modal-box.light #asksel-out { max-height: none; }

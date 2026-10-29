@@ -451,7 +451,21 @@ Return JSON: {"duplicates":[{"keep":0,"drop":[3]}],"combined":[{"from":[1,4],"im
   },
   async mcqgen(job, ctx) {
     const t = await DB.get('topics', job.payload.topicId); if (!t) return;
-    await Gen.mcqs(t, job.payload.amc ?? 10, job.payload.mbbs ?? 8, ctx);
+
+    // A topic is worth a set of questions, not an endless supply: past this the model is padding
+    // round the same facts, and every extra question dilutes revision and burns a free-tier call.
+    const have = (await DB.byIndex('mcqs', 'topicId', t.id)).filter(m => !m.deleted && !m.merged && !m.flagged).length;
+    if (have >= MCQ_CAP) { Queue.setStatus('ai', `${t.name} already has ${have} questions — skipping`); return; }
+
+    // Ask only for what is left before the cap, keeping the AMC/MBBS mix the caller wanted.
+    let amc = job.payload.amc ?? 10, mbbs = job.payload.mbbs ?? 8;
+    const room = MCQ_CAP - have;
+    if (amc + mbbs > room) {
+      const share = room / (amc + mbbs);
+      amc = Math.floor(amc * share); mbbs = Math.max(0, room - amc);
+    }
+    if (amc + mbbs < 1) return;
+    await Gen.mcqs(t, amc, mbbs, ctx);
   },
   // Turn a finished lecture transcript into questions (see lectures.js).
   async lectureMcqs(job) {

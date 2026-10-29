@@ -926,7 +926,7 @@ async function init() {
   try { await Queue.splitTextJobs(); } catch (e) { console.warn(e); }
   try { const n = await Queue.convertVisionToOcr(); if (n) setTimeout(() => toast(`Switched ${n} scanned question-bank jobs to the faster read-then-import route`, 6000), 1500); } catch (e) { console.warn(e); }
   if (AI.key && !localStorage.getItem('gem_picked')) { try { await AI.autoPick(); localStorage.setItem('gem_picked', '1'); } catch (e) {} }
-  try { SelBar.init(); } catch (e) { console.warn(e); }
+  try { SelBar.init(); SelBar.initRemove(); } catch (e) { console.warn(e); }
   // Opening: the logo appears, un-draws itself, then the quote is written in simple handwriting and stays long enough to read (tap to skip).
   try {
     const sp = document.createElement('div'); sp.id = 'splash';

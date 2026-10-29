@@ -202,6 +202,11 @@ Views.system = async (code) => {
   const shown = ts.filter(t => filter === 'left' ? !t.done : filter === 'done' ? t.done : true);
   const done = ts.filter(t => t.done).length;
   const missing = ts.filter(t => !sheetSet.has(t.id)).length;
+  // Which of this subject's topics know their own page in a book, and in which books.
+  const withBook = ts.filter(t => t.bookId && t.bookPage);
+  const bookNames = {};
+  for (const b of await DB.all('books')) bookNames[b.id] = b.short || b.name;
+  const anchored = { n: withBook.length, books: [...new Set(withBook.map(t => bookNames[t.bookId] || 'a book'))] };
   return `<div class="page">
   <header class="page-head"><div><p class="eyebrow"><a href="#/systems" class="link">Systems</a> / ${done} of ${ts.length} done · accuracy ${accTxt(st.by['sys:' + code])}</p><h1>${sysName(code)}</h1></div>
     <div class="row gap wrap">
@@ -212,7 +217,10 @@ Views.system = async (code) => {
   ${bar(pct(done, ts.length), 'thick')}
 
   <section class="card soft mt">
-    <div class="card-head"><h3>Chapters</h3><span class="muted small">${ts.length} topics</span></div>
+    <div class="card-head"><h3>Chapters</h3><span class="muted small">${ts.length} topics${anchored.n ? ` · ${anchored.n} anchored to ${esc(anchored.books.join(', '))}` : ''}</span></div>
+    ${anchored.n
+      ? `<p class="muted small">${anchored.n} of these know their own page in ${esc(anchored.books.join(', '))}, so questions and notes are written from those pages as well as from whatever else your library matches.</p>`
+      : `<p class="muted small">None of these are tied to a book yet, so the books are found by keyword alone — usually right, sometimes not. Building this subject from its own textbook anchors every topic to its page.</p>`}
     <p class="muted small">${ts.length < 20
       ? `${ts.length} topics is a symptom list, not a syllabus — a retina chapter alone holds more than that. Build it from your own book: the chapters come off its contents page and the topics off its printed headings.`
       : 'Tick a chapter off as you read it. "Practise what I have read" then tests only those, so you never get a question on something you have not opened.'}</p>
@@ -364,6 +372,7 @@ function mcqTab(t, live, all, st, books, inQueue) {
   const flagged = all.filter(m => m.flagged && !m.deleted).length;
   const merged = all.filter(m => m.merged && !m.deleted), combined = all.filter(m => m.src === 'merged' && !m.deleted);
   const b = st.by[t.id];
+  const full = ok.length >= MCQ_CAP;
   return `<div class="grid-2">
     <div class="card"><h3>Practise this topic</h3>
       <p class="muted">${ok.length} questions · ${nb('AMEDEX')} AMEDEX · ${nb('PYQ')} PYQ · ${nb('AI')} AI-written · your accuracy ${accTxt(b)}${broken ? ` · <span class="warn-t">${broken} broken ones hidden</span>` : ''}</p>
@@ -373,12 +382,18 @@ function mcqTab(t, live, all, st, books, inQueue) {
         <button class="btn ghost" data-act="practiseTopic" data-id="${t.id}" data-type="ALL" data-bank="all" ${ok.length ? '' : 'disabled'}>All mixed</button>
       </div></div>
     <div class="card"><h3>${ok.length ? 'More questions' : 'No questions yet'}</h3>
-      ${!ok.length && !inQueue.some(j => j.kind === 'mcqgen') ? `
+      ${t.srcUsed?.books?.length
+        ? `<p class="muted small">Written from <b>${t.srcUsed.books.map(b => `${esc(b.book)} pp.${b.from}–${b.to}`).join(', ')}</b>.</p>`
+        : t.srcUsed
+          ? '<p class="warn-t small">Written from general knowledge — none of your books matched this topic. Check the book is read in under Library, or open the topic\'s page range.</p>'
+          : ''}
+      ${full ? `<p class="muted">This topic has <b>${ok.length}</b> questions — enough. Past ${MCQ_CAP} the writing starts going round the same facts, so no more are added. Delete or flag some if you want fresh ones.</p>` : ''}
+      ${!full && !ok.length && !inQueue.some(j => j.kind === 'mcqgen') ? `
         <p class="muted">Finished reading this? Write a set now — clinical vignettes from your own books, 15 of them.</p>
         <button class="btn primary full" data-act="write15" data-id="${t.id}">Write 15 clinical questions now</button>` : ''}
-      ${inQueue.length ? `<div class="mt">${jobStatusBox(inQueue)}</div>` : ok.length ? `<p class="muted">${books ? 'Write 10 new AMC + 8 MBBS questions from your books (no repeats).' : 'Generate more on your laptop — they sync here.'}</p>` : ''}
-      ${books && !inQueue.length ? `<button class="btn" data-act="moreMcqs" data-id="${t.id}">+ Write more MCQs</button>` : ''}
-      ${books && !inQueue.length ? `<button class="btn ghost" data-act="amcVersion" data-id="${t.id}">Now the AMC version</button>` : ''}
+      ${inQueue.length ? `<div class="mt">${jobStatusBox(inQueue)}</div>` : (ok.length && !full) ? `<p class="muted">${books ? `Write up to ${Math.min(18, MCQ_CAP - ok.length)} more from your books (no repeats). ${MCQ_CAP - ok.length} left before this topic is full.` : 'Generate more on your laptop — they sync here.'}</p>` : ''}
+      ${books && !inQueue.length && !full ? `<button class="btn" data-act="moreMcqs" data-id="${t.id}">+ Write more MCQs</button>` : ''}
+      ${books && !inQueue.length && !full ? `<button class="btn ghost" data-act="amcVersion" data-id="${t.id}">Now the AMC version</button>` : ''}
       ${books && !inQueue.some(j => j.kind === 'sheet') ? `<button class="btn ghost" data-act="mindmapNow" data-id="${t.id}">Mind map first</button>` : ''}
       <p class="muted small mt">Questions come MBBS-first. Once you have done those, "Now the AMC version" writes 10 AMC-style questions on the same material and builds the <a class="link" href="#/topic/${t.id}/compare">AMC · Murtagh comparison</a> for it.</p>
       ${t.custom ? '' : `<p class="muted small mt">Covering a whole chapter? <button class="link" data-act="focusExpand" data-id="${t.id}">Break it into subtopics</button> — each gets its own questions.</p>`}
