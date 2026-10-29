@@ -221,6 +221,45 @@ Rules:
   },
 
   /**
+   * The headings across a whole chapter, rather than the opening few pages of it.
+   *
+   * Reading full page text runs out of budget after about six pages, so a forty-page chapter came
+   * back as whatever its first section happened to be — a newborn chapter that reduced to
+   * "preparing for resuscitation, supplemental oxygen, chest compressions" and stopped. Headings
+   * are short lines in caps or title case, so pulling just those covers the entire chapter in a
+   * fraction of the space.
+   */
+  async _headings(bookId, from, to, cap = 26000) {
+    const looksLikeHeading = l => {
+      const s = l.trim();
+      if (s.length < 4 || s.length > 70) return false;
+      if (/[.;:,]$/.test(s)) return false;
+      if (/^(fig|figure|table|box|plate|note|source|contd|continued)\b/i.test(s)) return false;
+      const letters = s.replace(/[^A-Za-z]/g, '');
+      if (letters.length < 4) return false;
+      const caps = s === s.toUpperCase();
+      const titled = /^([A-Z][a-z'-]+|and|of|the|in|with|for|to|a)(\s+([A-Z][a-z'-]+|and|of|the|in|with|for|to|a|\d+))*$/.test(s);
+      const numbered = /^\d+(\.\d+)*\s+[A-Z]/.test(s);
+      return caps || titled || numbered;
+    };
+
+    const out = [];
+    let chars = 0;
+    for (let p = from; p <= to; p++) {
+      const pg = await DB.get('pages', [bookId, p]);
+      if (!pg?.text) continue;
+      const heads = pg.text.split('\n').filter(looksLikeHeading).slice(0, 14);
+      // The opening of the page as well, so a heading the filter missed still has context.
+      const piece = `[p.${p}] ${pg.text.trim().slice(0, 220).replace(/\s+/g, ' ')}`
+        + (heads.length ? `\n  ${heads.map(h => h.trim()).join('\n  ')}` : '');
+      out.push(piece);
+      chars += piece.length;
+      if (chars > cap) break;
+    }
+    return out.join('\n');
+  },
+
+  /**
    * Build the syllabus out of the student's own textbook.
    *
    * Not the model's idea of what a textbook contains — the book sitting in the app, read from its
@@ -250,20 +289,27 @@ Rules:
       system: typeof SYSTEM_TUTOR !== 'undefined' ? SYSTEM_TUTOR : undefined,
       prompt: `Below are the opening pages of "${book.name}", scanned and read by OCR. Somewhere in them is the table of contents.
 
-Return the chapter list exactly as this book prints it:
-{"chapters":[{"name":"","page":0}]}
+Copy it out exactly as this book prints it, chapters and everything listed under them:
+{"chapters":[{"name":"","page":0,"topics":[{"name":"","page":0}]}]}
 
-- "name": the chapter title as printed. Do not rename, merge, shorten or invent chapters.
-- "page": the page number this book's index gives for that chapter, as a number. Use 0 if there is none.
-- Keep the book's own order.
-- If there is no contents page in this text, return {"chapters":[]} rather than guessing.
+- "name": the title as printed. Do not rename, merge, shorten or invent anything.
+- "page": the page number the contents gives, as a number. Use 0 where there is none.
+- "topics": the entries listed underneath that chapter in the contents, in the book's order. Many Indian textbooks print these; copy every one. If this book's contents lists chapters only, return "topics": [] for them — do not make entries up.
+- Keep the book's own order and include every chapter, to the end of the book.
+- If there is no contents page in this text at all, return {"chapters":[]} rather than guessing.
 
 PAGES:
 ${front}`
     });
 
     let chapters = (Array.isArray(toc?.chapters) ? toc.chapters : [])
-      .map(c => ({ name: String(c?.name || '').trim().slice(0, 90), page: +c?.page || 0 }))
+      .map(c => ({
+        name: String(c?.name || '').trim().slice(0, 90),
+        page: +c?.page || 0,
+        topics: (Array.isArray(c?.topics) ? c.topics : [])
+          .map(s => ({ name: String(s?.name || '').trim().slice(0, 80), page: +s?.page || 0 }))
+          .filter(s => s.name.length > 2)
+      }))
       .filter(c => c.name.length > 2);
 
     if (!chapters.length) throw new Error(`Could not find a contents page in "${book.short || book.name}". Scan the contents pages in, or use "Break it into subtopics" on a topic instead.`);
@@ -300,12 +346,29 @@ ${front}`
       onProgress?.(ch.name, made.length);
 
       // The chapter's own pages, so the subtopics are the headings this book actually prints.
+      // The contents already lists what is in the chapter. Reading the chapter to rediscover it
+      // costs a call each and loses whatever the OCR mangled, so it is only a fallback for a book
+      // whose contents gives chapter titles alone.
+      if (ch.topics.length) {
+        for (const s of ch.topics) {
+          if (have.has(this._norm(s.name))) continue;
+          have.add(this._norm(s.name));
+          made.push(this._topic({
+            name: s.name, chapter: ch.name, bookId,
+            bookPage: s.page || ch.page || 0,
+            system: book.system || '', order: 1000 + (order += 1)
+          }));
+        }
+        continue;
+      }
+
       let body = '';
       if (ch.page) {
         const from = Math.max(pages[0], ch.page + offset);
         const nextPage = chapters[i + 1]?.page;
-        const to = Math.min(lastPage, nextPage ? nextPage + offset - 1 : from + 24);
-        if (to >= from) body = await this._pageText(bookId, from, Math.min(to, from + 40), 24000);
+        const to = Math.min(lastPage, nextPage ? nextPage + offset - 1 : from + 40);
+        // The whole chapter, headings only — not the first six pages in full.
+        if (to >= from) body = await this._headings(bookId, from, to);
       }
 
       let subs;
@@ -314,19 +377,21 @@ ${front}`
           json: true,
           system: typeof SYSTEM_TUTOR !== 'undefined' ? SYSTEM_TUTOR : undefined,
           prompt: body
-            ? `These are the pages of the chapter "${ch.name}" from "${book.name}" (OCR, so expect errors).
+            ? `Below are the printed headings across the whole chapter "${ch.name}" of "${book.name}", page by page (OCR, so expect errors and some lines that are not really headings).
 
-List the subjects this chapter actually teaches — follow the headings the book prints, in the book's order.
+List the subjects this chapter teaches, across ALL of it — first page to last.
 
 {"topics":[{"name":"","kw":[]}]}
 
-- One entry per subject a student would read and revise on its own and an examiner would set a question on. A retina chapter gives retinal detachment, diabetic retinopathy, retinal vascular occlusions, retinitis pigmentosa, age-related macular degeneration, retinoblastoma and so on — not one entry called "retina".
-- Use the book's own heading wording. Do not invent subjects the pages do not cover.
-- Skip headings that are not examinable on their own (introduction, anatomy revision, further reading).
+- One entry per subject a student would read and revise on its own and an examiner would set a question on. A newborn chapter gives birth asphyxia, neonatal resuscitation, neonatal jaundice, neonatal sepsis, respiratory distress syndrome, necrotising enterocolitis, low birth weight and prematurity, neonatal hypoglycaemia, neonatal seizures, breastfeeding and so on — NOT "preparing for resuscitation" and "supplemental oxygen", which are steps inside one of them.
+- Work at the level of a disease or a whole management problem. Roll small procedural headings up into the subject they belong to.
+- Cover the late pages as well as the early ones. A chapter this long has many subjects, not three.
+- Use the book's own wording where it names a subject. Do not invent what the pages do not cover.
+- Skip anatomy revision, introductions, history and further reading.
 - "kw": 8-14 lowercase terms printed on those pages — signs, drugs, organisms, classifications, eponyms.
 - Return only the JSON.
 
-PAGES:
+HEADINGS BY PAGE:
 ${body}`
             : `"${ch.name}" is a chapter of "${book.name}", an Indian MBBS textbook. Its pages could not be located in the scan.
 
@@ -349,22 +414,76 @@ Same rules: one entry per separately examinable subject, textbook wording, 8-14 
           this._norm(name)
         ])].slice(0, 16);
 
-        made.push({
-          id: 'f-' + slugify(name) + '-' + uid().slice(0, 4),
-          system: book.system || '', name, kw,
-          chapter: ch.name,
-          bookId, bookPage: ch.page || 0,
-          order: 1000 + (order += 1),
-          done: 0, doneAt: null,
-          custom: 1, parentName: ch.name, created: Date.now()
-        });
+        made.push(this._topic({
+          name, kw, chapter: ch.name, bookId, bookPage: ch.page || 0,
+          system: book.system || '', order: 1000 + (order += 1)
+        }));
       }
 
       await sleep(900); // the free keys rate-limit well before the chapters run out
     }
 
-    if (made.length) await DB.putMany('topics', made);
+    if (made.length) {
+      await DB.putMany('topics', made);
+      // Topics taken straight from the contents have only their own name to search the books with.
+      // Fill in the textbook terms afterwards, in batches, so the tree appears immediately.
+      this.enrich(made.filter(t => t.kw.length < 3).map(t => t.id), onProgress).catch(e => console.warn('keywords', e));
+    }
     return { book, chapters: chapters.length, made };
+  },
+
+  _topic({ name, kw, chapter, bookId, bookPage, system, order }) {
+    return {
+      id: 'f-' + slugify(name) + '-' + uid().slice(0, 4),
+      system: system || '', name,
+      kw: kw && kw.length ? kw : [this._norm(name)],
+      chapter, bookId, bookPage: bookPage || 0,
+      order, done: 0, doneAt: null,
+      custom: 1, parentName: chapter, created: Date.now()
+    };
+  },
+
+  /**
+   * Give contents-derived topics the search terms retrieval needs.
+   *
+   * A name on its own finds the page that prints that exact phrase and little else, so questions
+   * come out thin. Done in batches after the tree is saved, because the tree is what the student
+   * is waiting to see.
+   */
+  async enrich(ids, onProgress) {
+    for (let i = 0; i < ids.length; i += 25) {
+      const batch = [];
+      for (const id of ids.slice(i, i + 25)) {
+        const t = await DB.get('topics', id);
+        if (t) batch.push(t);
+      }
+      if (!batch.length) continue;
+      onProgress?.(`Adding search terms (${Math.min(i + 25, ids.length)} of ${ids.length})`, 0);
+
+      let out;
+      try {
+        out = await fastAI({
+          json: true,
+          prompt: `For each MBBS topic below, give 8-14 lowercase terms that would be printed on the textbook pages about it — synonyms, classic signs, drug names, organisms, scores, classifications, eponyms.
+
+{"terms":{"<topic name>":["",""]}}
+
+Topics:
+${batch.map(t => '- ' + t.name).join('\n')}
+
+Return only the JSON.`
+        });
+      } catch (e) { continue; }
+
+      const map = out?.terms || {};
+      for (const t of batch) {
+        const got = map[t.name] || map[t.name.toLowerCase()];
+        if (!Array.isArray(got) || !got.length) continue;
+        t.kw = [...new Set([...got.map(k => String(k).toLowerCase().trim()).filter(k => k.length > 2), this._norm(t.name)])].slice(0, 16);
+        await DB.put('topics', t);
+      }
+      await sleep(900);
+    }
   },
 
   /** Put a book's topics into a system, once the student says which subject it is. */

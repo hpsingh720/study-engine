@@ -372,8 +372,11 @@ function mcqTab(t, live, all, st, books, inQueue) {
         ${bankBtns}
         <button class="btn ghost" data-act="practiseTopic" data-id="${t.id}" data-type="ALL" data-bank="all" ${ok.length ? '' : 'disabled'}>All mixed</button>
       </div></div>
-    <div class="card"><h3>More questions</h3>
-      ${inQueue.length ? `<div class="mt">${jobStatusBox(inQueue)}</div>` : `<p class="muted">${books ? 'Write 10 new AMC + 8 MBBS questions from your books (no repeats).' : 'Generate more on your laptop — they sync here.'}</p>`}
+    <div class="card"><h3>${ok.length ? 'More questions' : 'No questions yet'}</h3>
+      ${!ok.length && !inQueue.some(j => j.kind === 'mcqgen') ? `
+        <p class="muted">Finished reading this? Write a set now — clinical vignettes from your own books, 15 of them.</p>
+        <button class="btn primary full" data-act="write15" data-id="${t.id}">Write 15 clinical questions now</button>` : ''}
+      ${inQueue.length ? `<div class="mt">${jobStatusBox(inQueue)}</div>` : ok.length ? `<p class="muted">${books ? 'Write 10 new AMC + 8 MBBS questions from your books (no repeats).' : 'Generate more on your laptop — they sync here.'}</p>` : ''}
       ${books && !inQueue.length ? `<button class="btn" data-act="moreMcqs" data-id="${t.id}">+ Write more MCQs</button>` : ''}
       ${books && !inQueue.length ? `<button class="btn ghost" data-act="amcVersion" data-id="${t.id}">Now the AMC version</button>` : ''}
       ${books && !inQueue.some(j => j.kind === 'sheet') ? `<button class="btn ghost" data-act="mindmapNow" data-id="${t.id}">Mind map first</button>` : ''}

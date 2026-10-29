@@ -582,3 +582,11 @@ body.examfull #selbar.touch { bottom: calc(96px + env(safe-area-inset-bottom)); 
 @media (max-width: 560px) {
   .roster th:nth-child(3), .roster td:nth-child(3) { display: none; } /* subject hidden, still editable on a wider screen */
 }
+
+/* Tables copied out of the books: classification, dosing, criteria. */
+.tscroll { overflow-x: auto; margin: .6rem 0; -webkit-overflow-scrolling: touch; }
+.mdt { border-collapse: collapse; width: 100%; font-size: .92em; }
+.mdt th, .mdt td { border: 1px solid var(--line, #2a3254); padding: .4rem .55rem; text-align: left; vertical-align: top; }
+.mdt thead th { background: var(--soft, #1a2140); font-weight: 600; white-space: nowrap; }
+.mdt tbody th { font-weight: 600; }
+.mdt tbody tr:nth-child(even) { background: rgba(127, 140, 200, .07); }

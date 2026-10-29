@@ -1,4 +1,4 @@
-const APP_VERSION = 'v91';
+const APP_VERSION = 'v93';
 // Small helpers shared across the app.
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -50,9 +50,33 @@ function md(src) {
     .replace(/(^|[\s(])\*([^*\n]+)\*/g, '$1<em>$2</em>')
     .replace(/\[([^\]\n]{1,60}?p\.?\s?\d+[^\]\n]{0,20})\]/g, '<span class="cite">$1</span>')
     .replace(/^\(general knowledge\)/i, '<span class="gk">general knowledge</span>');
+  const lines = s.split(/\r?\n/);
+  const cells = l => l.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+  const isRow = l => /^\s*\|.*\|\s*$/.test(l);
+  const isRule = l => /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(l) && l.includes('-');
+
   let out = '', list = false;
-  for (const raw of s.split(/\r?\n/)) {
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
     const l = raw.trim();
+
+    // A table: a header row, a |---|---| rule under it, then rows until the pipes stop.
+    // The books are full of classification, dosing and criteria tables, and a table copied out of
+    // one is only worth having if it still reads as a table.
+    if (isRow(l) && isRule(lines[i + 1] || '')) {
+      if (list) { out += '</ul>'; list = false; }
+      const head = cells(l);
+      let body = '';
+      i += 2;
+      for (; i < lines.length && isRow(lines[i]); i++) {
+        const c = cells(lines[i]);
+        body += '<tr>' + c.map((x, n) => n === 0 ? `<th>${inline(x)}</th>` : `<td>${inline(x)}</td>`).join('') + '</tr>';
+      }
+      i--;
+      out += `<div class="tscroll"><table class="mdt"><thead><tr>${head.map(h => `<th>${inline(h)}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></div>`;
+      continue;
+    }
+
     const b = l.match(/^(?:[-*•]|\d+[.)])\s+(.*)/);
     if (b) { if (!list) { out += '<ul>'; list = true; } out += '<li>' + inline(b[1]) + '</li>'; continue; }
     if (list) { out += '</ul>'; list = false; }

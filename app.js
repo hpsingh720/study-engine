@@ -202,6 +202,19 @@ const A = {
     App.render(true);
   },
 
+  /** A topic just finished, nothing in the bank: a full clinical set, straight to the front. */
+  async write15(el) {
+    const id = el.dataset.id;
+    // Any earlier attempt that failed would otherwise block this one from being queued again.
+    for (const j of await DB.live('queue')) {
+      if (j.kind === 'mcqgen' && j.payload?.topicId === id && j.status === 'failed') await DB.del('queue', j.id);
+    }
+    await Queue.add('mcqgen', { topicId: id, amc: 5, mbbs: 10 }, 0);
+    Queue.kick();
+    toast('Writing 15 clinical questions — watch "Being made for you" on the Systems page.', 8000);
+    App.render(true);
+  },
+
   /** A vast topic and little time: the mind map now, questions after. */
   async mindmapNow(el) {
     await Focus.mindmapFirst(el.dataset.id);
