@@ -202,6 +202,14 @@ const A = {
     App.render(true);
   },
 
+  /** A vast topic and little time: the mind map now, questions after. */
+  async mindmapNow(el) {
+    await Focus.mindmapFirst(el.dataset.id);
+    toast('Mind map and notes jumped to the front — a minute or two. Questions carry on behind it.', 7000);
+    location.hash = '#/topic/' + el.dataset.id + '/mindmap';
+    App.render(true);
+  },
+
   /** The second pass on a topic already read and done MBBS-style. */
   async amcVersion(el) {
     const id = el.dataset.id;
@@ -306,9 +314,10 @@ const A = {
     try {
       const { topic, made, have } = await Focus.study(raw);
       toast(made
-        ? `Made "${topic.name}" — writing 15 questions from your books`
-        : `"${topic.name}" already exists (${have} questions) — writing more`, 6000);
-      location.hash = '#/topic/' + topic.id;
+        ? `"${topic.name}" — mind map first (a minute or two), then questions while you read. Progress is on the Systems page.`
+        : `"${topic.name}" already exists (${have} questions) — writing more`, 9000);
+      // Land on the mind map: that is what arrives first and what gets read first.
+      location.hash = '#/topic/' + topic.id + '/mindmap';
     } catch (e) {
       say('');
       toast(e.message || String(e), 7000);

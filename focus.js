@@ -416,6 +416,45 @@ Same rules: one entry per separately examinable subject, textbook wording, 8-14 
     return ts.length;
   },
 
+  /**
+   * Everything being written right now, across every topic.
+   *
+   * Pressing "make me questions" queues work that then happens out of sight — there was no one
+   * place to see it, so it looked like nothing had happened. This is that place.
+   */
+  async inFlight() {
+    const jobs = (await DB.live('queue')).filter(j =>
+      ['sheet', 'mcqgen', 'lectureMcqs'].includes(j.kind) && j.status !== 'done');
+    if (!jobs.length) return [];
+
+    const topics = {};
+    for (const t of await DB.live('topics')) topics[t.id] = t;
+
+    const counts = {};
+    for (const m of await DB.live('mcqs')) if (m.topicId && !m.flagged) counts[m.topicId] = (counts[m.topicId] || 0) + 1;
+
+    const rank = { running: 0, pending: 1, failed: 2 };
+    return jobs.map(j => {
+      const t = topics[j.payload?.topicId];
+      return {
+        id: j.id,
+        topicId: j.payload?.topicId || '',
+        name: t?.name || (j.kind === 'lectureMcqs' ? 'A lecture' : 'A topic'),
+        chapter: t?.chapter || t?.parentName || '',
+        what: j.kind === 'sheet' ? 'Mind map & notes' : 'Questions',
+        status: j.status || 'pending',
+        error: j.error || '',
+        have: counts[j.payload?.topicId] || 0
+      };
+    }).sort((a, b) => (rank[a.status] ?? 3) - (rank[b.status] ?? 3) || a.name.localeCompare(b.name));
+  },
+
+  /** Just the mind map and notes, now — for a topic about to be read rather than revised. */
+  async mindmapFirst(topicId) {
+    await Queue.add('sheet', { topicId }, 0);
+    return true;
+  },
+
   // ---------- the syllabus as a whole ----------
 
   /**

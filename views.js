@@ -108,11 +108,24 @@ Views.systems = async () => {
   }).join('');
   const all = topics.length, done = topics.filter(t => t.done).length;
 
-  const depth = await Focus.depth();
+  // A missing or half-uploaded focus.js must not blank the page.
+  const hasFocus = typeof Focus !== 'undefined';
+  const depth = hasFocus ? await Focus.depth() : [];
   const thinTotal = depth.reduce((a, d) => a + d.thin, 0);
   const worst = depth.filter(d => d.thin).slice(0, 6);
+  const busy = hasFocus ? await Focus.inFlight() : [];
 
   return `<div class="page"><header class="page-head"><div><p class="eyebrow">${done} of ${all} topics done</p><h1>Systems</h1></div></header>${bar(pct(done, all), 'thick')}
+
+  ${busy.length ? `<section class="card mt">
+    <div class="card-head"><h3>Being made for you</h3><span class="muted small">${busy.filter(b => b.status === 'running').length} running · ${busy.length} in all</span></div>
+    <div class="list">${busy.slice(0, 12).map(b => `<a class="row between mid pad" href="#/topic/${b.topicId}">
+      <div><b>${esc(b.name)}</b>${b.chapter ? ` <span class="muted small">${esc(b.chapter)}</span>` : ''}<br>
+        <span class="muted small">${esc(b.what)} · ${b.status === 'running' ? '<b>writing now</b>' : b.status === 'failed' ? `<span class="warn-t">failed — ${esc(b.error.slice(0, 70))}</span>` : 'waiting its turn'}${b.have ? ` · ${b.have} questions so far` : ''}</span></div>
+      ${b.status === 'running' ? '<span class="spin"></span>' : ''}</a>`).join('')}</div>
+    ${busy.length > 12 ? `<p class="muted small pad">and ${busy.length - 12} more</p>` : ''}
+    <p class="muted small pad">Mind maps come first so you can start reading; questions follow while you do. Tap any of these to open the topic.</p>
+  </section>` : ''}
 
   <section class="card mt">
     <h3>Studying something right now?</h3>
@@ -363,6 +376,7 @@ function mcqTab(t, live, all, st, books, inQueue) {
       ${inQueue.length ? `<div class="mt">${jobStatusBox(inQueue)}</div>` : `<p class="muted">${books ? 'Write 10 new AMC + 8 MBBS questions from your books (no repeats).' : 'Generate more on your laptop — they sync here.'}</p>`}
       ${books && !inQueue.length ? `<button class="btn" data-act="moreMcqs" data-id="${t.id}">+ Write more MCQs</button>` : ''}
       ${books && !inQueue.length ? `<button class="btn ghost" data-act="amcVersion" data-id="${t.id}">Now the AMC version</button>` : ''}
+      ${books && !inQueue.some(j => j.kind === 'sheet') ? `<button class="btn ghost" data-act="mindmapNow" data-id="${t.id}">Mind map first</button>` : ''}
       <p class="muted small mt">Questions come MBBS-first. Once you have done those, "Now the AMC version" writes 10 AMC-style questions on the same material and builds the <a class="link" href="#/topic/${t.id}/compare">AMC · Murtagh comparison</a> for it.</p>
       ${t.custom ? '' : `<p class="muted small mt">Covering a whole chapter? <button class="link" data-act="focusExpand" data-id="${t.id}">Break it into subtopics</button> — each gets its own questions.</p>`}
       ${flagged ? `<p class="muted small mt">${flagged} flagged question${flagged === 1 ? '' : 's'} hidden from practice. <button class="link" data-act="unflagAll" data-id="${t.id}">Restore</button></p>` : ''}
