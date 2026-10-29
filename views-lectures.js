@@ -113,16 +113,53 @@ Views.timetable = async () => {
       </div></div>`;
   }
 
-  const up = await Timetable.upcoming(30);
-  const byDate = {};
-  for (const c of up) (byDate[c.date] ||= []).push(c);
+  // ---- the fixed week, being edited ----
+  if (Views._weekly) {
+    const slots = Views._weekly;
+    const groups = Timetable.groups();
+
+    let lastDay = -1;
+    const rows = slots.map((s, i) => {
+      const head = +s.day === lastDay ? '' : `<tr class="rdate"><td colspan="5">${Timetable.DAYS[+s.day]}</td></tr>`;
+      lastDay = +s.day;
+      return head + `<tr>
+      <td><select data-wi="${i}" data-wf="day">${Timetable.DAYS.map((d, n) =>
+        `<option value="${n}"${n === +s.day ? ' selected' : ''}>${d.slice(0, 3)}</option>`).join('')}</select></td>
+      <td><input type="time" data-wi="${i}" data-wf="start" value="${esc(s.start)}"></td>
+      <td><input type="time" data-wi="${i}" data-wf="end" value="${esc(s.end)}"></td>
+      <td><input data-wi="${i}" data-wf="label" value="${esc(s.label || s.group)}"></td>
+      <td><select data-wi="${i}" data-wf="group">${groups.map(g =>
+        `<option${g === s.group ? ' selected' : ''}>${esc(g)}</option>`).join('')}</select></td>
+      <td><button class="btn ghost small" data-act="weeklyDrop" data-i="${i}">✕</button></td>
+    </tr>`;
+    }).join('');
+
+    return `<div class="page">
+      <header class="page-head"><div><p class="eyebrow">Set it once</p><h1>Your fixed week</h1></div></header>
+      <p class="muted small"><b>Check the times</b> — they are a guess, since the printed grid shows periods rather than clock times. Everything else is already filled in from your timetable.</p>
+      <p class="muted small">"Name" is what you call the slot. "Group" is what it matches on: a Medicine slot gets filled by whatever Medicine class that week is, whether that turns out to be internal medicine, pulmonology or dermatology. The clinical posting is left out on purpose, since it moves around.</p>
+      ${slots.length ? `<table class="roster mt"><thead><tr><th>Day</th><th>From</th><th>To</th><th>Name</th><th>Group</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+        : '<p class="muted mt">No slots yet.</p>'}
+      <div class="row gap mt">
+        <button class="btn ghost" data-act="weeklyAdd">Add a slot</button>
+        <button class="btn ghost" data-act="weeklyInfer">Fill from my rosters</button>
+      </div>
+      <div class="row gap mt">
+        <button class="btn primary" data-act="weeklySave">Save my week</button>
+        <button class="btn ghost" data-act="weeklyCancel">Cancel</button>
+      </div>
+    </div>`;
+  }
+
+  const weekly = await Timetable.weekly();
+  const byDate = await Timetable.upcomingView(30);
 
   const days = Object.entries(byDate).map(([date, list]) => {
     const d = new Date(date + 'T00:00:00');
     return `<div class="card"><p class="eyebrow">${d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'short' })}</p>
       ${list.map(c => `<div class="row between mid">
-        <div><b>${esc(c.topic)}</b><br><span class="muted small">${Timetable._pretty(c.start)}–${Timetable._pretty(c.end)}${c.faculty ? ' · ' + esc(c.faculty) : ''} · ${esc(c.subject)}</span></div>
-        <button class="btn ghost small" data-act="classDelete" data-id="${c.id}">✕</button></div>`).join('')}
+        <div><b>${c.pending ? `<span class="muted">${esc(c.label || c.group)} — topic not up yet</span>` : esc(c.topic)}</b><br><span class="muted small">${Timetable._pretty(c.start)}–${Timetable._pretty(c.end)}${c.faculty ? ' · ' + esc(c.faculty) : ''}${c.department && !c.pending ? ' · ' + esc(c.department) : ''}${c.extra ? ' · extra' : ''}</span></div>
+        ${c.pending ? '' : `<button class="btn ghost small" data-act="classDelete" data-id="${c.id}">✕</button>`}</div>`).join('')}
     </div>`;
   }).join('');
 
@@ -130,14 +167,21 @@ Views.timetable = async () => {
     <header class="page-head"><div><p class="eyebrow">College</p><h1>Class roster</h1></div>
       <a class="btn ghost" href="#/lectures">Lectures</a></header>
     <div class="card">
+      <h2>Your fixed week</h2>
+      <p class="muted small">${weekly.length
+        ? `${weekly.length} slot${weekly.length === 1 ? '' : 's'} set. Topics drop into these from the roster sheets.`
+        : 'Not set yet. Put your weekly slots in once and every roster you upload afterwards fills them in — and days whose topics have not been published still show up with the right subject.'}</p>
+      <button class="btn full ${weekly.length ? 'ghost' : 'primary'} mt" data-act="weeklyEdit">${weekly.length ? 'Edit my week' : 'Set up my week'}</button>
+    </div>
+    <div class="card">
       <h2>Add a roster</h2>
-      <p class="muted small">Pick every subject's sheet at once — photos, PDFs, or a mix. They get merged into one day-by-day list. Re-uploading a subject replaces its old entries for that month rather than duplicating them.</p>
+      <p class="muted small">Pick every subject's sheet at once — photos, PDFs, or a mix. They get merged into one day-by-day list. Re-uploading a subject replaces its old entries for that month rather than duplicating them, however the file is named.</p>
       <input type="file" id="roster-file" accept="image/*,application/pdf" multiple>
       <button class="btn full primary mt" data-act="rosterRead">Read these rosters</button>
       <p class="muted small" id="roster-progress"></p>
     </div>
-    ${days ? `<h3 class="mt">Next 30 days</h3>${days}` : empty('Nothing scheduled', 'Add a roster above and your classes appear here.')}
-    ${up.length ? '<p class="muted small mt">You get a reminder at 9pm the night before each day that has classes.</p>' : ''}
+    ${days ? `<h3 class="mt">Next 30 days</h3>${days}` : empty('Nothing scheduled', 'Set up your week above, or add a roster, and your classes appear here.')}
+    ${days ? '<p class="muted small mt">You get a reminder at 9pm the night before each day that has classes.</p>' : ''}
   </div>`;
 };
 
@@ -225,6 +269,56 @@ Object.assign(A, {
   },
 
   rosterCancel() { Views._roster = null; App.render(); },
+
+  // ---- the fixed week ----
+
+  async weeklyEdit() {
+    const saved = await Timetable.weekly();
+    // Nothing saved yet: start from the printed timetable rather than a blank table.
+    Views._weekly = saved.length ? saved : Timetable.DEFAULT_WEEK.map(s => ({ ...s }));
+    App.render();
+  },
+
+  /** Read the table back before any change, so edits are not lost when the page re-renders. */
+  _weeklyPull() {
+    $$('[data-wi]').forEach(i => { Views._weekly[+i.dataset.wi][i.dataset.wf] = i.value; });
+  },
+
+  weeklyAdd() {
+    A._weeklyPull();
+    const last = Views._weekly[Views._weekly.length - 1];
+    Views._weekly.push({
+      day: last ? last.day : 1,
+      start: last ? last.end : '09:00',
+      end: last ? Timetable._plusHour(last.end) : '10:00',
+      group: 'Medicine', label: 'Medicine'
+    });
+    App.render();
+  },
+
+  weeklyDrop(el) {
+    A._weeklyPull();
+    Views._weekly.splice(+el.dataset.i, 1);
+    App.render();
+  },
+
+  async weeklyInfer() {
+    const found = await Timetable.inferWeekly();
+    if (!found.length) return toast('Not enough rosters yet to see a pattern — add a couple of months first', 6000);
+    Views._weekly = found;
+    toast(`Found ${found.length} repeating slot${found.length === 1 ? '' : 's'}`);
+    App.render();
+  },
+
+  async weeklySave() {
+    A._weeklyPull();
+    const n = await Timetable.saveWeekly(Views._weekly);
+    Views._weekly = null;
+    toast(`Saved ${n} weekly slots. Roster topics will drop into these.`);
+    App.render();
+  },
+
+  weeklyCancel() { Views._weekly = null; App.render(); },
 
   async classDelete(el) { await Timetable.remove(el.dataset.id); App.render(true); }
 });

@@ -64,9 +64,15 @@ const Lectures = {
   // ---------- chunk handling ----------
 
   /** Called for every finished chunk, from either the native service or the browser fallback. */
-  async onChunk({ path, blob, last }) {
-    const l = await this.current();
-    if (!l) return;
+  async onChunk({ path, blob, last, index, lecture }) {
+    const l = lecture || await this.current();
+
+    // No lecture to attach this to — the tile recorded with no page open. Park it on disk for the
+    // recovery pass instead of discarding it; audio thrown away here is a lecture lost for good.
+    if (!l) {
+      if (path) await this._park({ path, index: index || 0, last: !!last });
+      return;
+    }
 
     try {
       if (path) {
@@ -388,8 +394,58 @@ Return JSON: {"mcqs":[{"stem":"","options":["","","",""],"answer":0,"explanation
 
   _paint() { if (location.hash.startsWith('#/lectures')) App.render(true); },
 
+  // ---------- recordings started with no page open ----------
+
   /**
-   * Adopt a recording the Quick Settings tile started.
+   * The class that was being taught at a given moment.
+   *
+   * Recovery cannot ask the tile what it called the recording — once the service has stopped, the
+   * label is gone. The roster plus the timestamp baked into the chunk filename give a better
+   * answer anyway, and it is the same answer the tile would have given.
+   */
+  async classAt(ms) {
+    try {
+      const d = new Date(ms);
+      const hhmm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+      // The merged day view, so a class whose topic was never published still names the recording
+      // after the group that teaches it.
+      const day = await Timetable.dayView(Timetable.iso(d));
+      const hit = day.find(c => c.start <= hhmm && c.end >= hhmm)
+          || day.slice().sort((a, b) => b.start.localeCompare(a.start)).find(c => c.start <= hhmm);
+      if (!hit) return null;
+      return { ...hit, topic: hit.topic || hit.label || hit.group || hit.subject || '' };
+    } catch (e) { return null; }
+  },
+
+  _clockLabel(ms) {
+    const d = new Date(ms);
+    const h = d.getHours(), h12 = h % 12 === 0 ? 12 : h % 12;
+    return 'Lecture ' + h12 + (h >= 12 ? 'pm' : 'am') + ' · ' + d.toLocaleDateString();
+  },
+
+  /** The service names each chunk chunk_<millis>_<n>, so the file itself says when it was recorded. */
+  _startedFrom(chunks) {
+    for (const c of chunks) {
+      const m = /chunk_(\d{10,})_(\d+)\./.exec(c.path || '');
+      if (m) return +m[1];
+    }
+    return 0;
+  },
+
+  async _park(c) {
+    const q = (await DB.meta('pendingChunks')) || [];
+    if (q.some(x => x.path && x.path === c.path)) return;
+    q.push(c);
+    await DB.meta('pendingChunks', q);
+  },
+
+  async _forget(c) {
+    const q = (await DB.meta('pendingChunks')) || [];
+    await DB.meta('pendingChunks', q.filter(x => !(x.path === c.path && x.index === c.index)));
+  },
+
+  /**
+   * Adopt a recording the Quick Settings tile started and is still running.
    *
    * The tile can start the microphone with no page loaded, so on opening the app there may be a
    * live recording with no lecture record behind it. Without this the app would show an idle
@@ -397,42 +453,119 @@ Return JSON: {"mcqs":[{"stem":"","options":["","","",""],"answer":0,"explanation
    */
   async adoptNative() {
     const n = this.native();
-    if (!n?.getState) return;
+    if (!n?.getState) return null;
     let st;
-    try { st = await n.getState(); } catch (e) { return; }
-    if (!st?.recording) return;
-    if (await this.current()) return; // already ours
+    try { st = await n.getState(); } catch (e) { return null; }
+    if (!st?.recording) return null;
 
-    const topic = (st.label || '').trim() || 'Lecture';
-    const match = (await Timetable.todays()).find(c => c.topic === topic);
+    const existing = await this.current();
+    if (existing) return existing; // already ours
+
+    const started = st.startedAt || Date.now();
+    const cls = await this.classAt(started);
+    const topic = (st.label || '').trim() || cls?.topic || this._clockLabel(started);
 
     const l = {
       id: 'lec-' + uid(),
       topic,
-      faculty: match?.faculty || '', subject: match?.subject || '',
-      started: st.startedAt || Date.now(), ended: null,
+      faculty: cls?.faculty || '', subject: cls?.subject || '',
+      started, ended: null,
       chunks: 0, transcript: '', seconds: 0, unclearSeconds: 0,
       state: 'recording', error: '',
       topicId: '', mcqIds: [], generated: 0, fromTile: 1
     };
     await this.save(l);
     await DB.meta('activeLecture', l.id);
+    return l;
+  },
+
+  /**
+   * Rebuild lectures that were recorded and finished with no page open.
+   *
+   * This is the ordinary way the tile gets used: tap to start, sit through the class, tap to stop,
+   * open the app afterwards. By then the service has exited, so there is nothing to "adopt" — the
+   * audio is sitting in the service's queue with no lecture behind it. Everything needed to
+   * reconstruct it is in the chunks themselves: the numbering restarts at 1 for each recording, and
+   * the filename carries the start time.
+   */
+  async recoverSessions(live) {
+    const n = this.native();
+    if (!n?.drainPending) return;
+
+    // Persist before processing. drainPending empties the native queue, so a crash or a swipe-away
+    // part way through would otherwise take the rest of the lecture with it.
+    let drained = [];
+    try { drained = (await n.drainPending())?.chunks || []; } catch (e) { drained = []; }
+    for (const c of drained) if (c?.path) await this._park({ path: c.path, index: c.index || 0, last: !!c.last });
+
+    const queue = (await DB.meta('pendingChunks')) || [];
+    if (!queue.length) return;
+
+    // Split the queue into recordings. The service numbers chunks from 1 each time it starts.
+    const sessions = [];
+    for (const c of queue) {
+      if (!sessions.length || c.index === 1) sessions.push([]);
+      sessions[sessions.length - 1].push(c);
+    }
+
+    for (const chunks of sessions) {
+      let l = null;
+
+      if (live) {
+        l = live;                       // still recording: these chunks belong to it
+      } else {
+        const started = this._startedFrom(chunks) || Date.now();
+        // Don't build a second lecture for a recording an earlier pass already recovered.
+        l = (await this.all()).find(x => Math.abs(x.started - started) < 90000) || null;
+        if (!l) {
+          const cls = await this.classAt(started);
+          l = {
+            id: 'lec-' + uid(),
+            topic: cls?.topic || this._clockLabel(started),
+            faculty: cls?.faculty || '', subject: cls?.subject || '',
+            started, ended: null,
+            chunks: 0, transcript: '', seconds: 0, unclearSeconds: 0,
+            state: 'recording', error: '',
+            topicId: '', mcqIds: [], generated: 0, fromTile: 1
+          };
+          await this.save(l);
+        }
+        await DB.meta('activeLecture', l.id);
+      }
+
+      this._paint(); // show the lecture straight away; transcription takes a while
+
+      let closed = false;
+      for (const c of chunks) {
+        await this.onChunk({ path: c.path, index: c.index, last: !!c.last && !live, lecture: l });
+        if (c.last && !live) closed = true;
+        await this._forget(c);
+      }
+
+      // The service never got to mark a final chunk — the app was killed, or the phone restarted.
+      // Close it anyway rather than leave a lecture stuck on "recording" forever.
+      if (!live && !closed) await this.finish(l.id);
+    }
   },
 
   /** Wire up the native events once, at boot. Survives page reloads mid-lecture. */
   async init() {
     const n = this.native();
     if (!n) return;
-    await this.adoptNative();
-    n.addListener('chunk', d => this.onChunk({ path: d.path, last: d.last }));
-    n.addListener('recorderError', async d => {
-      const l = await this.current();
-      if (l) { l.error = d.message; await this.save(l); this._paint(); }
-    });
-    // Anything that finished while the page was away (reload, app swiped off the recents list).
+
+    // Listeners first. A chunk can finish while the rest of this is still running, and until this
+    // is wired up every one of them goes into the native backlog instead of into the lecture.
     try {
-      const { chunks } = await n.drainPending();
-      for (const c of chunks || []) await this.onChunk({ path: c.path, last: c.last });
-    } catch (e) {}
+      n.addListener('chunk', d => this.onChunk({ path: d.path, index: d.index, last: d.last }));
+      n.addListener('recorderError', async d => {
+        const l = await this.current();
+        if (l) { l.error = d.message; await this.save(l); this._paint(); }
+      });
+    } catch (e) { console.warn('could not listen for recorder events', e); }
+
+    // Each step on its own: a failure in one must not stop the others.
+    let live = null;
+    try { live = await this.adoptNative(); } catch (e) { console.warn('could not adopt the running recording', e); }
+    try { await this.recoverSessions(live); } catch (e) { console.warn('could not recover tile recordings', e); }
   }
 };
