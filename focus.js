@@ -1,0 +1,482 @@
+// Studying something the syllabus does not name.
+//
+// The seeded syllabus is one line per textbook chapter — the whole of neonatology is
+// "Neonatal care & neonatal jaundice". That is fine as a map of the course and useless as a place
+// to put tonight's reading: there is no topic called "neonatal sepsis", so nothing ever writes
+// questions on it and any question that does mention it has nowhere to be filed.
+//
+// This turns anything you are reading into a real topic — named, placed in a system, given the
+// keywords the retrieval code needs — and then uses the generation that already exists.
+
+const Focus = {
+
+  /** Topics made this way, newest first. */
+  async mine() {
+    return (await DB.live('topics')).filter(t => t.custom).sort((a, b) => (b.created || 0) - (a.created || 0));
+  },
+
+  _norm(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); },
+
+  /** An existing topic for this, if there already is one — exact name first, then close enough. */
+  async existing(name) {
+    const want = this._norm(name);
+    if (!want) return null;
+    const all = await DB.live('topics');
+
+    const exact = all.find(t => this._norm(t.name) === want);
+    if (exact) return exact;
+
+    // "neonatal sepsis" should find a topic called "Neonatal sepsis in the newborn", but must not
+    // match "Neonatal care & neonatal jaundice" — one shared word is not the same subject.
+    const words = want.split(' ').filter(w => w.length > 3);
+    if (words.length < 2) return null;
+    return all.find(t => {
+      const n = this._norm(t.name);
+      return words.every(w => n.includes(w));
+    }) || null;
+  },
+
+  /**
+   * Work out where a topic belongs and what to search the books for.
+   *
+   * Asked of the AI rather than guessed from keywords, because the seeded keyword lists are exactly
+   * what does not contain the subject being asked about.
+   */
+  async classify(raw) {
+    const systems = SEED.systems.map(s => `${s.code} = ${s.name}`).join('\n');
+    const out = await fastAI({
+      json: true,
+      system: typeof SYSTEM_TUTOR !== 'undefined' ? SYSTEM_TUTOR : undefined,
+      prompt: `A medical student is studying "${raw}" for MBBS finals in India.
+
+Return JSON describing it as a syllabus topic:
+{"name":"","system":"","kw":[],"parent":"","ok":true}
+
+- "name": the proper topic name, capitalised normally (e.g. "neonatal sepsis" -> "Neonatal sepsis"). Keep it to the subject asked for — do NOT widen it to the whole chapter.
+- "system": exactly one code from this list:
+${systems}
+- "kw": 8-14 lowercase search terms that would appear on the textbook pages about this — synonyms, the classic signs, drug names, scores, organisms, eponyms. These are used to find the right pages in the student's own books, so prefer words a textbook prints over words a student says.
+- "parent": the broader chapter it sits inside (e.g. "Newborn care"), or "" if it is already a whole chapter.
+- "ok": false if this is not a medical topic at all.
+
+Return only the JSON.`
+    });
+
+    if (!out || out.ok === false) throw new Error(`"${raw}" does not look like a medical topic`);
+
+    const codes = new Set(SEED.systems.map(s => s.code));
+    const name = String(out.name || raw).trim().slice(0, 80);
+    const kw = [...new Set([
+      ...(Array.isArray(out.kw) ? out.kw : []).map(k => String(k).toLowerCase().trim()).filter(k => k.length > 2),
+      this._norm(name)
+    ])].slice(0, 16);
+
+    return {
+      name,
+      system: codes.has(out.system) ? out.system : (SEED.systems[0]?.code || ''),
+      kw,
+      parent: String(out.parent || '').trim().slice(0, 80)
+    };
+  },
+
+  /**
+   * Make a topic for what is being read, and put it at the front of the queue.
+   *
+   * Questions and the revision sheet both come from the generation that already exists, so they are
+   * grounded in the student's own books and land in normal systems revision rather than a silo.
+   */
+  async study(raw, { amc = 5, mbbs = 10 } = {}) {
+    const name = String(raw || '').trim();
+    if (name.length < 3) throw new Error('Type a bit more than that');
+
+    const already = await this.existing(name);
+    if (already) {
+      const have = (await DB.byIndex('mcqs', 'topicId', already.id)).filter(m => !m.deleted).length;
+      // Already a topic: top it up rather than making a second one with almost the same name.
+      await Queue.add('mcqgen', { topicId: already.id, amc, mbbs }, 0);
+      return { topic: already, made: false, have };
+    }
+
+    const c = await this.classify(name);
+
+    const t = {
+      id: 'f-' + slugify(c.name) + '-' + uid().slice(0, 4),
+      system: c.system,
+      name: c.name,
+      kw: c.kw,
+      order: 999,
+      done: 0, doneAt: null,
+      custom: 1,
+      parentName: c.parent,
+      created: Date.now()
+    };
+    await DB.put('topics', t);
+
+    // The sheet goes first: mcqgen uses it as the factual basis when it exists, and pulls book
+    // excerpts itself when it does not, so either order works — this one just reads better.
+    await Queue.add('sheet', { topicId: t.id }, 0.3);
+    await Queue.add('mcqgen', { topicId: t.id, amc, mbbs }, 0.4);
+
+    return { topic: t, made: true, have: 0 };
+  },
+
+  /**
+   * Break a chapter-sized topic into the subjects it actually contains.
+   *
+   * One topic per chapter is what leaves a whole subject with four questions. This asks what a
+   * student would sit down and read in one evening, and makes each of those a topic of its own.
+   */
+  async expand(topicId) {
+    const t = await DB.get('topics', topicId);
+    if (!t) throw new Error('Topic not found');
+
+    const siblings = (await DB.live('topics'))
+      .filter(x => x.system === t.system && x.id !== t.id)
+      .map(x => x.name);
+
+    const out = await fastAI({
+      json: true,
+      system: typeof SYSTEM_TUTOR !== 'undefined' ? SYSTEM_TUTOR : undefined,
+      prompt: `An MBBS student in India has one syllabus topic called "${t.name}". It is too broad — it covers a whole textbook chapter, so the app only ever writes a handful of questions across the entire subject.
+
+Break it into the subjects a student would actually sit down and read in one evening, and that an examiner would set a question on. 5-10 of them.
+
+Already exist as separate topics, so do NOT repeat these:
+${siblings.slice(0, 120).join('\n') || '(none)'}
+
+For each, return the proper topic name and 8-14 lowercase textbook search terms:
+{"subtopics":[{"name":"","kw":[]}]}
+
+Rules:
+- Each must be examinable on its own: a disease, a syndrome, a procedure, an emergency, a well-defined management problem.
+- Use the names Indian MBBS textbooks use.
+- No overlaps between them, and nothing so narrow it supports fewer than ten questions.
+- Return only the JSON.`
+    });
+
+    const list = Array.isArray(out?.subtopics) ? out.subtopics : [];
+    const have = new Set((await DB.live('topics')).map(x => this._norm(x.name)));
+    const made = [];
+
+    for (const s of list) {
+      const name = String(s?.name || '').trim().slice(0, 80);
+      if (!name || have.has(this._norm(name))) continue;
+      have.add(this._norm(name));
+
+      const kw = [...new Set([
+        ...(Array.isArray(s.kw) ? s.kw : []).map(k => String(k).toLowerCase().trim()).filter(k => k.length > 2),
+        this._norm(name)
+      ])].slice(0, 16);
+
+      const sub = {
+        id: 'f-' + slugify(name) + '-' + uid().slice(0, 4),
+        system: t.system, name, kw,
+        order: (t.order || 0) + 0.001 * (made.length + 1),
+        done: 0, doneAt: null,
+        custom: 1, parentName: t.name, created: Date.now()
+      };
+      await DB.put('topics', sub);
+      made.push(sub);
+    }
+
+    // Queued behind anything already running: this is a background fill, not tonight's reading.
+    for (const sub of made) {
+      await Queue.add('sheet', { topicId: sub.id }, 2.5);
+      await Queue.add('mcqgen', { topicId: sub.id, amc: 4, mbbs: 8 }, 2.6);
+    }
+
+    return made;
+  },
+
+  // ---------- building a subject the way the textbook does ----------
+
+  /**
+   * The chapters of a subject, and what sits inside each one.
+   *
+   * The seeded syllabus for Eye & ENT is nine presentations — "red eye", "sudden visual loss" —
+   * which is an AMC symptom list, not a syllabus. There is no retina chapter, no cornea, no uvea,
+   * no laryngology. Studying half of laryngology and asking for questions on it has nowhere to go.
+   *
+   * So the tree is built the way the standard book does it: chapters, then the subjects inside
+   * each. Named after the student's own book when they have one, because that is the order they
+   * will read in and the names the examiner will use.
+   */
+  /** The reference books already read into the app, newest first. */
+  async books() {
+    return (await DB.all('books')).filter(b => ['ref', 'mbbs'].includes(b.role));
+  },
+
+  async _pageText(bookId, from, to, cap = 30000) {
+    const out = [];
+    let chars = 0;
+    for (let p = from; p <= to; p++) {
+      const pg = await DB.get('pages', [bookId, p]);
+      if (!pg?.text) continue;
+      const t = pg.text.slice(0, 4000);
+      out.push(`[p.${p}]\n${t}`);
+      chars += t.length;
+      if (chars > cap) break;
+    }
+    return out.join('\n\n');
+  },
+
+  /**
+   * Build the syllabus out of the student's own textbook.
+   *
+   * Not the model's idea of what a textbook contains — the book sitting in the app, read from its
+   * own contents pages and its own printed headings. That is the order they will read in, the
+   * names the examiner will use, and the only list that matches what they actually own.
+   *
+   * AMC follows from this rather than leading it: once a topic exists, generation writes both
+   * AMC-style and MBBS-style questions for it.
+   */
+  async fromBook(bookId, { onProgress } = {}) {
+    const book = await DB.get('books', bookId);
+    if (!book) throw new Error('Book not found');
+
+    const pages = [];
+    await DB.each('pages', 'bookId', bookId, pg => { if (pg.text) pages.push(pg.p); });
+    if (pages.length < 10) throw new Error(`"${book.short || book.name}" has not been read into the app yet — wait for it to finish, then try again`);
+    pages.sort((a, b) => a - b);
+    const lastPage = pages[pages.length - 1];
+
+    onProgress?.('Reading the contents pages…', 0);
+
+    // The contents is almost always in the opening pages; take a generous slice of them.
+    const front = await this._pageText(bookId, pages[0], pages[Math.min(34, pages.length - 1)], 36000);
+
+    const toc = await fastAI({
+      json: true,
+      system: typeof SYSTEM_TUTOR !== 'undefined' ? SYSTEM_TUTOR : undefined,
+      prompt: `Below are the opening pages of "${book.name}", scanned and read by OCR. Somewhere in them is the table of contents.
+
+Return the chapter list exactly as this book prints it:
+{"chapters":[{"name":"","page":0}]}
+
+- "name": the chapter title as printed. Do not rename, merge, shorten or invent chapters.
+- "page": the page number this book's index gives for that chapter, as a number. Use 0 if there is none.
+- Keep the book's own order.
+- If there is no contents page in this text, return {"chapters":[]} rather than guessing.
+
+PAGES:
+${front}`
+    });
+
+    let chapters = (Array.isArray(toc?.chapters) ? toc.chapters : [])
+      .map(c => ({ name: String(c?.name || '').trim().slice(0, 90), page: +c?.page || 0 }))
+      .filter(c => c.name.length > 2);
+
+    if (!chapters.length) throw new Error(`Could not find a contents page in "${book.short || book.name}". Scan the contents pages in, or use "Break it into subtopics" on a topic instead.`);
+
+    // The printed page numbers and the scan's page numbers rarely line up (front matter, covers).
+    // Work out the offset from the first chapter that can be found in the scan by its own title.
+    const needles = chapters.map(c => this._norm(c.name).slice(0, 28)).filter(n => n.length >= 8);
+    let offset = 0, found = false;
+
+    for (const c of chapters.slice(0, 6)) {
+      if (!c.page) continue;
+      const needle = this._norm(c.name).slice(0, 28);
+      if (needle.length < 8) continue;
+
+      for (const p of pages) {
+        const pg = await DB.get('pages', [bookId, p]);
+        if (!pg?.text) continue;
+        const head = this._norm(pg.text.slice(0, 900));
+        if (!head.includes(needle)) continue;
+        // The contents page names every chapter, so it matches first and gives a nonsense offset.
+        // A real chapter opening names its own chapter and almost none of the others.
+        if (needles.filter(n => head.includes(n)).length > 1) continue;
+        offset = p - c.page; found = true; break;
+      }
+      if (found) break;
+    }
+
+    const have = new Set((await DB.live('topics')).map(t => this._norm(t.name)));
+    const made = [];
+    let order = 0;
+
+    for (let i = 0; i < chapters.length; i++) {
+      const ch = chapters[i];
+      onProgress?.(ch.name, made.length);
+
+      // The chapter's own pages, so the subtopics are the headings this book actually prints.
+      let body = '';
+      if (ch.page) {
+        const from = Math.max(pages[0], ch.page + offset);
+        const nextPage = chapters[i + 1]?.page;
+        const to = Math.min(lastPage, nextPage ? nextPage + offset - 1 : from + 24);
+        if (to >= from) body = await this._pageText(bookId, from, Math.min(to, from + 40), 24000);
+      }
+
+      let subs;
+      try {
+        subs = await fastAI({
+          json: true,
+          system: typeof SYSTEM_TUTOR !== 'undefined' ? SYSTEM_TUTOR : undefined,
+          prompt: body
+            ? `These are the pages of the chapter "${ch.name}" from "${book.name}" (OCR, so expect errors).
+
+List the subjects this chapter actually teaches — follow the headings the book prints, in the book's order.
+
+{"topics":[{"name":"","kw":[]}]}
+
+- One entry per subject a student would read and revise on its own and an examiner would set a question on. A retina chapter gives retinal detachment, diabetic retinopathy, retinal vascular occlusions, retinitis pigmentosa, age-related macular degeneration, retinoblastoma and so on — not one entry called "retina".
+- Use the book's own heading wording. Do not invent subjects the pages do not cover.
+- Skip headings that are not examinable on their own (introduction, anatomy revision, further reading).
+- "kw": 8-14 lowercase terms printed on those pages — signs, drugs, organisms, classifications, eponyms.
+- Return only the JSON.
+
+PAGES:
+${body}`
+            : `"${ch.name}" is a chapter of "${book.name}", an Indian MBBS textbook. Its pages could not be located in the scan.
+
+List the subjects this chapter teaches, as that book teaches them:
+{"topics":[{"name":"","kw":[]}]}
+Same rules: one entry per separately examinable subject, textbook wording, 8-14 lowercase search terms each. Return only the JSON.`
+        });
+      } catch (e) {
+        console.warn('chapter failed', ch.name, e);
+        continue;
+      }
+
+      for (const s of (Array.isArray(subs?.topics) ? subs.topics : [])) {
+        const name = String(s?.name || '').trim().slice(0, 80);
+        if (!name || have.has(this._norm(name))) continue;
+        have.add(this._norm(name));
+
+        const kw = [...new Set([
+          ...(Array.isArray(s.kw) ? s.kw : []).map(k => String(k).toLowerCase().trim()).filter(k => k.length > 2),
+          this._norm(name)
+        ])].slice(0, 16);
+
+        made.push({
+          id: 'f-' + slugify(name) + '-' + uid().slice(0, 4),
+          system: book.system || '', name, kw,
+          chapter: ch.name,
+          bookId, bookPage: ch.page || 0,
+          order: 1000 + (order += 1),
+          done: 0, doneAt: null,
+          custom: 1, parentName: ch.name, created: Date.now()
+        });
+      }
+
+      await sleep(900); // the free keys rate-limit well before the chapters run out
+    }
+
+    if (made.length) await DB.putMany('topics', made);
+    return { book, chapters: chapters.length, made };
+  },
+
+  /** Put a book's topics into a system, once the student says which subject it is. */
+  async assignSystem(bookId, code) {
+    const ts = (await DB.live('topics')).filter(t => t.bookId === bookId);
+    for (const t of ts) { t.system = code; await DB.put('topics', t); }
+    const b = await DB.get('books', bookId);
+    if (b) { b.system = code; await DB.put('books', b); }
+    return ts.length;
+  },
+
+  /**
+   * Write questions for the topics marked as read, and only those.
+   *
+   * Half of laryngology read means questions on that half. Generating for the rest of the chapter
+   * produces a test full of things not yet opened, which is the opposite of useful.
+   */
+  async fillRead(code, { max = 25 } = {}) {
+    const topics = (await DB.live('topics')).filter(t => t.done && (!code || t.system === code));
+    if (!topics.length) return 0;
+
+    const counts = {};
+    for (const m of await DB.live('mcqs')) if (m.topicId && !m.flagged) counts[m.topicId] = (counts[m.topicId] || 0) + 1;
+
+    const queued = new Set((await DB.live('queue'))
+      .filter(j => j.kind === 'mcqgen' && j.status !== 'done')
+      .map(j => j.payload?.topicId));
+
+    const need = topics
+      .filter(t => (counts[t.id] || 0) < 15 && !queued.has(t.id))
+      .sort((a, b) => (counts[a.id] || 0) - (counts[b.id] || 0))
+      .slice(0, max);
+
+    for (const t of need) {
+      if (!(await DB.get('sheets', t.id))) await Queue.add('sheet', { topicId: t.id }, 1.2);
+      await Queue.add('mcqgen', { topicId: t.id, amc: 4, mbbs: 9 }, 1.3);
+    }
+    return need.length;
+  },
+
+  /** Mark a whole chapter read or unread in one go. */
+  async markChapter(code, chapter, read) {
+    const ts = (await DB.live('topics')).filter(t => t.system === code && (t.chapter || t.parentName) === chapter);
+    for (const t of ts) {
+      t.done = read ? 1 : 0;
+      t.doneAt = read ? (t.doneAt || Date.now()) : null;
+      await DB.put('topics', t);
+    }
+    return ts.length;
+  },
+
+  // ---------- the syllabus as a whole ----------
+
+  /**
+   * Topics that are carrying more of the course than one topic can.
+   *
+   * The seeded syllabus is one line per chapter across every subject, so this is not a neonatology
+   * problem — ENT, ophthalmology, orthopaedics and the rest are all one or two lines each. A topic
+   * with very few questions is either untouched or too broad to generate against, and both are
+   * fixed the same way: break it up and let generation run per subject.
+   */
+  async thin(max = 12) {
+    const topics = await DB.live('topics');
+    const counts = {};
+    for (const m of await DB.live('mcqs')) {
+      if (!m.flagged && m.topicId) counts[m.topicId] = (counts[m.topicId] || 0) + 1;
+    }
+    return topics
+      .filter(t => !t.custom && (counts[t.id] || 0) < max)
+      .map(t => ({ ...t, have: counts[t.id] || 0 }))
+      .sort((a, b) => a.have - b.have || a.system.localeCompare(b.system));
+  },
+
+  /** Per system, how much of it rests on how few topics. */
+  async depth() {
+    const topics = await DB.live('topics');
+    const counts = {};
+    for (const m of await DB.live('mcqs')) {
+      if (!m.flagged && m.topicId) counts[m.topicId] = (counts[m.topicId] || 0) + 1;
+    }
+    return SEED.systems.map(s => {
+      const ts = topics.filter(t => t.system === s.code);
+      const qs = ts.reduce((a, t) => a + (counts[t.id] || 0), 0);
+      return {
+        code: s.code, name: s.name,
+        topics: ts.length,
+        custom: ts.filter(t => t.custom).length,
+        questions: qs,
+        thin: ts.filter(t => !t.custom && (counts[t.id] || 0) < 12).length
+      };
+    }).sort((a, b) => b.thin - a.thin);
+  },
+
+  /**
+   * Break up several broad topics in one go.
+   *
+   * Done one at a time with a pause between, because each is a separate AI call and firing twenty
+   * at once gets the free keys rate-limited — which would fail the whole run rather than slow it.
+   */
+  async expandMany(ids, onProgress) {
+    let made = 0, failed = 0;
+    for (let i = 0; i < ids.length; i++) {
+      onProgress?.(i + 1, ids.length, made);
+      try {
+        made += (await this.expand(ids[i])).length;
+      } catch (e) {
+        console.warn('could not expand', ids[i], e);
+        failed++;
+        if (failed >= 3 && made === 0) throw e; // the keys are down, not the topics
+      }
+      if (i < ids.length - 1) await sleep(1200);
+    }
+    return { made, failed };
+  }
+};
