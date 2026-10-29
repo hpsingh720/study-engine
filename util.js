@@ -1,4 +1,4 @@
-const APP_VERSION = 'v93';
+const APP_VERSION = 'v94';
 // Small helpers shared across the app.
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -94,11 +94,54 @@ function toast(msg, ms = 2600) {
   clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), ms);
 }
 
-function openModal(html) {
+/**
+ * opts.light  — no dimming, and the page behind stays usable: scroll it, select it, highlight it.
+ * opts.drag   — a grab bar along the top, so a slow answer can be pushed aside and read later.
+ */
+function openModal(html, opts = {}) {
   const m = $('#modal');
-  m.innerHTML = `<div class="modal-back" data-act="closeModal"></div><div class="modal-box">${html}</div>`;
+  m.innerHTML = `<div class="modal-back${opts.light ? ' light' : ''}"${opts.light ? '' : ' data-act="closeModal"'}></div>`
+    + `<div class="modal-box${opts.light ? ' light' : ''}">${opts.drag ? '<div class="modal-grip" title="Drag me out of the way"></div>' : ''}${html}</div>`;
   m.classList.add('open');
+  if (opts.light) m.classList.add('pass'); else m.classList.remove('pass');
+  if (opts.drag) dragModal(m.querySelector('.modal-box'), m.querySelector('.modal-grip'));
   return m;
+}
+
+/** Move a dialog by its grip. Kept within the window so it can never be dragged out of reach. */
+function dragModal(box, grip) {
+  if (!box || !grip) return;
+  let sx = 0, sy = 0, ox = 0, oy = 0, on = false;
+
+  const down = e => {
+    const p = e.touches ? e.touches[0] : e;
+    const r = box.getBoundingClientRect();
+    // Switch from centred flex to absolute, at exactly where it already sits, so it does not jump.
+    box.style.position = 'fixed';
+    box.style.margin = '0';
+    box.style.left = r.left + 'px';
+    box.style.top = r.top + 'px';
+    box.style.width = r.width + 'px';
+    ox = r.left; oy = r.top; sx = p.clientX; sy = p.clientY; on = true;
+    box.classList.add('dragging');
+    e.preventDefault();
+  };
+  const move = e => {
+    if (!on) return;
+    const p = e.touches ? e.touches[0] : e;
+    const w = box.offsetWidth, h = box.offsetHeight;
+    box.style.left = Math.max(8 - w + 60, Math.min(window.innerWidth - 60, ox + p.clientX - sx)) + 'px';
+    box.style.top = Math.max(0, Math.min(window.innerHeight - 40, oy + p.clientY - sy)) + 'px';
+    e.preventDefault();
+  };
+  const up = () => { on = false; box.classList.remove('dragging'); };
+
+  grip.addEventListener('mousedown', down);
+  grip.addEventListener('touchstart', down, { passive: false });
+  document.addEventListener('mousemove', move);
+  document.addEventListener('touchmove', move, { passive: false });
+  document.addEventListener('mouseup', up);
+  document.addEventListener('touchend', up);
 }
 function closeModal() { const m = $('#modal'); m.classList.remove('open'); m.innerHTML = ''; }
 

@@ -590,3 +590,18 @@ body.examfull #selbar.touch { bottom: calc(96px + env(safe-area-inset-bottom)); 
 .mdt thead th { background: var(--soft, #1a2140); font-weight: 600; white-space: nowrap; }
 .mdt tbody th { font-weight: 600; }
 .mdt tbody tr:nth-child(even) { background: rgba(127, 140, 200, .07); }
+
+/* A dialog that can be pushed aside while it thinks, with the page behind it still usable. */
+.modal.pass { pointer-events: none; }
+.modal.pass .modal-box { pointer-events: auto; }
+.modal-back.light { background: transparent; pointer-events: none; }
+.modal-box.light { box-shadow: 0 14px 50px rgba(0, 0, 0, .55); border: 1px solid var(--line, #2a3254); }
+.modal-grip {
+  height: 20px; margin: 0 0 10px; border-radius: 8px;
+  cursor: grab; touch-action: none; flex: none;
+  background: var(--soft, #1a2140);
+  background-image: repeating-linear-gradient(90deg, var(--line, #3a4470) 0 16px, transparent 16px 24px);
+  background-size: auto 3px; background-position: center; background-repeat: no-repeat;
+}
+.modal-box.dragging { cursor: grabbing; user-select: none; }
+.modal-box.dragging .modal-grip { cursor: grabbing; }

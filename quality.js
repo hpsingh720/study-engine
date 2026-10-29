@@ -157,7 +157,9 @@ const SelBar = {
     const sel = window.getSelection(), t = sel && sel.toString().trim();
     if (!t || t.length < 2 || t.length > 800 || !sel.rangeCount) { this.el.hidden = true; return; }
     const node = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement);
-    const host = node && node.closest('.read, .q-stem, .expl, .bookquote, .mm, .cmp, .master, .opt-t, .doubt');
+    // The India/Australia comparison and the tables copied out of the books are read just as closely
+    // as the prose, so they are highlightable too.
+    const host = node && node.closest('.read, .q-stem, .expl, .bookquote, .mm, .cmp, .master, .opt-t, .doubt, .dtable, .mdt, .callout');
     if (!host || host.closest('#selbar')) { this.el.hidden = true; return; }
     this.text = t; this.ctx = host.textContent.replace(/\s+/g, ' ').slice(0, 900); this.inQ = !!host.closest('.q-stem, .opt-t');
     this.el.querySelector('[data-sel="ul"]').hidden = this.inQ;
@@ -184,9 +186,11 @@ const SelBar = {
 };
 async function askSelection(text, ctx, history = []) {
   const box = document.getElementById('asksel-out');
-  if (!box) openModal(`<form data-submit="askSelMore"><p class="eyebrow">Ask AI</p><h3>“${esc(text.slice(0, 120))}”</h3><div id="asksel-out" class="read"></div>
+  // Light and draggable: an answer can take a while, and the sheet behind it is what is being read
+  // in the meantime — so the page stays scrollable, selectable and highlightable while it thinks.
+  if (!box) openModal(`<form data-submit="askSelMore"><p class="eyebrow">Ask AI · drag the bar to move me</p><h3>“${esc(text.slice(0, 120))}”</h3><div id="asksel-out" class="read"></div>
     <div class="row gap mt"><input name="q" placeholder="Ask a follow-up…" style="flex:1;min-width:0" autocomplete="off"><button class="btn primary">Ask</button></div>
-    <div class="row end mt"><button type="button" class="btn" data-act="closeModal">Close</button></div></form>`);
+    <div class="row end mt"><button type="button" class="btn" data-act="closeModal">Close</button></div></form>`, { drag: true, light: true });
   const out = document.getElementById('asksel-out');
   window._askSel = { text, ctx, history };
   const q = history.length ? history[history.length - 1].q : null;
