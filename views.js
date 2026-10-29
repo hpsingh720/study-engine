@@ -107,7 +107,32 @@ Views.systems = async () => {
       <div class="sys-meta"><span>${pace || 'No target date'}</span><span>Accuracy ${accTxt(st.by['sys:' + s.code])}</span></div></a>`;
   }).join('');
   const all = topics.length, done = topics.filter(t => t.done).length;
-  return `<div class="page"><header class="page-head"><div><p class="eyebrow">${done} of ${all} topics done</p><h1>Systems</h1></div></header>${bar(pct(done, all), 'thick')}<section class="grid-3 mt">${cards}</section></div>`;
+
+  const depth = await Focus.depth();
+  const thinTotal = depth.reduce((a, d) => a + d.thin, 0);
+  const worst = depth.filter(d => d.thin).slice(0, 6);
+
+  return `<div class="page"><header class="page-head"><div><p class="eyebrow">${done} of ${all} topics done</p><h1>Systems</h1></div></header>${bar(pct(done, all), 'thick')}
+
+  <section class="card mt">
+    <h3>Studying something right now?</h3>
+    <p class="muted small">Type exactly what you are reading — "neonatal sepsis", "CSOM", "retinal detachment". If the syllabus has no topic for it, one gets made and questions are written from your own books. It does not have to be on the list.</p>
+    <div class="row gap mt">
+      <input id="focus-topic" placeholder="e.g. neonatal sepsis" style="flex:1">
+      <button class="btn primary" data-act="focusStudy">Make me questions</button>
+    </div>
+    <p class="muted small" id="focus-status"></p>
+  </section>
+
+  ${thinTotal ? `<section class="card soft mt">
+    <div class="card-head"><h3>Your syllabus is thin in places</h3><span class="muted">${thinTotal} topic${thinTotal === 1 ? '' : 's'}</span></div>
+    <p class="muted small">These cover a whole textbook chapter each, so questions get spread far too thinly across them — one topic for all of newborn care, one for most of ENT. Breaking them into real subjects lets the app write properly on each.</p>
+    <div class="chips mt">${worst.map(d => `<span class="chip">${esc(d.name)} · ${d.thin} thin</span>`).join('')}</div>
+    <button class="btn full mt" data-act="focusExpandAll">Break up the ${Math.min(thinTotal, 20)} thinnest</button>
+    <p class="muted small" id="focus-expand-status"></p>
+  </section>` : ''}
+
+  <section class="grid-3 mt">${cards}</section></div>`;
 };
 
 function planDayRow(d, showSys) {
@@ -167,19 +192,63 @@ Views.system = async (code) => {
   return `<div class="page">
   <header class="page-head"><div><p class="eyebrow"><a href="#/systems" class="link">Systems</a> / ${done} of ${ts.length} done · accuracy ${accTxt(st.by['sys:' + code])}</p><h1>${sysName(code)}</h1></div>
     <div class="row gap wrap">
-      <button class="btn primary" data-act="practiseSystem" data-sys="${code}">Practise this system</button>
-      ${books ? `<button class="btn" data-act="genSystem" data-sys="${code}" ${missing ? '' : 'disabled'}>${missing ? `Generate ${missing} missing topic${missing === 1 ? '' : 's'}` : 'All sheets generated'}</button>` : ''}
+      <button class="btn primary" data-act="practiseRead" data-sys="${code}" ${done ? '' : 'disabled'}>Practise what I have read${done ? ` (${done})` : ''}</button>
+      <button class="btn" data-act="practiseSystem" data-sys="${code}">Practise everything</button>
+      ${books ? `<button class="btn ghost" data-act="genSystem" data-sys="${code}" ${missing ? '' : 'disabled'}>${missing ? `Generate ${missing} missing topic${missing === 1 ? '' : 's'}` : 'All sheets generated'}</button>` : ''}
     </div></header>
   ${bar(pct(done, ts.length), 'thick')}
+
+  <section class="card soft mt">
+    <div class="card-head"><h3>Chapters</h3><span class="muted small">${ts.length} topics</span></div>
+    <p class="muted small">${ts.length < 20
+      ? `${ts.length} topics is a symptom list, not a syllabus — a retina chapter alone holds more than that. Build it from your own book: the chapters come off its contents page and the topics off its printed headings.`
+      : 'Tick a chapter off as you read it. "Practise what I have read" then tests only those, so you never get a question on something you have not opened.'}</p>
+    <div class="row gap wrap mt">
+      <button class="btn ${ts.length < 20 ? 'primary' : 'ghost'}" data-act="buildSubject" data-sys="${code}">Build this subject from my book</button>
+      <button class="btn ghost" data-act="fillRead" data-sys="${code}" ${done ? '' : 'disabled'}>Write questions for what I have read</button>
+    </div>
+  </section>
+
   <div class="row gap wrap mt between">
-    <div class="chips">${[['all', 'All'], ['left', 'Leftover'], ['done', 'Done']].map(([k, l]) => `<button class="chip ${filter === k ? 'on' : ''}" data-act="topicFilter" data-f="${k}">${l}</button>`).join('')}</div>
+    <div class="chips">${[['all', 'All'], ['left', 'Leftover'], ['done', 'Read']].map(([k, l]) => `<button class="chip ${filter === k ? 'on' : ''}" data-act="topicFilter" data-f="${k}">${l}</button>`).join('')}</div>
   </div>
   ${weightCard(ts, weights, st)}
   ${planCard(code, plan, prefs)}
-  <section class="card flush mt"><div class="list">${shown.map(t => topicRow(t, st, sheetSet)).join('') || '<p class="muted pad">Nothing here.</p>'}</div>
-  <button class="btn ghost full" data-act="addTopic" data-sys="${code}">+ Add a topic</button></section>
+  ${chapterList(code, shown, st, sheetSet)}
+  <section class="card flush mt"><button class="btn ghost full" data-act="addTopic" data-sys="${code}">+ Add a topic</button></section>
   </div>`;
 };
+
+/**
+ * Topics grouped under their chapter, so a subject reads like the book's contents page.
+ * Topics with no chapter (the original seeded ones) keep their flat list at the top.
+ */
+function chapterList(code, shown, st, sheetSet) {
+  const loose = shown.filter(t => !(t.chapter || t.parentName));
+  const byChapter = {};
+  for (const t of shown) {
+    const ch = t.chapter || t.parentName;
+    if (ch) (byChapter[ch] ||= []).push(t);
+  }
+  const chapters = Object.entries(byChapter);
+  if (!chapters.length) {
+    return `<section class="card flush mt"><div class="list">${shown.map(t => topicRow(t, st, sheetSet)).join('') || '<p class="muted pad">Nothing here.</p>'}</div></section>`;
+  }
+
+  const block = (title, list) => {
+    const read = list.filter(t => t.done).length, all = list.length;
+    return `<section class="card flush mt">
+      <div class="card-head pad">
+        <h3>${esc(title)} <span class="muted small">${read}/${all} read</span></h3>
+        <button class="btn ghost small" data-act="markChapter" data-sys="${code}" data-ch="${esc(title)}" data-on="${read === all && all ? 1 : 0}">${read === all && all ? 'Unmark all' : 'Mark all read'}</button>
+      </div>
+      <div class="list">${list.map(t => topicRow(t, st, sheetSet)).join('')}</div>
+    </section>`;
+  };
+
+  return (loose.length ? `<section class="card flush mt"><div class="list">${loose.map(t => topicRow(t, st, sheetSet)).join('')}</div></section>` : '')
+    + chapters.map(([title, list]) => block(title, list)).join('');
+}
 
 // ---------------- Topic ----------------
 const TOPIC_TABS = [['mindmap', 'Mind map'], ['compare', 'AMC · Murtagh'], ['mcqs', 'Questions'], ['sheet', 'Full notes'], ['notes', 'My notes']];
@@ -293,6 +362,9 @@ function mcqTab(t, live, all, st, books, inQueue) {
     <div class="card"><h3>More questions</h3>
       ${inQueue.length ? `<div class="mt">${jobStatusBox(inQueue)}</div>` : `<p class="muted">${books ? 'Write 10 new AMC + 8 MBBS questions from your books (no repeats).' : 'Generate more on your laptop — they sync here.'}</p>`}
       ${books && !inQueue.length ? `<button class="btn" data-act="moreMcqs" data-id="${t.id}">+ Write more MCQs</button>` : ''}
+      ${books && !inQueue.length ? `<button class="btn ghost" data-act="amcVersion" data-id="${t.id}">Now the AMC version</button>` : ''}
+      <p class="muted small mt">Questions come MBBS-first. Once you have done those, "Now the AMC version" writes 10 AMC-style questions on the same material and builds the <a class="link" href="#/topic/${t.id}/compare">AMC · Murtagh comparison</a> for it.</p>
+      ${t.custom ? '' : `<p class="muted small mt">Covering a whole chapter? <button class="link" data-act="focusExpand" data-id="${t.id}">Break it into subtopics</button> — each gets its own questions.</p>`}
       ${flagged ? `<p class="muted small mt">${flagged} flagged question${flagged === 1 ? '' : 's'} hidden from practice. <button class="link" data-act="unflagAll" data-id="${t.id}">Restore</button></p>` : ''}
     </div></div>`;
 }
