@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Clinical Study Engine</title>
+  <meta name="description" content="MBBS finals and AMC Part 1 study engine — your books, one sheet per topic, AMC comparison, MCQs, tests and notes.">
+  <meta name="theme-color" content="#f2f3fa" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0a0e1d" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Study Engine">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Caveat:wght@500&display=swap">
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.3.11.174/pdf.min.js"></script>
+  <script>if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.3.11.174/pdf.worker.min.js';</script>
+</head>
+<body>
+  <div class="app">
+    <aside class="nav">
+      <a href="#/" class="brand"><img class="brand-mark" src="icon-192.png" alt=""><span>Study Engine</span></a>
+      <nav>
+        <a class="navlink" href="#/"><span class="ni">◎</span>Today</a>
+        <a class="navlink" href="#/systems"><span class="ni">▦</span>Systems</a>
+        <a class="navlink" href="#/practice"><span class="ni">✎</span>Practice</a>
+        <a class="navlink" href="#/search"><span class="ni">⌕</span>Ask books</a>
+        <a class="navlink" href="#/lectures"><span class="ni">◉</span>Lectures</a>
+        <a class="navlink" href="#/progress"><span class="ni">↗</span>Progress</a>
+        <a class="navlink" href="#/library"><span class="ni">▤</span>Library <span id="nav-q" class="busy" hidden></span></a>
+        <a class="navlink" href="#/settings"><span class="ni">⚙</span>Settings</a>
+        <a class="navlink" href="#/help"><span class="ni">?</span>Help</a>
+      </nav>
+      <div class="nav-foot"><span id="sync-dot" data-state="off"></span><span class="muted small">Sync</span></div>
+    </aside>
+    <main id="main" class="main"></main>
+    <nav class="tabbar">
+      <a class="navlink" href="#/"><span class="ni">◎</span>Today</a>
+      <a class="navlink" href="#/systems"><span class="ni">▦</span>Systems</a>
+      <a class="navlink" href="#/practice"><span class="ni">✎</span>Practice</a>
+      <a class="navlink" href="#/lectures"><span class="ni">◉</span>Lectures</a>
+      <a class="navlink" href="#/progress"><span class="ni">↗</span>Progress</a>
+      <a class="navlink" href="#/settings"><span class="ni">⚙</span>More</a>
+    </nav>
+  </div>
+  <div id="modal" class="modal"></div>
+  <div id="toast" class="toast" role="status"></div>
+  <div id="print" class="print-area"></div>
+
+  <script src="util.js"></script>
+  <script src="seed.js"></script>
+  <script src="db.js"></script>
+  <script src="semantic.js"></script>
+  <script src="quality.js"></script>
+  <script src="ai.js"></script>
+  <script src="providers.js"></script>
+  <script src="engine.js"></script>
+  <script src="review.js"></script>
+  <script src="sync.js"></script>
+  <script src="practice.js"></script>
+  <script src="planner.js"></script>
+  <script src="notes.js"></script>
+  <script src="lectures.js"></script>
+  <script src="timetable.js"></script>
+  <script src="focus.js"></script>
+  <script src="views.js"></script>
+  <script src="app.js"></script>
+  <script src="views-lectures.js"></script>
+</body>
+</html>
