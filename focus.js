@@ -268,9 +268,27 @@ Rules:
    * each. Named after the student's own book when they have one, because that is the order they
    * will read in and the names the examiner will use.
    */
-  /** The reference books already read into the app, newest first. */
+  /**
+   * Books this device can build from.
+   *
+   * Two kinds. The ones read in here, and the ones a laptop read whose text has since been
+   * downloaded — those keep their pages in the database but their record in a separate list, so
+   * looking only at the books table makes an iPad full of book text report that it has no books.
+   */
   async books() {
-    return (await DB.all('books')).filter(b => ['ref', 'mbbs'].includes(b.role));
+    const own = (await DB.all('books')).filter(b => ['ref', 'mbbs'].includes(b.role));
+    const seen = new Set(own.map(b => b.id));
+    const shared = (typeof BookText !== 'undefined' ? BookText.remote() : [])
+      .filter(b => b.complete && !seen.has(b.id))
+      .map(b => ({ ...b, fromLaptop: 1 }));
+    return [...own, ...shared];
+  },
+
+  /** A book record whether it was read in here or downloaded from another device. */
+  async book(id) {
+    return (await DB.get('books', id))
+      || (typeof BookText !== 'undefined' ? BookText.remote().find(b => b.id === id) : null)
+      || null;
   },
 
   async _pageText(bookId, from, to, cap = 30000) {
@@ -337,7 +355,7 @@ Rules:
    * AMC-style and MBBS-style questions for it.
    */
   async fromBook(bookId, { onProgress } = {}) {
-    const book = await DB.get('books', bookId);
+    const book = await this.book(bookId);
     if (!book) throw new Error('Book not found');
 
     const pages = [];
@@ -557,6 +575,7 @@ Return only the JSON.`
   async assignSystem(bookId, code) {
     const ts = (await DB.live('topics')).filter(t => t.bookId === bookId);
     for (const t of ts) { t.system = code; await DB.put('topics', t); }
+    // A book downloaded from the laptop has no row here to stamp; the topics carry it instead.
     const b = await DB.get('books', bookId);
     if (b) { b.system = code; await DB.put('books', b); }
     return ts.length;

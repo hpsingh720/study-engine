@@ -179,7 +179,9 @@ function scorePage(text, terms) {
  */
 async function ownPages(topic, span = 12) {
   if (!topic?.bookId || !topic?.bookPage) return [];
-  const b = await DB.get('books', topic.bookId);
+  // Also a book whose text was downloaded from the laptop: its pages are here, its record is not.
+  const b = (await DB.get('books', topic.bookId))
+    || (typeof BookText !== 'undefined' ? BookText.remote().find(x => x.id === topic.bookId) : null);
   if (!b) return [];
 
   // Where the printed page number sits in the scan: the same offset the whole book shares.

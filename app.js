@@ -171,12 +171,12 @@ const A = {
   async buildSubject(el) {
     const code = el.dataset.sys;
     const books = await Focus.books();
-    if (!books.length) return toast('Add a reference textbook first — the chapter list is read out of the book itself.', 8000);
+    if (!books.length) return toast('No textbook on this device yet. Add one under Library (set it to "Reference textbook"), or read it in on your laptop and let the text sync across.', 10000);
 
     openModal(`<h3>Which book is ${sysName(code)}?</h3>
       <p class="muted small">The chapter list and the topics inside each chapter are read from this book's own contents page and printed headings — not from a standard list.</p>
       <div class="menu mt">${books.map(b =>
-        `<button class="btn full" data-act="buildFromBook" data-id="${b.id}" data-sys="${code}"><span><b>${esc(b.short || b.name)}</b><br><small class="muted">${esc(b.name)}</small></span></button>`).join('')}</div>`);
+        `<button class="btn full" data-act="buildFromBook" data-id="${b.id}" data-sys="${code}"><span><b>${esc(b.short || b.name)}</b><br><small class="muted">${esc(b.name)}${b.fromLaptop ? ' · text from your laptop' : ''}</small></span></button>`).join('')}</div>`);
   },
 
   async buildFromBook(el) {
