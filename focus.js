@@ -64,19 +64,85 @@ Return only the JSON.`
 
     if (!out || out.ok === false) throw new Error(`"${raw}" does not look like a medical topic`);
 
-    const codes = new Set(SEED.systems.map(s => s.code));
     const name = String(out.name || raw).trim().slice(0, 80);
     const kw = [...new Set([
       ...(Array.isArray(out.kw) ? out.kw : []).map(k => String(k).toLowerCase().trim()).filter(k => k.length > 2),
       this._norm(name)
     ])].slice(0, 16);
 
-    return {
-      name,
-      system: codes.has(out.system) ? out.system : (SEED.systems[0]?.code || ''),
-      kw,
-      parent: String(out.parent || '').trim().slice(0, 80)
-    };
+    let system = this.systemCode(out.system, name);
+    // Nothing in the name or the code says where this lives — ask the nearest existing topic,
+    // which is how "Glaucoma" finds Eye & ENT without anyone having to spell it out.
+    if (!system && typeof matchTopic === 'function') {
+      try { system = (await matchTopic(`${name} ${kw.join(' ')}`))?.system || ''; } catch (e) {}
+    }
+
+    return { name, system, kw, parent: String(out.parent || '').trim().slice(0, 80) };
+  },
+
+  /**
+   * Turn whatever came back into a real system code.
+   *
+   * A near miss — "OBG" for OBS, "Paeds" for PAEDS — used to fall through to the first system in
+   * the list, so an obstetrics lecture was quietly filed under Cardiology. Try the code, then the
+   * system's name, then the nearest existing topic; only then give up and leave it unset.
+   */
+  /** What a roster, a lecturer or a model is likely to write instead of the code. */
+  SYS_ALIASES: {
+    obg: 'OBS', obgy: 'OBS', obgyn: 'OBS', og: 'OBS', obstetrics: 'OBS', midwifery: 'OBS',
+    gynae: 'GYN', gyn: 'GYN', gynaecology: 'GYN', gynecology: 'GYN',
+    ophtha: 'EYEENT', ophth: 'EYEENT', ophthal: 'EYEENT', ophthalmology: 'EYEENT',
+    opthalmology: 'EYEENT', eye: 'EYEENT', ent: 'EYEENT', oto: 'EYEENT',
+    otorhinolaryngology: 'EYEENT', eyeent: 'EYEENT',
+    peds: 'PAEDS', paeds: 'PAEDS', paedia: 'PAEDS', pedia: 'PAEDS', neonatology: 'PAEDS',
+    medicine: 'GIT', generalmedicine: 'GIT', // only as a last resort; usually overridden by name
+    cardio: 'CVS', cardiology: 'CVS',
+    resp: 'RESP', pulmo: 'RESP', pulmonology: 'RESP', chest: 'RESP', respiratory: 'RESP',
+    gastro: 'GIT', gastroenterology: 'GIT', hepatology: 'GIT',
+    nephro: 'RENAL', nephrology: 'RENAL', uro: 'RENAL', urology: 'RENAL',
+    endocrine: 'ENDO', endocrinology: 'ENDO', diabetes: 'ENDO',
+    neuro: 'NEURO', neurology: 'NEURO',
+    haem: 'HAEM', hematology: 'HAEM', haematology: 'HAEM', onco: 'HAEM', oncology: 'HAEM',
+    micro: 'ID', microbiology: 'ID', infectious: 'ID',
+    rheum: 'MSK', rheumatology: 'MSK', msk: 'MSK',
+    skin: 'DERM', derma: 'DERM', dermatology: 'DERM', dvl: 'DERM',
+    surg: 'SURG', surgery: 'SURG', generalsurgery: 'SURG',
+    ortho: 'ORTHO', orthopaedics: 'ORTHO', orthopedics: 'ORTHO',
+    psych: 'PSYCH', psychiatry: 'PSYCH',
+    emergency: 'EMERG', toxicology: 'EMERG', casualty: 'EMERG',
+    psm: 'ETHICS', spm: 'ETHICS', cfm: 'ETHICS', communitymedicine: 'ETHICS', forensic: 'ETHICS'
+  },
+
+  systemCode(raw, name = '') {
+    const want = this._norm(raw).replace(/\s+/g, '');
+    if (!want) return this._byName(name);
+
+    const exact = SEED.systems.find(s => this._norm(s.code) === want);
+    if (exact) return exact.code;
+
+    const alias = this.SYS_ALIASES[want];
+    if (alias && SEED.systems.some(s => s.code === alias)) return alias;
+
+    const named = SEED.systems.find(s => {
+      const n = this._norm(s.name);
+      return n === want || n.includes(want) || want.includes(this._norm(s.code));
+    });
+    if (named) return named.code;
+
+    return this._byName(name);
+  },
+
+  _byName(name) {
+    const k = this._norm(name);
+    if (!k) return '';
+    const hit = SEED.systems.find(s => k.includes(this._norm(s.name)) || this._norm(s.name).includes(k));
+    if (hit) return hit.code;
+    // "Retinal detachment" says nothing about a system name, but a word in it may be a known alias.
+    for (const w of k.split(' ')) {
+      const a = this.SYS_ALIASES[w];
+      if (a && SEED.systems.some(s => s.code === a)) return a;
+    }
+    return '';
   },
 
   /**
@@ -93,7 +159,8 @@ Return only the JSON.`
     if (already) {
       const have = (await DB.byIndex('mcqs', 'topicId', already.id)).filter(m => !m.deleted).length;
       // Already a topic: top it up rather than making a second one with almost the same name.
-      await Queue.add('mcqgen', { topicId: already.id, amc, mbbs }, 0);
+      // amc + mbbs of zero means the caller only wants the topic — a lecture placing its questions.
+      if (amc + mbbs > 0) await Queue.add('mcqgen', { topicId: already.id, amc, mbbs }, 0);
       return { topic: already, made: false, have };
     }
 
@@ -115,7 +182,7 @@ Return only the JSON.`
     // The sheet goes first: mcqgen uses it as the factual basis when it exists, and pulls book
     // excerpts itself when it does not, so either order works — this one just reads better.
     await Queue.add('sheet', { topicId: t.id }, 0.3);
-    await Queue.add('mcqgen', { topicId: t.id, amc, mbbs }, 0.4);
+    if (amc + mbbs > 0) await Queue.add('mcqgen', { topicId: t.id, amc, mbbs }, 0.4);
 
     return { topic: t, made: true, have: 0 };
   },

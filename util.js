@@ -1,4 +1,4 @@
-const APP_VERSION = 'v98';
+const APP_VERSION = 'v99';
 // A topic stops earning new questions at this many: beyond it the model repeats itself.
 const MCQ_CAP = 60;
 // Small helpers shared across the app.

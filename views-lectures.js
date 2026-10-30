@@ -58,6 +58,26 @@ Views.lecture = async id => {
   for (const qid of l.mcqIds || []) { const m = await DB.get('mcqs', qid); if (m && !m.deleted) qs.push(m); }
   const topic = l.topicId ? await DB.get('topics', l.topicId) : null;
 
+  // Slides photographed during the class: a diagram never reaches the transcript.
+  const slides = [];
+  for (const s of l.slides || []) {
+    const m = await DB.get('media', s.id);
+    if (m?.data) slides.push({ ...s, data: m.data });
+  }
+  const pending = slides.filter(s => !s.used).length;
+  const slidesHtml = `<section class="card">
+    <div class="card-head"><h3>Slides from the class</h3><span class="muted small">${slides.length || 'none'}${pending ? ` · ${pending} not used yet` : ''}</span></div>
+    <p class="muted small">Photograph the diagrams, X-rays and tables the lecturer puts up. They become picture questions built on what was being said at the time.</p>
+    ${slides.length ? `<div class="slide-strip">${slides.map(s => `<figure class="slide${s.used ? ' used' : ''}">
+      <img src="${s.data}" alt="">
+      <figcaption>${s.used ? `${s.made || 0} question${s.made === 1 ? '' : 's'}` : 'not used yet'}
+        <button class="link" data-act="lecSlideDrop" data-id="${l.id}" data-m="${s.id}">remove</button></figcaption></figure>`).join('')}</div>` : ''}
+    <input type="file" id="slide-file" accept="image/*" capture="environment" multiple hidden>
+    <div class="row gap mt">
+      <button class="btn" data-act="lecSlideAdd" data-id="${l.id}">${slides.length ? 'Add more slides' : 'Add a slide'}</button>
+      ${pending ? `<button class="btn primary" data-act="lecSlideMcqs" data-id="${l.id}">Write questions from ${pending} slide${pending === 1 ? '' : 's'}</button>` : ''}
+    </div></section>`;
+
   const qHtml = qs.map((m, i) => `<div class="card">
       <p class="muted small">Q${i + 1}${m.fromLecture ? ' · from: “' + esc(m.fromLecture) + '”' : ''}</p>
       <p><b>${esc(m.stem)}</b></p>
@@ -69,7 +89,11 @@ Views.lecture = async id => {
     <header class="page-head"><div><p class="eyebrow">${new Date(l.started).toLocaleDateString(undefined, { day: 'numeric', month: 'long' })}${l.faculty ? ' · ' + esc(l.faculty) : ''}</p>
       <h1>${esc(l.topic)}</h1></div><a class="btn ghost" href="#/lectures">Back</a></header>
 
-    ${topic ? `<p class="muted small">Added to <a href="#/topic/${topic.id}">${esc(topic.name)}</a>, so these come up in normal revision too.</p>` : '<p class="muted small">Not matched to a topic yet.</p>'}
+    ${topic
+      ? `<p class="muted small">Added to <a href="#/topic/${topic.id}">${esc(topic.name)}</a>, so these come up in normal revision too.</p>`
+      : `<p class="warn-t small">Not filed under any topic yet, so these questions will not appear in revision. <button class="link" data-act="lecPlace" data-id="${l.id}">File it now</button> — it works out what the roster's shorthand means.</p>`}
+
+    ${slidesHtml}
     ${l.state === 'transcribed' ? `<button class="btn full primary" data-act="lecGenerate" data-id="${l.id}">Write questions from this lecture</button>` : ''}
     ${l.state === 'writing' ? '<p class="muted">Writing questions…</p>' : ''}
     ${l.error ? `<p class="warn">${esc(l.error)}</p>` : ''}
@@ -212,6 +236,54 @@ Object.assign(A, {
     toast('Writing questions…');
     await Lectures.generate(el.dataset.id);
     App.render(true);
+  },
+
+  lecSlideAdd(el) {
+    const inp = $('#slide-file');
+    if (!inp) return;
+    inp.onchange = async () => {
+      const files = [...(inp.files || [])];
+      if (!files.length) return;
+      toast(`Saving ${files.length} slide${files.length === 1 ? '' : 's'}…`);
+      for (const f of files) { try { await Lectures.addSlide(el.dataset.id, f); } catch (e) { console.warn(e); } }
+      inp.value = '';
+      toast('Saved. Tap "Write questions from slides" when the class is over.', 6000);
+      App.render(true);
+    };
+    inp.click();
+  },
+
+  async lecSlideDrop(el) {
+    await Lectures.removeSlide(el.dataset.id, el.dataset.m);
+    App.render(true);
+  },
+
+  async lecSlideMcqs(el) {
+    toast('Reading the slides…');
+    try {
+      const n = await Lectures.slideMcqs(el.dataset.id);
+      toast(n ? `Wrote ${n} picture question${n === 1 ? '' : 's'}.` : 'Nothing examinable on those slides — title slides and bullet lists are skipped.', 8000);
+      App.render(true);
+    } catch (e) { toast(e.message || String(e), 7000); }
+  },
+
+  /** Work out what the roster's shorthand meant, and file the lecture under it. */
+  async lecPlace(el) {
+    const l = await Lectures.get(el.dataset.id);
+    if (!l) return;
+    toast(`Working out what "${l.topic}" is…`);
+    try {
+      const { topic } = await Focus.study(`${l.topic}${l.subject ? ' (' + l.subject + ')' : ''}`, { amc: 0, mbbs: 0 });
+      l.topicId = topic.id;
+      await Lectures.save(l);
+      // Anything already written for this lecture moves across with it.
+      for (const qid of [...(l.mcqIds || []), ...(l.slideMcqIds || [])]) {
+        const m = await DB.get('mcqs', qid);
+        if (m && !m.topicId) { m.topicId = topic.id; m.system = topic.system || ''; await DB.put('mcqs', m); }
+      }
+      toast(`Filed under "${topic.name}".`, 7000);
+      App.render(true);
+    } catch (e) { toast(e.message || String(e), 7000); }
   },
 
   async lecDelete(el) {

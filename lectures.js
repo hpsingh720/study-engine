@@ -28,7 +28,16 @@ const Lectures = {
   // ---------- recording ----------
 
   async start({ topic = '', faculty = '', subject = '' } = {}) {
-    if (await this.current()) throw new Error('A lecture is already recording.');
+    // A lecture left open from earlier would otherwise swallow this one: every chunk of the new
+    // class goes to whichever lecture is "current", so this morning's class ends up inside
+    // yesterday's. Close it first unless the microphone is genuinely still running.
+    const open = await this.current();
+    if (open) {
+      let live = false;
+      try { live = !!(await this.native()?.getState())?.recording; } catch (e) {}
+      if (live) throw new Error('A lecture is already recording.');
+      await this.finish(open.id);
+    }
     if (!this.groqKey()) throw new Error('Add your Groq key in Settings first — that is what turns speech into text.');
 
     const l = {
@@ -212,7 +221,17 @@ const Lectures = {
     if (!l) return;
     l.state = 'writing'; await this.save(l); this._paint();
 
-    const topic = l.topicId ? await DB.get('topics', l.topicId) : await matchTopic(l.topic + ' ' + l.transcript.slice(0, 2000));
+    let topic = l.topicId ? await DB.get('topics', l.topicId) : await matchTopic(l.topic + ' ' + l.transcript.slice(0, 2000));
+
+    // Keyword matching cannot resolve what a lecturer actually writes on the roster — "TEF", "BOH",
+    // "AGN". Without a topic the questions are saved with no home: they never show up in the
+    // topic's practice or in a system test, so the lecture looks as though it produced nothing.
+    if (!topic && typeof Focus !== 'undefined') {
+      try {
+        const { topic: made } = await Focus.study(`${l.topic}${l.subject ? ' (' + l.subject + ')' : ''}`, { amc: 0, mbbs: 0 });
+        topic = made;
+      } catch (e) { console.warn('could not place the lecture', e); }
+    }
     if (topic && !l.topicId) { l.topicId = topic.id; await this.save(l); }
 
     const sheet = topic ? await DB.get('sheets', topic.id) : null;
@@ -394,6 +413,97 @@ Return JSON: {"mcqs":[{"stem":"","options":["","","",""],"answer":0,"explanation
 
   _paint() { if (location.hash.startsWith('#/lectures')) App.render(true); },
 
+  // ---------- slides photographed during the class ----------
+
+  /**
+   * Keep a photo of what was on the screen.
+   *
+   * Half of what a lecturer shows is a diagram — a chest film, a pedigree, an embryology drawing —
+   * and none of it reaches the transcript. A picture taken at the time is attached to the lecture
+   * and becomes a question of its own afterwards.
+   */
+  async addSlide(id, file) {
+    const l = await this.get(id);
+    if (!l) throw new Error('That lecture is gone');
+    const mediaId = 'img-' + uid();
+    await DB.put('media', { id: mediaId, data: await compressImage(file, 1400, 0.82), kind: 'lecture' });
+    (l.slides ||= []).push({ id: mediaId, at: Date.now() });
+    await this.save(l);
+    this._paint();
+    return mediaId;
+  },
+
+  async removeSlide(id, mediaId) {
+    const l = await this.get(id);
+    if (!l) return;
+    l.slides = (l.slides || []).filter(s => s.id !== mediaId);
+    await this.save(l);
+    try { await DB.del('media', mediaId); } catch (e) {}
+    this._paint();
+  },
+
+  /**
+   * Turn the photographed slides into questions.
+   *
+   * Sent with the transcript around them, so a question can ask what the lecturer was explaining
+   * while that diagram was on screen rather than describing the picture in the abstract.
+   */
+  async slideMcqs(id) {
+    const l = await this.get(id);
+    if (!l?.slides?.length) return 0;
+
+    const topic = l.topicId ? await DB.get('topics', l.topicId) : null;
+    const done = new Set((l.slideMcqIds || []).map(String));
+    const todo = [];
+    for (const s of l.slides) {
+      if (s.used) continue;
+      const m = await DB.get('media', s.id);
+      if (m?.data) todo.push({ ...s, data: m.data });
+    }
+    if (!todo.length) return 0;
+
+    const made = [];
+    for (const s of todo) {
+      let out;
+      try {
+        out = await AI.call({
+          images: [s.data],
+          system: typeof SYSTEM_TUTOR !== 'undefined' ? SYSTEM_TUTOR : undefined,
+          temperature: 0.4, maxTokens: 4000,
+          prompt: `This is a photograph of a slide from a lecture on "${l.topic}" to Indian MBBS students.
+
+Lecture transcript, for context on what was being taught around it:
+${(l.transcript || '').slice(0, 6000) || '(no transcript)'}
+
+If the slide shows something examinable — a diagram, an X-ray or scan, a pedigree, a specimen, a graph, a classification table — write 1-3 MBBS-style questions that can only be answered by looking at it. Build the question around what is visible ("the finding arrowed", "this pattern"), not around the slide's title.
+
+If it is only a title slide, a list of bullet points, a photo of the room or anything with nothing to examine, return {"mcqs":[]}.
+
+EXACTLY 4 options each, one defensible answer, plausible distractors.
+"explanation": first line "Answer: <option text>", then why, then one short line per wrong option.
+"master": one line — the fact needed to never miss it.
+
+Return JSON: {"mcqs":[{"stem":"","options":["","","",""],"answer":0,"explanation":"","difficulty":"medium","master":""}]}`
+        });
+      } catch (e) { console.warn('slide failed', e); continue; }
+
+      const list = (out?.mcqs || [])
+        .map(m => cleanMcq({ ...m, type: 'IMG' }, topic, { type: 'IMG', img: s.id, src: 'lecture slide: ' + l.topic, system: topic?.system || '' }))
+        .filter(Boolean);
+      for (const q of list) { q.lectureId = l.id; q.keyedBy = 'lecture'; }
+      if (list.length) { await DB.putMany('mcqs', list); made.push(...list); }
+
+      const fresh = await this.get(l.id);
+      const sl = (fresh.slides || []).find(x => x.id === s.id);
+      if (sl) { sl.used = 1; sl.made = list.length; }
+      fresh.slideMcqIds = [...new Set([...(fresh.slideMcqIds || []), ...list.map(q => q.id)])];
+      await this.save(fresh);
+      this._paint();
+      await sleep(800);
+    }
+    return made.length;
+  },
+
   // ---------- recordings started with no page open ----------
 
   /**
@@ -458,10 +568,16 @@ Return JSON: {"mcqs":[{"stem":"","options":["","","",""],"answer":0,"explanation
     try { st = await n.getState(); } catch (e) { return null; }
     if (!st?.recording) return null;
 
-    const existing = await this.current();
-    if (existing) return existing; // already ours
-
     const started = st.startedAt || Date.now();
+
+    const existing = await this.current();
+    if (existing) {
+      // The same recording we already know about — carry on with it.
+      if (!started || Math.abs((existing.started || 0) - started) < 120000) return existing;
+      // A different one: the tile started a new class while an older lecture was still open.
+      // Close the old one so this morning's class does not land inside last night's.
+      await this.finish(existing.id);
+    }
     const cls = await this.classAt(started);
     const topic = (st.label || '').trim() || cls?.topic || this._clockLabel(started);
 
