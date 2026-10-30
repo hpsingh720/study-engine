@@ -166,7 +166,9 @@ Views.systems = async () => {
  */
 Views.shelves = async () => {
   const shelves = typeof Focus === 'undefined' ? [] : await Focus.shelves();
-  const open = sessionStorage.getItem('shelf') || (shelves[0]?.id ?? '');
+  // Empty means the subject list. Defaulting to the first shelf meant "All subjects" cleared the
+  // choice and was immediately sent straight back into that same book.
+  const open = sessionStorage.getItem('shelf') || '';
 
   // The whole course, not only the subjects that happen to have a book already.
   if (!open || !shelves.some(s => s.id === open)) {
@@ -201,12 +203,14 @@ Views.shelves = async () => {
     </div>
     <div id="shelf-hits"></div>
 
-    ${b.chapters.map((c, i) => `<details class="card flush mt" ${i === 0 ? 'open' : ''}>
-      <summary class="pad"><b>${esc(c.name)}</b> <span class="muted small">${c.topics.length} topics · ${c.read} read${c.questions ? ` · ${c.questions} questions` : ''}</span></summary>
-      <div class="list">${c.topics.map(t => `<a class="row between mid pad" href="#/topic/${t.id}">
-        <div>${t.done ? '✓ ' : ''}${esc(t.name)}<br><span class="muted small">${t.questions ? t.questions + ' questions' : 'no questions yet'}${t.bookPage ? ' · p.' + t.bookPage : ''}</span></div>
-        <span class="muted">›</span></a>`).join('')}</div>
-    </details>`).join('')}
+    ${b.parts.map((part, pi) => `
+      ${part.name ? `<h3 class="mt part-h">${esc(part.name)} <span class="muted small">${part.chapters.length} chapters · ${part.topics} topics · ${part.read} read</span></h3>` : ''}
+      ${part.chapters.map((c, i) => `<details class="card flush ${part.name ? 'indent' : 'mt'}" ${pi === 0 && i === 0 ? 'open' : ''}>
+        <summary class="pad"><b>${esc(c.name)}</b> <span class="muted small">${c.topics.length} topics · ${c.read} read${c.questions ? ` · ${c.questions} questions` : ''}</span></summary>
+        <div class="list">${c.topics.map(t => `<a class="row between mid pad" href="#/topic/${t.id}">
+          <div>${t.done ? '✓ ' : ''}${esc(t.name)}<br><span class="muted small">${t.questions ? t.questions + ' questions' : 'no questions yet'}${t.bookPage ? ' · p.' + t.bookPage : ''}</span></div>
+          <span class="muted">›</span></a>`).join('')}</div>
+      </details>`).join('')}`).join('')}
   </div>`;
 };
 

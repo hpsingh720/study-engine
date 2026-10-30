@@ -646,3 +646,7 @@ body.examfull #selbar.touch { bottom: calc(96px + env(safe-area-inset-bottom)); 
 /* A row that behaves like a link but is a button. */
 .full-row { width: 100%; background: none; border: 0; color: inherit; text-align: left; font: inherit; cursor: pointer; }
 .full-row:hover { background: color-mix(in srgb, var(--line, #2a3254) 30%, transparent); }
+
+/* Part → chapter → topic, so the three levels of a textbook read as three levels. */
+.part-h { font-size: 1.02rem; letter-spacing: .01em; margin-bottom: 6px; }
+.card.indent { margin-left: 14px; margin-top: 8px; }

@@ -87,17 +87,32 @@ const Focus = {
       (home.chapters[ch || 'Other'] ||= []).push({ ...t, questions: counts[t.id] || 0 });
     }
 
-    const shape = b => ({
-      id: b.id, name: b.name, full: b.full, subject: b.subject, fromLaptop: b.fromLaptop,
-      chapters: Object.entries(b.chapters)
+    const shape = b => {
+      // Parts hold chapters, chapters hold topics. Bailey prints all three, and flattening the
+      // first two put "Part 1 Basic principles" beside "Metabolic response to injury" as if they
+      // were the same kind of thing.
+      const chapters = Object.entries(b.chapters)
         .map(([name, topics]) => ({
           name,
+          part: topics.find(t => t.part)?.part || '',
           topics: topics.sort((x, y) => (x.order || 0) - (y.order || 0)),
           read: topics.filter(t => t.done).length,
           questions: topics.reduce((a, t) => a + t.questions, 0)
         }))
-        .sort((a, c) => (a.topics[0]?.order || 0) - (c.topics[0]?.order || 0))
-    });
+        .sort((a, c) => (a.topics[0]?.order || 0) - (c.topics[0]?.order || 0));
+
+      const parts = [];
+      for (const c of chapters) {
+        const key = c.part || '';
+        let p = parts.find(x => x.name === key);
+        if (!p) { p = { name: key, chapters: [], read: 0, topics: 0 }; parts.push(p); }
+        p.chapters.push(c);
+        p.read += c.read;
+        p.topics += c.topics.length;
+      }
+
+      return { id: b.id, name: b.name, full: b.full, subject: b.subject, fromLaptop: b.fromLaptop, chapters, parts };
+    };
 
     const all = Object.values(books).map(shape).filter(b => b.chapters.length);
     if (Object.keys(loose.chapters).length) all.push(shape(loose));
@@ -600,9 +615,10 @@ Rules:
       prompt: `Below are pages from "${book.name}", scanned and read by OCR. They are the ones that look like its table of contents.
 
 Copy it out exactly as this book prints it, chapters and everything listed under them:
-{"chapters":[{"name":"","page":0,"topics":[{"name":"","page":0}]}]}
+{"chapters":[{"part":"","name":"","page":0,"topics":[{"name":"","page":0}]}]}
 
-- "name": the title as printed. Do not rename, merge, shorten or invent anything.
+- "part": the part or section heading this chapter sits under, if the book has them ("Part 1 Basic principles", "Section 3 Abdomen"). Repeat it on every chapter in that part. Leave "" if the book has no parts.
+- "name": the CHAPTER title as printed — the level below the part. Do not rename, merge, shorten or invent anything, and never return a part as if it were a chapter.
 - "page": the page number the contents gives, as a number. Use 0 where there is none.
 - "topics": the entries listed underneath that chapter in the contents, in the book's order. Many Indian textbooks print these; copy every one. If this book's contents lists chapters only, return "topics": [] for them — do not make entries up.
 - Keep the book's own order and include every chapter, to the end of the book.
@@ -615,6 +631,7 @@ ${front}`
     let chapters = (Array.isArray(toc?.chapters) ? toc.chapters : [])
       .map(c => ({
         name: String(c?.name || '').trim().slice(0, 90),
+        part: String(c?.part || '').trim().slice(0, 70),
         page: +c?.page || 0,
         topics: (Array.isArray(c?.topics) ? c.topics : [])
           .map(s => ({ name: String(s?.name || '').trim().slice(0, 80), page: +s?.page || 0 }))
@@ -673,7 +690,7 @@ ${front}`
           if (have.has(this._norm(s.name))) continue;
           have.add(this._norm(s.name));
           made.push(this._topic({
-            name: s.name, chapter: ch.name, bookId,
+            name: s.name, chapter: ch.name, part: ch.part, bookId,
             bookPage: s.page || ch.page || 0,
             system: book.system || '', order: 1000 + (order += 1)
           }));
@@ -734,7 +751,7 @@ Same rules: one entry per separately examinable subject, textbook wording, 8-14 
         ])].slice(0, 16);
 
         made.push(this._topic({
-          name, kw, chapter: ch.name, bookId, bookPage: ch.page || 0,
+          name, kw, chapter: ch.name, part: ch.part, bookId, bookPage: ch.page || 0,
           system: book.system || '', order: 1000 + (order += 1)
         }));
       }
@@ -751,12 +768,12 @@ Same rules: one entry per separately examinable subject, textbook wording, 8-14 
     return { book, chapters: chapters.length, made };
   },
 
-  _topic({ name, kw, chapter, bookId, bookPage, system, order }) {
+  _topic({ name, kw, chapter, part, bookId, bookPage, system, order }) {
     return {
       id: 'f-' + slugify(name) + '-' + uid().slice(0, 4),
       system: system || '', name,
       kw: kw && kw.length ? kw : [this._norm(name)],
-      chapter, bookId, bookPage: bookPage || 0,
+      chapter, part: part || '', bookId, bookPage: bookPage || 0,
       order, done: 0, doneAt: null,
       custom: 1, parentName: chapter, created: Date.now()
     };
