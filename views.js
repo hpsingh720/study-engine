@@ -117,6 +117,10 @@ Views.systems = async () => {
 
   return `<div class="page"><header class="page-head"><div><p class="eyebrow">${done} of ${all} topics done</p><h1>Systems</h1></div></header>${bar(pct(done, all), 'thick')}
 
+  ${busy.length && !Providers.active().some(p => !p.ocrOnly) ? `<section class="card mt">
+    <p class="warn-t"><b>Nothing can be written on this device.</b> ${busy.length} job${busy.length === 1 ? ' is' : 's are'} waiting, but there is no AI key here — add a free Gemini key in Settings, or open the app on the device that has one and they will run there.</p>
+  </section>` : ''}
+
   ${busy.length ? `<section class="card mt">
     <div class="card-head"><h3>Being made for you</h3><span class="muted small">${busy.filter(b => b.status === 'running').length} running · ${busy.length} in all</span></div>
     <div class="list">${busy.slice(0, 12).map(b => `<a class="row between mid pad" href="#/topic/${b.topicId}">
@@ -128,13 +132,19 @@ Views.systems = async () => {
   </section>` : ''}
 
   <section class="card mt">
-    <h3>Studying something right now?</h3>
-    <p class="muted small">Type exactly what you are reading — "neonatal sepsis", "CSOM", "retinal detachment". If the syllabus has no topic for it, one gets made and questions are written from your own books. It does not have to be on the list.</p>
+    <h3>Find a topic</h3>
+    <p class="muted small">Type what you are reading. Matching topics appear as you type — open one, or make it if it does not exist yet.</p>
     <div class="row gap mt">
-      <input id="focus-topic" placeholder="e.g. neonatal sepsis" style="flex:1">
-      <button class="btn primary" data-act="focusStudy">Make me questions</button>
+      <input id="focus-topic" placeholder="e.g. varicose veins" style="flex:1" autocomplete="off" data-input="topicFind">
+      <button class="btn" data-act="focusStudy">Make it</button>
     </div>
+    <div id="focus-hits"></div>
     <p class="muted small" id="focus-status"></p>
+  </section>
+
+  <section class="card mt">
+    <div class="card-head"><h3>Browse by subject</h3><a class="link small" href="#/shelves">Open ›</a></div>
+    <p class="muted small">Your subjects laid out as the book teaches them — subject, chapter, then the topics inside it. The way you read them, rather than by AMC system. Systems stay exactly as they are for AMC revision.</p>
   </section>
 
   ${thinTotal ? `<section class="card soft mt">
@@ -146,6 +156,47 @@ Views.systems = async () => {
   </section>` : ''}
 
   <section class="grid-3 mt">${cards}</section></div>`;
+};
+
+/**
+ * The library as its own contents pages: book, chapter, topics.
+ *
+ * A subject is read chapter by chapter out of one book, so this is the shape the reading actually
+ * had — and the one place where "where is varicose veins" has an obvious answer.
+ */
+Views.shelves = async () => {
+  const shelves = typeof Focus === 'undefined' ? [] : await Focus.shelves();
+  const open = sessionStorage.getItem('shelf') || (shelves[0]?.id ?? '');
+
+  if (!shelves.length) {
+    return `<div class="page"><header class="page-head"><div><p class="eyebrow">College</p><h1>Browse by book</h1></div>
+      <a class="btn ghost" href="#/systems">Systems</a></header>
+      ${empty('No book chapters yet', 'Open a subject and use “Build this subject from my book” — the chapters come off the book’s own contents page.', '<a class="btn" href="#/systems">Go to Systems</a>')}</div>`;
+  }
+
+  const b = shelves.find(x => x.id === open) || shelves[0];
+  const topics = b.chapters.reduce((a, c) => a + c.topics.length, 0);
+  const read = b.chapters.reduce((a, c) => a + c.read, 0);
+
+  return `<div class="page">
+    <header class="page-head"><div><p class="eyebrow">${read} of ${topics} read${b.subject ? '' : ' · from ' + esc(b.full || b.name)}</p><h1>${esc(b.name)}</h1></div>
+      <div class="row gap"><button class="btn ghost sm" data-act="nameShelf" data-id="${b.id}">${b.subject ? 'Rename subject' : 'Name the subject'}</button><a class="btn ghost" href="#/systems">Systems</a></div></header>
+
+    ${shelves.length > 1 ? `<div class="chips mt">${shelves.map(s =>
+      `<button class="chip ${s.id === b.id ? 'on' : ''}" data-act="pickShelf" data-id="${s.id}">${esc(s.name)}</button>`).join('')}</div>` : ''}
+
+    <div class="row gap mt">
+      <input id="shelf-find" placeholder="Find a topic in this book…" style="flex:1" autocomplete="off" data-input="shelfFind">
+    </div>
+    <div id="shelf-hits"></div>
+
+    ${b.chapters.map((c, i) => `<details class="card flush mt" ${i === 0 ? 'open' : ''}>
+      <summary class="pad"><b>${esc(c.name)}</b> <span class="muted small">${c.topics.length} topics · ${c.read} read${c.questions ? ` · ${c.questions} questions` : ''}</span></summary>
+      <div class="list">${c.topics.map(t => `<a class="row between mid pad" href="#/topic/${t.id}">
+        <div>${t.done ? '✓ ' : ''}${esc(t.name)}<br><span class="muted small">${t.questions ? t.questions + ' questions' : 'no questions yet'}${t.bookPage ? ' · p.' + t.bookPage : ''}</span></div>
+        <span class="muted">›</span></a>`).join('')}</div>
+    </details>`).join('')}
+  </div>`;
 };
 
 function planDayRow(d, showSys) {
@@ -290,7 +341,7 @@ Views.topic = async (id, tab) => {
   if (tab === 'sheet') body = sheet ? Object.keys(SECTIONS).map(sec => sectionTab(t, sheet, sec, books, inQueue, note?.hl)).join('<hr class="sec-gap">') : noSheet(t, books, inQueue);
   else if (tab === 'mindmap' && sheet?.mindmap) {
     const imgs = {}; for (const f of sheet.mindmap.figs || []) if (f.img) { const d = await DB.get('media', f.img); if (d) imgs[f.img] = d.data; }
-    body = `<div class="row between mb"><span class="muted small">Made ${fmtDate(sheet.mindmap.at)} from your books</span><div class="row gap"><button class="btn sm" data-act="printMindmap">Download / print</button><button class="btn sm ghost" data-act="genMindmap" data-id="${id}">Remake</button></div></div>${mindmapHTML(t, sheet.mindmap, imgs)}`;
+    body = `<div class="row between mb"><span class="muted small">Made ${fmtDate(sheet.mindmap.at)} from your books</span><div class="row gap"><span class="mm-size"><button class="btn sm ghost" data-act="mmSmaller" title="Smaller">A-</button><button class="btn sm ghost" data-act="mmBigger" title="Bigger">A+</button></span><button class="btn sm" data-act="printMindmap">Download / print</button><button class="btn sm ghost" data-act="genMindmap" data-id="${id}">Remake</button></div></div>${mindmapHTML(t, sheet.mindmap, imgs)}`;
   } else if (tab === 'mindmap') body = sheet?.mindmap ? '' 
     : empty('Mind map on request', 'A one-page colourful map of this topic — causes, features, investigations, management — plus step-by-step flowcharts and the figure pages in your books. Made only for topics you ask for.', `<button class="btn primary" data-act="genMindmap" data-id="${id}">Make mind map</button>`);
   else if (tab === 'compare') body = compareTab(t, sheet, books, inQueue);

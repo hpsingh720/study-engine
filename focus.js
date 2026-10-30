@@ -10,6 +10,109 @@
 
 const Focus = {
 
+  /**
+   * Find a topic by name, chapter or book — the way you would look it up in an index.
+   *
+   * With five hundred topics built out of a textbook, the only question that matters is "where is
+   * varicose veins", and scrolling a subject is not an answer.
+   */
+  async search(q, limit = 25) {
+    const want = this._norm(q);
+    if (want.length < 2) return [];
+    const words = want.split(' ').filter(Boolean);
+
+    const books = {};
+    for (const b of await DB.all('books')) books[b.id] = b.short || b.name;
+    if (typeof BookText !== 'undefined') for (const b of BookText.remote()) books[b.id] ||= b.short || b.name;
+
+    const counts = {};
+    for (const m of await DB.live('mcqs')) if (m.topicId && !m.flagged) counts[m.topicId] = (counts[m.topicId] || 0) + 1;
+
+    const out = [];
+    for (const t of await DB.live('topics')) {
+      const name = this._norm(t.name);
+      const chapter = this._norm(t.chapter || t.parentName || '');
+      const kw = this._norm((t.kw || []).join(' '));
+
+      let s = 0;
+      if (name === want) s = 100;
+      else if (name.startsWith(want)) s = 80;
+      else if (name.includes(want)) s = 60;
+      else if (words.every(w => name.includes(w))) s = 45;
+      else if (words.every(w => (name + ' ' + kw).includes(w))) s = 25;
+      else if (chapter.includes(want)) s = 15;
+      if (!s) continue;
+
+      // A topic you have already built something on is more likely the one being looked for.
+      if (counts[t.id]) s += 4;
+      if (t.done) s += 3;
+
+      out.push({
+        topic: t, score: s,
+        chapter: t.chapter || t.parentName || '',
+        book: books[t.bookId] || '',
+        questions: counts[t.id] || 0
+      });
+    }
+    return out.sort((a, b) => b.score - a.score || a.topic.name.localeCompare(b.topic.name)).slice(0, limit);
+  },
+
+  /**
+   * The library as a book's own contents page: book, then chapter, then what is inside it.
+   *
+   * Systems are how the AMC is revised; a textbook chapter is how the subject was read. Both point
+   * at the same topics, and being able to open the book's own structure is what makes a topic
+   * findable without knowing which system someone filed it under.
+   */
+  async shelves() {
+    // A book is how a subject was read, so it is labelled by the subject once you say which it is:
+    // "General Surgery" rather than "27th-Bailey-Loves-Short-Prac".
+    const named = (await DB.meta('shelfSubjects')) || {};
+    const label = b => named[b.id] || b.short || b.name;
+
+    const books = {};
+    for (const b of await DB.all('books')) books[b.id] = { id: b.id, name: label(b), full: b.name, subject: named[b.id] || '', chapters: {} };
+    if (typeof BookText !== 'undefined') {
+      for (const b of BookText.remote()) books[b.id] ||= { id: b.id, name: label(b), full: b.name, subject: named[b.id] || '', chapters: {}, fromLaptop: 1 };
+    }
+
+    const counts = {};
+    for (const m of await DB.live('mcqs')) if (m.topicId && !m.flagged) counts[m.topicId] = (counts[m.topicId] || 0) + 1;
+
+    const loose = { id: '', name: 'Not from a book', full: '', chapters: {} };
+    for (const t of await DB.live('topics')) {
+      const ch = t.chapter || t.parentName || '';
+      if (!t.bookId && !ch) continue;
+      const home = books[t.bookId] || loose;
+      (home.chapters[ch || 'Other'] ||= []).push({ ...t, questions: counts[t.id] || 0 });
+    }
+
+    const shape = b => ({
+      id: b.id, name: b.name, full: b.full, subject: b.subject, fromLaptop: b.fromLaptop,
+      chapters: Object.entries(b.chapters)
+        .map(([name, topics]) => ({
+          name,
+          topics: topics.sort((x, y) => (x.order || 0) - (y.order || 0)),
+          read: topics.filter(t => t.done).length,
+          questions: topics.reduce((a, t) => a + t.questions, 0)
+        }))
+        .sort((a, c) => (a.topics[0]?.order || 0) - (c.topics[0]?.order || 0))
+    });
+
+    const all = Object.values(books).map(shape).filter(b => b.chapters.length);
+    if (Object.keys(loose.chapters).length) all.push(shape(loose));
+    return all;
+  },
+
+  /** Call a book's shelf by its subject. */
+  async nameShelf(bookId, subject) {
+    const m = (await DB.meta('shelfSubjects')) || {};
+    const v = String(subject || '').trim().slice(0, 40);
+    if (v) m[bookId] = v; else delete m[bookId];
+    await DB.meta('shelfSubjects', m);
+    return v;
+  },
+
   /** Topics made this way, newest first. */
   async mine() {
     return (await DB.live('topics')).filter(t => t.custom).sort((a, b) => (b.created || 0) - (a.created || 0));

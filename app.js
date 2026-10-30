@@ -4,6 +4,7 @@ const ROUTES = [
   [/^#\/systems$/, () => Views.systems()],
   [/^#\/system\/(\w+)$/, m => Views.system(m[1])],
   [/^#\/topic\/([\w-]+)(?:\/(\w+))?$/, m => Views.topic(m[1], m[2])],
+  [/^#\/shelves$/, () => Views.shelves()],
   [/^#\/session$/, () => Views.session()],
   [/^#\/practice$/, () => Views.practice()],
   [/^#\/result\/([\w-]+)$/, m => Views.result(m[1])],
@@ -16,9 +17,15 @@ const ROUTES = [
 
 const App = {
   staged: [], pad: null, timer: null, _rendering: false,
+  // Where each page was last scrolled to. Coming back from a topic should land where the list was
+  // left, not at the top of five hundred of them.
+  _scroll: {},
+
   async render(keepScroll = false) {
     const y = window.scrollY;
     const h = location.hash || '#/';
+    if (this._lastHash && this._lastHash !== h) this._scroll[this._lastHash] = y;
+    this._lastHash = h;
     clearInterval(this.timer);
     document.body.classList.toggle('examfull', h.startsWith('#/session'));
     for (const [re, fn] of ROUTES) {
@@ -29,7 +36,10 @@ const App = {
       const base = '#/' + (h.split('/')[1] || '');
       $$('.navlink').forEach(a => a.classList.toggle('on', a.getAttribute('href') === base || (base === '#/system' && a.getAttribute('href') === '#/systems') || (base === '#/topic' && a.getAttribute('href') === '#/systems') || ((base === '#/session' || base === '#/result') && a.getAttribute('href') === '#/practice')));
       this.after();
-      window.scrollTo(0, keepScroll ? y : 0);
+      // Re-rendering in place keeps the exact position; arriving at a page restores where it was
+      // left, and a page never visited starts at the top.
+      const back = this._scroll[h] || 0;
+      window.scrollTo(0, keepScroll ? y : back);
       return;
     }
     location.hash = '#/';
@@ -47,6 +57,9 @@ const App = {
   after() {
     const c = $('#pad');
     if (c) { this.pad = new Pad(c); }
+    // Restore the mind map text size the reader settled on.
+    const mm = $('.mm');
+    if (mm) mm.style.setProperty('--mmf', (+localStorage.getItem('mmFont') || 1) + 'rem');
     const s = Practice.s;
     if (location.hash === '#/session' && s && !s.finished && s.limit) {
       const tick = () => {
@@ -316,6 +329,48 @@ const A = {
   },
   async moreMcqs(el) { await Queue.add('mcqgen', { topicId: el.dataset.id }, 0); toast('Writing more questions…'); App.render(true); },
 
+  pickShelf(el) { sessionStorage.setItem('shelf', el.dataset.id); App.render(); },
+
+  /** "27th-Bailey-Loves-Short-Prac" is not what anyone calls the subject. */
+  async nameShelf(el) {
+    const now = (await Focus.shelves()).find(s => s.id === el.dataset.id)?.subject || '';
+    const v = prompt('What do you call this subject? (e.g. General Surgery, Paediatrics, Ophthalmology)', now);
+    if (v === null) return;
+    await Focus.nameShelf(el.dataset.id, v);
+    App.render();
+  },
+
+  /** Same search, narrowed to the book being browsed. */
+  async shelfFind(el) {
+    const box = $('#shelf-hits');
+    if (!box) return;
+    const q = el.value.trim();
+    if (q.length < 2) { box.innerHTML = ''; return; }
+    const id = sessionStorage.getItem('shelf') || '';
+    const hits = (await Focus.search(q, 40)).filter(h => !id || h.topic.bookId === id).slice(0, 15);
+    box.innerHTML = hits.length
+      ? `<div class="list mt">${hits.map(h => `<a class="row between mid pad" href="#/topic/${h.topic.id}">
+          <div><b>${esc(h.topic.name)}</b><br><span class="muted small">${esc(h.chapter || '')}</span></div><span class="muted">›</span></a>`).join('')}</div>`
+      : `<p class="muted small mt">Nothing in this book matches “${esc(q)}”.</p>`;
+  },
+
+  /** Show matching topics as the box is typed in, so an existing one is opened, not duplicated. */
+  async topicFind(el) {
+    const box = $('#focus-hits');
+    if (!box) return;
+    const q = el.value.trim();
+    if (q.length < 2) { box.innerHTML = ''; return; }
+
+    const hits = await Focus.search(q, 12);
+    if (!hits.length) {
+      box.innerHTML = `<p class="muted small mt">Nothing matches “${esc(q)}” yet — “Make it” creates the topic and writes questions from your books.</p>`;
+      return;
+    }
+    box.innerHTML = `<div class="list mt">${hits.map(h => `<a class="row between mid pad" href="#/topic/${h.topic.id}">
+      <div><b>${esc(h.topic.name)}</b><br><span class="muted small">${[h.book, h.chapter, h.questions ? h.questions + ' questions' : 'no questions yet'].filter(Boolean).map(esc).join(' · ')}</span></div>
+      <span class="muted">›</span></a>`).join('')}</div>`;
+  },
+
   /** Make a topic for whatever is being read tonight, whether or not the syllabus names it. */
   async focusStudy() {
     const box = $('#focus-topic');
@@ -449,13 +504,29 @@ const A = {
     window._btMsg = ''; toast(n ? `Got ${n.toLocaleString()} pages of book text — searches now answer on this device.` : (BookText.remote().length ? 'Already up to date.' : 'Nothing from the laptop yet — open the app on the laptop and try again in 5 minutes.'), 7000);
     App.render(true);
   },
+  // The map is long now, so its text size is the reader's choice and is remembered.
+  _mmZoom(d) {
+    const v = Math.max(0.62, Math.min(1.4, (+localStorage.getItem('mmFont') || 1) + d));
+    localStorage.setItem('mmFont', String(v));
+    const mm = document.querySelector('.mm');
+    if (mm) mm.style.setProperty('--mmf', v + 'rem');
+  },
+  mmSmaller() { A._mmZoom(-0.08); },
+  mmBigger() { A._mmZoom(0.08); },
+
   printMindmap() {
     const mm = document.querySelector('.mm'); if (!mm) return;
     document.getElementById('print-area')?.remove();
     const side = mm.querySelectorAll('.mm-side'), flows = document.querySelector('.mm-flows');
     const area = document.createElement('div'); area.id = 'print-area';
     const nf = flows ? flows.children.length : 0;
-    const inner = `<div class="pa-grid"><div class="pa-side">${side[0]?.innerHTML || ''}</div><div class="pa-mid"><div class="mm-center">${mm.querySelector('.mm-center')?.innerHTML || ''}</div></div><div class="pa-side">${side[1]?.innerHTML || ''}</div></div>${nf ? `<div class="pa-flows" style="grid-template-columns:repeat(${nf},1fr)">${flows.innerHTML}</div>` : ''}`;
+    // A map that covers a whole chapter does not fit two fixed columns. Pour every branch into one
+    // flow and let it column-balance, then the scaler below shrinks the lot onto a single page.
+    const branches = [...mm.querySelectorAll('.mm-b')].map(b => b.outerHTML).join('');
+    const cols = branches.length > 9000 ? 4 : branches.length > 4500 ? 3 : 2;
+    const inner = `<div class="pa-head"><div class="mm-center">${mm.querySelector('.mm-center')?.innerHTML || esc(document.querySelector('.page-head h1')?.textContent || '')}</div></div>`
+      + `<div class="pa-cols" style="column-count:${cols}">${branches}</div>`
+      + (nf ? `<div class="pa-flows" style="grid-template-columns:repeat(${Math.min(nf, 3)},1fr)">${flows.innerHTML}</div>` : '');
     area.innerHTML = `<div class="pa-box pa-land"><div class="pa-in">${inner}</div></div><div class="pa-box pa-port"><div class="pa-in">${inner}</div></div>`;
     document.body.appendChild(area);
     // Usable page area with 10 mm margins, safe for both A4 and US Letter (iPad prints Letter):
@@ -870,7 +941,12 @@ const I = {
   saveNote(el) {
     clearTimeout(el._t);
     el._t = setTimeout(async () => { const n = await getNote(el.dataset.id); n.text = el.value; await DB.put('notes', n); const s = $('#note-saved'); if (s) s.textContent = 'Saved'; }, 600);
-  }
+  },
+
+  // Searching runs on every keystroke, so wait for a pause rather than hitting the database
+  // five times a word.
+  topicFind(el) { clearTimeout(el._t); el._t = setTimeout(() => A.topicFind(el).catch(console.warn), 220); },
+  shelfFind(el) { clearTimeout(el._t); el._t = setTimeout(() => A.shelfFind(el).catch(console.warn), 220); }
 };
 
 function applyTheme() {

@@ -156,12 +156,31 @@ async function makeMindmap(t) {
 ${notes ? 'Use these notes from their textbooks:\n' + notes : 'Use standard textbook knowledge (Davidson, Harrison, Bailey & Love, Murtagh).'}
 
 Return JSON only:
-{"center":"${t.name}","branches":[{"title":"Definition","items":["..."]}],"flows":[{"title":"Management of …","steps":["…","If … → …"]}]}
-Rules:
-- branches in this order when relevant: Definition, Causes / Risk factors, Pathophysiology, Clinical features, Investigations, Management, Complications, Prognosis / key numbers.
-- 3–7 items per branch, each max 12 words, no full sentences. Wrap the 1–2 most important words of each item in **double asterisks**.
-- flows: 1–3 COMPLETE step-by-step algorithms (management and/or diagnostic pathway, as in the textbook's flowchart) — include every step and decision, up to 14 steps each; each step max 14 words; use "If X → Y" for decisions. Do not cut management short.
-- Exam-relevant facts only. Australian practice (Murtagh/eTG) where it differs, marked "(AU)".`;
+{"center":"${t.name}","branches":[{"title":"Definition","items":["...",{"h":"Sub-heading","items":["..."]}]}],"flows":[{"title":"Management of …","steps":["…","If … → …"]}]}
+
+THIS REPLACES READING THE CHAPTER. Someone meeting the topic for the first time must be able to learn
+it from this alone and sit an exam on it. Completeness matters far more than brevity — a fact left
+out is a fact they will not know.
+
+- Cover the WHOLE topic, start to finish. Every cause, every classification with all of its grades or
+  stages and what defines each, every clinical sign, every named test and what a positive one means,
+  every investigation with its values and cut-offs, every treatment with drug, dose and route, every
+  complication, every eponym. If the textbook devotes a paragraph to it, it belongs here.
+- Use as many branches as the topic needs — twelve is fine. Beyond the usual Definition, Anatomy,
+  Types / Classification, Causes, Pathophysiology, Clinical features, Examination findings,
+  Differential diagnosis, Investigations, Management (medical / surgical), Complications,
+  Prognosis — add whatever this topic actually has.
+- Put as many items in a branch as the facts require; never trim a list to make it look tidy. Group a
+  long branch with {"h":"Sub-heading","items":[...]} so it stays readable — classifications,
+  conservative vs surgical, by age, by severity.
+- Items are compressed notes, not sentences: "**Trendelenburg** test +ve → SFJ incompetence",
+  "Grade **III**: ulcer, healed or active". Keep every number, dose, cut-off and criterion. Wrap the
+  one or two words that carry the fact in **double asterisks**.
+- Where the textbook has a mnemonic or a classic triad, include it.
+- flows: 1–3 COMPLETE step-by-step algorithms (management and/or diagnostic pathway, as in the
+  textbook's flowchart) — include every step and decision, up to 14 steps each; each step max 14
+  words; use "If X → Y" for decisions. Do not cut management short.
+- Australian practice (Murtagh/eTG) where it differs, marked "(AU)". Do not drop the Indian answer.`;
   const mm = await AI.call({ prompt, json: true });
   if (!mm || !Array.isArray(mm.branches)) throw new Error('The AI reply wasn’t a mind map — try again.');
   mm.figs = await bookFigures(t).catch(() => []);
@@ -173,7 +192,12 @@ Rules:
 }
 function mindmapHTML(t, mm, imgs = {}) {
   const inl = x => keyColour(texify(esc(String(x))).replace(/\*\*(.+?)\*\*/g, '<b class="key">$1</b>'));
-  const br = (mm.branches || []).map((b, i) => `<section class="mm-b c${i % 8}"><h4>${esc(b.title)}</h4><ul>${(b.items || []).map(x => `<li>${inl(x)}</li>`).join('')}</ul></section>`);
+  // An item is either a note or a sub-heading with its own notes under it, so a long branch —
+  // a classification, or conservative versus surgical — keeps the shape the book gave it.
+  const items = list => (list || []).map(x => (x && typeof x === 'object' && Array.isArray(x.items))
+    ? `<li class="mm-sub"><b>${esc(x.h || '')}</b><ul>${items(x.items)}</ul></li>`
+    : `<li>${inl(x)}</li>`).join('');
+  const br = (mm.branches || []).map((b, i) => `<section class="mm-b c${i % 8}"><h4>${esc(b.title)}</h4><ul>${items(b.items)}</ul></section>`);
   const half = Math.ceil(br.length / 2);
   const flows = (mm.flows || []).map((f, i) => `<section class="mm-flow c${(i + 3) % 8}"><h4>${esc(f.title)}</h4><div class="flow">${(f.steps || []).map(s => `<div class="fstep">${inl(s)}</div>`).join('<div class="farrow">↓</div>')}</div></section>`).join('');
   const figs = (mm.figs || []).length ? `<section class="card mt"><h4>The textbook's own figures &amp; flowcharts</h4>${mm.figs.filter(f => imgs[f.img]).map(f => `<figure class="mm-fig"><img src="${imgs[f.img]}" data-act="zoomImg" alt="${esc(f.cap || '')}" loading="lazy"><figcaption>${esc(f.book)} p.${f.p} — ${esc(f.cap || '')}</figcaption></figure>`).join('')}${mm.figs.filter(f => !imgs[f.img]).map(f => `<p><button class="linkbtn" data-act="openRef" data-book="${f.bookId}" data-size="${f.size || ''}" data-p="${f.p}">${esc(f.book)} p.${f.p}</button> <span class="muted small">${esc(f.cap || '')}</span></p>`).join('')}</section>` : '';

@@ -616,3 +616,29 @@ body.examfull #selbar.touch { bottom: calc(96px + env(safe-area-inset-bottom)); 
 .slide img { width: 100%; height: 110px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line, #2a3254); display: block; }
 .slide.used img { opacity: .62; }
 .slide figcaption { font-size: .76rem; color: var(--muted, #8e97bb); margin-top: 4px; display: flex; justify-content: space-between; gap: 6px; }
+
+/* A mind map that covers a whole chapter: flow the branches into columns rather than two fixed
+   stacks, and let the text be sized to taste. */
+.mm { --mmf: 1rem; font-size: var(--mmf); }
+.mm-b ul ul { padding-left: 16px; margin: 2px 0 4px; }
+.mm-sub > b { display: inline-block; margin-top: 4px; font-size: .95em; }
+.mm-b li { break-inside: avoid; }
+
+@media (min-width: 900px) {
+  .mm { display: block; columns: 2; column-gap: 16px; }
+  .mm-core { display: none; }
+  .mm-side { display: block; }
+  .mm-b { break-inside: avoid; margin: 0 0 12px; }
+}
+@media (min-width: 1400px) { .mm { columns: 3; } }
+
+.mm-size { display: flex; gap: 6px; align-items: center; }
+.mm-size button { min-width: 32px; }
+
+/* Printing a chapter-length mind map onto one page. */
+#print-area .pa-head { text-align: center; margin-bottom: 10px; }
+#print-area .pa-head .mm-center { display: inline-block; max-width: none; font-size: 1.1rem; padding: 8px 18px; }
+#print-area .pa-cols { column-gap: 12px; }
+#print-area .pa-cols .mm-b { break-inside: avoid; margin: 0 0 10px; display: block; }
+#print-area .pa-flows { display: grid; gap: 10px; margin-top: 10px; }
+#print-area .pa-flows .mm-flow { break-inside: avoid; }
