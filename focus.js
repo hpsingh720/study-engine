@@ -306,6 +306,81 @@ Rules:
   },
 
   /**
+   * Find the book's contents, wherever it happens to sit.
+   *
+   * A contents page looks unlike any other: most of its lines end in a page number. Scoring on
+   * that finds it behind however much front matter the book carries, and reading only the pages
+   * that score keeps the whole contents inside one request even for a book with eighty chapters.
+   */
+  async _findContents(bookId, pages) {
+    const look = pages.slice(0, 140);
+    const scored = [];
+
+    for (const p of look) {
+      const pg = await DB.get('pages', [bookId, p]);
+      if (!pg?.text) continue;
+      const lines = pg.text.split('\n').map(l => l.trim()).filter(l => l.length > 3);
+      if (lines.length < 3) continue;
+      const numbered = lines.filter(l => /[a-z].*?[\s.]\s*\d{1,4}$/i.test(l)).length;
+      let s = numbered / lines.length;
+      if (/^\s*(table of )?contents\b/im.test(pg.text.slice(0, 400))) s += 0.9;
+      if (/\bindex\b/i.test(pg.text.slice(0, 120)) && p > look[look.length - 1] * 0.6) s -= 0.5;
+      if (numbered >= 3 && s > 0.4) scored.push({ p, s, numbered });
+    }
+    if (!scored.length) return '';
+
+    // Contents runs over consecutive pages, so take the best one and everything adjoining it.
+    scored.sort((a, b) => b.s - a.s);
+    const best = scored[0].p;
+    const near = new Set(scored.filter(x => Math.abs(x.p - best) <= 12).map(x => x.p));
+    // A contents runs over consecutive pages, and the odd one of them scores badly — a page that
+    // is mostly part headings, or one the OCR made a mess of. Take the neighbours regardless.
+    const have = new Set(pages);
+    for (const p of [...near]) for (const d of [-2, -1, 1, 2]) if (have.has(p + d)) near.add(p + d);
+    const run = [...near].sort((a, b) => a - b).slice(0, 16);
+
+    const out = [];
+    let chars = 0;
+    for (const p of run) {
+      const pg = await DB.get('pages', [bookId, p]);
+      if (!pg?.text) continue;
+      const t = pg.text.slice(0, 5000);
+      out.push(`[p.${p}]\n${t}`);
+      chars += t.length;
+      if (chars > 40000) break;
+    }
+    return out.join('\n\n');
+  },
+
+  /**
+   * Plan B: build the chapter list from the chapters themselves.
+   *
+   * Some scans simply have no contents page — it was never photographed, or the OCR made nothing
+   * of it. Chapter openings are still recognisable: a page whose first lines say "Chapter 12" and
+   * then a title.
+   */
+  async _chapterOpenings(bookId, pages) {
+    const found = [];
+    for (const p of pages) {
+      const pg = await DB.get('pages', [bookId, p]);
+      if (!pg?.text) continue;
+      const head = pg.text.slice(0, 300).split('\n').map(l => l.trim()).filter(Boolean);
+      for (let i = 0; i < Math.min(head.length, 4); i++) {
+        const m = /^(?:chapter|ch\.?|section)\s*([0-9]{1,3})\b[:.\s-]*(.*)$/i.exec(head[i]);
+        if (!m) continue;
+        const n = +m[1];
+        let title = (m[2] || '').trim();
+        if (title.length < 3) title = (head[i + 1] || '').trim();
+        if (title.length < 3 || title.length > 90) break;
+        if (found.some(f => f.n === n)) break;
+        found.push({ n, name: title.replace(/\s+/g, ' '), page: p });
+        break;
+      }
+    }
+    return found.sort((a, b) => a.n - b.n).map(f => ({ name: f.name, page: f.page, topics: [], scanPage: 1 }));
+  },
+
+  /**
    * The headings across a whole chapter, rather than the opening few pages of it.
    *
    * Reading full page text runs out of budget after about six pages, so a forty-page chapter came
@@ -364,15 +439,17 @@ Rules:
     pages.sort((a, b) => a - b);
     const lastPage = pages[pages.length - 1];
 
-    onProgress?.('Reading the contents pages…', 0);
+    onProgress?.('Looking for the contents page…', 0);
 
-    // The contents is almost always in the opening pages; take a generous slice of them.
-    const front = await this._pageText(bookId, pages[0], pages[Math.min(34, pages.length - 1)], 36000);
+    // Not simply the first 35 pages: a big textbook can carry thirty pages of contributor lists
+    // before its contents, so the opening slice misses it entirely. Find the pages that actually
+    // look like a contents — many lines ending in a page number — and read those.
+    const front = await this._findContents(bookId, pages);
 
-    const toc = await fastAI({
+    const toc = front ? await fastAI({
       json: true,
       system: typeof SYSTEM_TUTOR !== 'undefined' ? SYSTEM_TUTOR : undefined,
-      prompt: `Below are the opening pages of "${book.name}", scanned and read by OCR. Somewhere in them is the table of contents.
+      prompt: `Below are pages from "${book.name}", scanned and read by OCR. They are the ones that look like its table of contents.
 
 Copy it out exactly as this book prints it, chapters and everything listed under them:
 {"chapters":[{"name":"","page":0,"topics":[{"name":"","page":0}]}]}
@@ -385,7 +462,7 @@ Copy it out exactly as this book prints it, chapters and everything listed under
 
 PAGES:
 ${front}`
-    });
+    }) : null;
 
     let chapters = (Array.isArray(toc?.chapters) ? toc.chapters : [])
       .map(c => ({
@@ -397,14 +474,23 @@ ${front}`
       }))
       .filter(c => c.name.length > 2);
 
-    if (!chapters.length) throw new Error(`Could not find a contents page in "${book.short || book.name}". Scan the contents pages in, or use "Break it into subtopics" on a topic instead.`);
+    // No usable contents: fall back to the chapters themselves. Their opening pages announce what
+    // they are, which is enough to work from even when the contents was never scanned.
+    let fromOpenings = false;
+    if (!chapters.length) {
+      onProgress?.('No contents page — reading the chapter openings instead…', 0);
+      chapters = await this._chapterOpenings(bookId, pages);
+      fromOpenings = chapters.length > 0;
+    }
+
+    if (!chapters.length) throw new Error(`Could not find a contents page or any chapter headings in "${book.short || book.name}". Scan the contents pages in, or use "Break it into subtopics" on a topic instead.`);
 
     // The printed page numbers and the scan's page numbers rarely line up (front matter, covers).
     // Work out the offset from the first chapter that can be found in the scan by its own title.
     const needles = chapters.map(c => this._norm(c.name).slice(0, 28)).filter(n => n.length >= 8);
-    let offset = 0, found = false;
+    let offset = 0, found = fromOpenings; // openings already give scan pages; nothing to offset
 
-    for (const c of chapters.slice(0, 6)) {
+    for (const c of fromOpenings ? [] : chapters.slice(0, 6)) {
       if (!c.page) continue;
       const needle = this._norm(c.name).slice(0, 28);
       if (needle.length < 8) continue;
