@@ -168,10 +168,21 @@ Views.shelves = async () => {
   const shelves = typeof Focus === 'undefined' ? [] : await Focus.shelves();
   const open = sessionStorage.getItem('shelf') || (shelves[0]?.id ?? '');
 
-  if (!shelves.length) {
-    return `<div class="page"><header class="page-head"><div><p class="eyebrow">College</p><h1>Browse by book</h1></div>
-      <a class="btn ghost" href="#/systems">Systems</a></header>
-      ${empty('No book chapters yet', 'Open a subject and use “Build this subject from my book” — the chapters come off the book’s own contents page.', '<a class="btn" href="#/systems">Go to Systems</a>')}</div>`;
+  // The whole course, not only the subjects that happen to have a book already.
+  if (!open || !shelves.some(s => s.id === open)) {
+    const subs = await Focus.subjects();
+    return `<div class="page">
+      <header class="page-head"><div><p class="eyebrow">College</p><h1>Subjects</h1></div>
+        <a class="btn ghost" href="#/systems">Systems</a></header>
+      <p class="muted small">Each subject as its textbook teaches it — chapter, then the topics inside. A subject with no book yet needs one adding in Library and then building from its contents page.</p>
+      <div class="list mt">${subs.map(s => s.shelves.length
+        ? `<button class="row between mid pad full-row" data-act="pickShelf" data-id="${s.shelves[0].id}">
+            <div><b>${esc(s.name)}</b><br><span class="muted small">${s.chapters} chapters · ${s.topics} topics · ${s.read} read · ${esc(s.shelves.map(x => x.full || x.name).join(', '))}</span></div>
+            <span class="muted">›</span></button>`
+        : `<div class="row between mid pad">
+            <div><b class="muted">${esc(s.name)}</b><br><span class="muted small">No book yet</span></div>
+            <a class="btn ghost sm" href="#/library">Add a book</a></div>`).join('')}</div>
+    </div>`;
   }
 
   const b = shelves.find(x => x.id === open) || shelves[0];
@@ -180,7 +191,7 @@ Views.shelves = async () => {
 
   return `<div class="page">
     <header class="page-head"><div><p class="eyebrow">${read} of ${topics} read${b.subject ? '' : ' · from ' + esc(b.full || b.name)}</p><h1>${esc(b.name)}</h1></div>
-      <div class="row gap"><button class="btn ghost sm" data-act="nameShelf" data-id="${b.id}">${b.subject ? 'Rename subject' : 'Name the subject'}</button><a class="btn ghost" href="#/systems">Systems</a></div></header>
+      <div class="row gap"><button class="btn ghost sm" data-act="allSubjects">All subjects</button><button class="btn ghost sm" data-act="nameShelf" data-id="${b.id}">${b.subject ? 'Rename subject' : 'Name the subject'}</button></div></header>
 
     ${shelves.length > 1 ? `<div class="chips mt">${shelves.map(s =>
       `<button class="chip ${s.id === b.id ? 'on' : ''}" data-act="pickShelf" data-id="${s.id}">${esc(s.name)}</button>`).join('')}</div>` : ''}

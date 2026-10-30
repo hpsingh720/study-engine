@@ -330,6 +330,7 @@ const A = {
   async moreMcqs(el) { await Queue.add('mcqgen', { topicId: el.dataset.id }, 0); toast('Writing more questions…'); App.render(true); },
 
   pickShelf(el) { sessionStorage.setItem('shelf', el.dataset.id); App.render(); },
+  allSubjects() { sessionStorage.removeItem('shelf'); App.render(); },
 
   /** "27th-Bailey-Loves-Short-Prac" is not what anyone calls the subject. */
   async nameShelf(el) {

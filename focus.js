@@ -104,6 +104,51 @@ const Focus = {
     return all;
   },
 
+  /** The MBBS subjects, so the page is the whole course rather than only what has been built. */
+  SUBJECTS: [
+    'General Medicine', 'General Surgery', 'Paediatrics', 'Obstetrics & Gynaecology',
+    'ENT', 'Ophthalmology', 'Orthopaedics', 'Dermatology', 'Psychiatry',
+    'Community Medicine', 'Forensic Medicine', 'Anaesthesia', 'Radiology'
+  ],
+
+  /**
+   * Every subject of the course, with whatever has been built for it.
+   *
+   * Showing only the two subjects that happen to have a book makes the rest look as though they do
+   * not exist. A subject with no book yet is still a subject — it just needs one.
+   */
+  async subjects() {
+    const shelves = await this.shelves();
+    const used = new Set();
+    const rows = this.SUBJECTS.map(name => {
+      const k = this._norm(name);
+      const mine = shelves.filter(s => {
+        const sn = this._norm(s.subject || s.name);
+        return sn === k || sn.includes(k) || k.includes(sn);
+      });
+      mine.forEach(s => used.add(s.id));
+      return {
+        name,
+        shelves: mine,
+        chapters: mine.reduce((a, s) => a + s.chapters.length, 0),
+        topics: mine.reduce((a, s) => a + s.chapters.reduce((x, c) => x + c.topics.length, 0), 0),
+        read: mine.reduce((a, s) => a + s.chapters.reduce((x, c) => x + c.read, 0), 0)
+      };
+    });
+
+    // A shelf named something not on the list — a subject this course calls by another name.
+    for (const s of shelves) {
+      if (used.has(s.id)) continue;
+      rows.push({
+        name: s.subject || s.name, shelves: [s], extra: 1,
+        chapters: s.chapters.length,
+        topics: s.chapters.reduce((x, c) => x + c.topics.length, 0),
+        read: s.chapters.reduce((x, c) => x + c.read, 0)
+      });
+    }
+    return rows;
+  },
+
   /** Call a book's shelf by its subject. */
   async nameShelf(bookId, subject) {
     const m = (await DB.meta('shelfSubjects')) || {};

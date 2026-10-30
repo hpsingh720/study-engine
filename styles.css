@@ -642,3 +642,7 @@ body.examfull #selbar.touch { bottom: calc(96px + env(safe-area-inset-bottom)); 
 #print-area .pa-cols .mm-b { break-inside: avoid; margin: 0 0 10px; display: block; }
 #print-area .pa-flows { display: grid; gap: 10px; margin-top: 10px; }
 #print-area .pa-flows .mm-flow { break-inside: avoid; }
+
+/* A row that behaves like a link but is a button. */
+.full-row { width: 100%; background: none; border: 0; color: inherit; text-align: left; font: inherit; cursor: pointer; }
+.full-row:hover { background: color-mix(in srgb, var(--line, #2a3254) 30%, transparent); }
