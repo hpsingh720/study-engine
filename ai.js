@@ -271,6 +271,8 @@ const Gen = {
     src.ref = await retrieve(topic, 'ref', 6, 30000);
     src.mbbs = await retrieve(topic, 'mbbs', 5, 24000);
     src.amc = await retrieve(topic, 'amc', 6, 30000);
+    const prac = await retrieve(topic, 'practical', 4, 16000);
+    if (prac.length) src.mbbs = [...prac, ...src.mbbs].slice(0, 9);
 
     // The topic's own pages go into their book's own column, ahead of what keyword search found
     // there, without displacing the other columns.
@@ -300,6 +302,7 @@ RULES
 - If a column has no excerpts, or they don't cover a point, you may use standard knowledge of that kind of source, but begin that cell with "(general knowledge)". For the amc column use current Australian practice (eTG, Murtagh, RACGP Red Book, Austroads, Australian Immunisation Handbook, RCH guidelines).
 - High-yield only: what examiners ask. Bullets that start with "- ", at most 8 per cell, short lines. Keep doses, cut-offs and criteria when the source gives them. Use **bold** for the single most-tested fact in a cell.
 - pearls: include the small bedside concepts and examination tricks that separate look-alikes (e.g. direction of visible peristalsis: stomach left → right vs transverse colon right → left), plus red flags.
+- CLINICAL METHODS: where the excerpts come from a practical or clinical-methods book, use them for what only those books give — how to elicit a sign step by step, the order of the examination, what a positive test actually looks like, the local examination of a lump or an ulcer, and the questions a viva asks on it. Put the technique in clinical, the interpretation in investigations, and the traps in pearls. Half the MBBS exam is the practical one; do not reduce this to a list of signs.
 - TABLES: where the excerpts print a table the student would otherwise go back to the book for — classification or staging, a differential laid side by side, drug doses by weight or age, diagnostic criteria, normal ranges, a comparison of two look-alike conditions — reproduce it as a markdown table inside the cell it belongs to, with its [Book p.N] citation. Keep the book's own rows, columns and numbers; do not summarise a table into prose and do not invent rows the excerpts do not contain. A classification table belongs in patho, criteria and normal values in investigations, dosing in management.
 - comparison.rows: ONLY real differences between the Indian MBBS answer and the Australian/AMC answer — first-line drugs and doses, investigation of choice, thresholds and targets, setting (GP, rural, retrieval, referral), screening and prevention programs, legal duties (driving, notification, consent, mandatory reporting), Aboriginal and Torres Strait Islander considerations. 4–10 rows. "trap" = how the AMC exam typically tests that difference.
 - comparison.same: one or two lines on what is the same, so the student can skip it.
@@ -331,7 +334,11 @@ Return JSON exactly in this shape:
         if (pg) others.push({ ...s, text: pg.text });
       }
     } else {
-      const more = [...await retrieve(topic, 'ref', 4, 18000), ...await retrieve(topic, 'mbbs', 3, 12000), ...await retrieve(topic, 'amc', 4, 18000)];
+      const more = [...await retrieve(topic, 'ref', 4, 18000), ...await retrieve(topic, 'mbbs', 3, 12000),
+        ...await retrieve(topic, 'amc', 4, 18000),
+        // Clinical-methods books were mined for pictures and never read: how to elicit a sign, the
+        // bedside sequence, what the viva asks. Half the MBBS exam lives in those pages.
+        ...await retrieve(topic, 'practical', 3, 12000)];
       others.push(...more.filter(m => !own.some(o => o.bookId === m.bookId && o.p === m.p)));
     }
     // Give this topic's own pages a guaranteed share rather than the whole budget: without the cap
@@ -416,7 +423,7 @@ async function findRefs(m, max = 4) {
   const kw = Object.keys(freq).sort((x, y) => y.length - x.length).slice(0, 8);
   const terms = topicTerms({ name: topic?.name || '', kw: [...(topic?.kw || []), ...kw, ...correct.toLowerCase().split(/[,;/]/).map(x => x.trim()).filter(x => x.length > 3)] });
   if (!terms.length) return [];
-  const books = (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc'].includes(b.role));
+  const books = (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc', 'practical'].includes(b.role));
   const per = [];
   for (const b of books) {
     let best = [];
@@ -497,7 +504,8 @@ const MED_ABBR = { mi: 'myocardial infarction', acs: 'acute coronary syndrome', 
   iugr: 'fetal growth restriction', fgr: 'fetal growth restriction', pih: 'pregnancy induced hypertension', pcos: 'polycystic ovary syndrome', bph: 'benign prostatic hyperplasia', ttp: 'thrombotic thrombocytopenic purpura', itp: 'immune thrombocytopenia', dic: 'disseminated intravascular coagulation' };
 // Books this device can search: its own, plus the text of the laptop's books downloaded through Sync.
 async function searchableBooks() {
-  let own = (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc', 'reader'].includes(b.role));
+  // Clinical-methods books are searched too: the answer to "how do you elicit this sign" is in them.
+  let own = (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc', 'practical', 'reader'].includes(b.role));
   const rem = (typeof BookText !== 'undefined' ? BookText.remote() : []).filter(r => !own.some(b => b.id === r.id || (b.role !== 'reader' && b.size && b.size === r.size))).map(r => ({ ...r, remote: 1 }));
   own = own.filter(b => !(b.role === 'reader' && rem.some(r => r.size && r.size === b.size)));   // the laptop's read text is better than a fresh copy
   return [...own, ...rem];

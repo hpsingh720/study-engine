@@ -981,6 +981,30 @@ const C = {
   stageName(el) { App.staged[+el.dataset.i].name = el.value; },
   stageRole(el) { App.staged[+el.dataset.i].role = el.value; },
   stageRoleAll(el) { if (!el.value) return; App.staged.forEach(e => e.role = el.value); App.render(true); },
+  /**
+   * Read an existing book's pages as text.
+   *
+   * A practical book added before this was mined for figures and never read, so its examination
+   * technique and viva material are missing while its spotters are fine. This queues the reading
+   * without re-importing the book, so nothing already made from it is disturbed or duplicated.
+   */
+  async readText(el) {
+    const b = await DB.get('books', el.dataset.id);
+    if (!b) return;
+    const have = new Set();
+    await DB.each('pages', 'bookId', b.id, pg => { if (pg.text) have.add(pg.p); });
+    const todo = [];
+    for (let p = 1; p <= (b.pages || 0); p++) if (!have.has(p)) todo.push(p);
+    if (!todo.length) return toast('Every page of this book has already been read.');
+    if (!confirm(`Read ${todo.length.toLocaleString()} pages of "${b.short || b.name}" as text? It runs in the background and can take hours on a scanned book. Questions already made from it are untouched.`)) return;
+
+    for (let i = 0; i < todo.length; i += 10) await Queue.add('ocr', { bookId: b.id, pages: todo.slice(i, i + 10) }, 2.2);
+    b.status = 'ocr'; b.ocrSkipped = 0; await DB.put('books', b);
+    Queue.kick();
+    toast(`Reading ${todo.length.toLocaleString()} pages — watch the Library for progress.`, 7000);
+    App.render(true);
+  },
+
   async bookRole(el) {
     const b = await DB.get('books', el.dataset.id); b.role = el.value; await DB.put('books', b);
     if (confirm('Re-process this book with its new type?')) { await Queue.add('extract', { bookId: b.id }, 1); }

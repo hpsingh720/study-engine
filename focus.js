@@ -455,7 +455,9 @@ Rules:
    * looking only at the books table makes an iPad full of book text report that it has no books.
    */
   async books() {
-    const own = (await DB.all('books')).filter(b => ['ref', 'mbbs'].includes(b.role));
+    // A clinical-methods book has a contents page like any other, and its chapters are the ones
+    // the practical exam follows.
+    const own = (await DB.all('books')).filter(b => ['ref', 'mbbs', 'practical'].includes(b.role));
     const seen = new Set(own.map(b => b.id));
     const shared = (typeof BookText !== 'undefined' ? BookText.remote() : [])
       .filter(b => b.complete && !seen.has(b.id))

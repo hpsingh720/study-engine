@@ -168,7 +168,7 @@ const Handlers = {
     // Redo links when many new book pages have been read since (e.g. a scanned book finished).
     const qs = (await DB.byIndex('mcqs', 'topicId', topic.id)).filter(m => !m.deleted && (!m.refs || (m.refsN || 0) < pagesNow * 0.9));
     if (!qs.length) return;
-    const books = (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc'].includes(b.role));
+    const books = (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc', 'practical'].includes(b.role));
     if (!books.length) return; // e.g. a phone with only reading copies: leave the laptop's links alone
     const tTerms = topicTerms(topic);
     // Candidate pages for the topic (read once), then score each question against just those.
@@ -253,8 +253,12 @@ const Handlers = {
     } else if (book.role === 'practical') {
       const all = [...new Set([...imgPages, ...scanned])].sort((a, b) => a - b);
       for (const p of all) await Queue.add('practical', { bookId: book.id, page: p }, 5);
+      // And read the words, not only the pictures. A clinical-methods book carries the examination
+      // sequence, how a sign is elicited and what the viva asks — none of which is an image, and
+      // none of which existed anywhere until now on a scanned copy.
+      for (const c of chunk(scanned, 10)) await Queue.add('ocr', { bookId: book.id, pages: c }, 2.2);
     }
-    book.status = scanned.length && ['ref', 'mbbs', 'amc'].includes(book.role) ? 'ocr' : (book.role.startsWith('mcq') || book.role === 'practical') ? 'importing' : 'ready';
+    book.status = scanned.length && ['ref', 'mbbs', 'amc', 'practical'].includes(book.role) ? 'ocr' : (book.role.startsWith('mcq') || book.role === 'practical') ? 'importing' : 'ready';
     await DB.put('books', book);
   },
 
