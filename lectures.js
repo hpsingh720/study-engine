@@ -228,7 +228,7 @@ const Lectures = {
     // topic's practice or in a system test, so the lecture looks as though it produced nothing.
     if (!topic && typeof Focus !== 'undefined') {
       try {
-        const { topic: made } = await Focus.study(`${l.topic}${l.subject ? ' (' + l.subject + ')' : ''}`, { amc: 0, mbbs: 0 });
+        const { topic: made } = await Focus.study(`${l.topic}${l.subject ? ' (' + l.subject + ')' : ''}`, { amc: 0, mbbs: 0, context: l.transcript || '' });
         topic = made;
       } catch (e) { console.warn('could not place the lecture', e); }
     }

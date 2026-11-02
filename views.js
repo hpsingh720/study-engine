@@ -214,6 +214,34 @@ Views.shelves = async () => {
   </div>`;
 };
 
+/**
+ * Slides photographed in class, shown on the topic they belong to.
+ *
+ * A diagram the lecturer put up is the one picture of this topic you were actually shown, and it
+ * was only reachable from the lecture that happened to capture it.
+ */
+async function lectureSlides(topicId) {
+  if (typeof Lectures === 'undefined') return '';
+  const lects = (await Lectures.all()).filter(l => l.topicId === topicId && l.slides?.length);
+  if (!lects.length) return '';
+
+  const blocks = [];
+  for (const l of lects) {
+    const shots = [];
+    for (const s of l.slides) {
+      const m = await DB.get('media', s.id);
+      if (m?.data) shots.push({ ...s, data: m.data });
+    }
+    if (!shots.length) continue;
+    blocks.push(`<p class="muted small mt">${esc(l.topic)} · ${fmtDate(l.started)}${l.faculty ? ' · ' + esc(l.faculty) : ''}</p>
+      <div class="slide-strip">${shots.map(s => `<figure class="slide">
+        <img src="${s.data}" data-act="zoomImg" alt="" loading="lazy">
+        <figcaption>${s.used ? `${s.made || 0} question${s.made === 1 ? '' : 's'}` : 'not used yet'}</figcaption></figure>`).join('')}</div>`);
+  }
+  if (!blocks.length) return '';
+  return `<section class="card mt"><h4>Slides from the class</h4>${blocks.join('')}</section>`;
+}
+
 function planDayRow(d, showSys) {
   const date = new Date(d.date + 'T00:00:00');
   const label = d.date === todayStr() ? 'Today' : date.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
@@ -356,9 +384,9 @@ Views.topic = async (id, tab) => {
   if (tab === 'sheet') body = sheet ? Object.keys(SECTIONS).map(sec => sectionTab(t, sheet, sec, books, inQueue, note?.hl)).join('<hr class="sec-gap">') : noSheet(t, books, inQueue);
   else if (tab === 'mindmap' && sheet?.mindmap) {
     const imgs = {}; for (const f of sheet.mindmap.figs || []) if (f.img) { const d = await DB.get('media', f.img); if (d) imgs[f.img] = d.data; }
-    body = `<div class="row between mb"><span class="muted small">Made ${fmtDate(sheet.mindmap.at)} from your books</span><div class="row gap"><span class="mm-size"><button class="btn sm ghost" data-act="mmSmaller" title="Smaller">A-</button><button class="btn sm ghost" data-act="mmBigger" title="Bigger">A+</button></span><button class="btn sm" data-act="printMindmap">Download / print</button><button class="btn sm ghost" data-act="genMindmap" data-id="${id}">Remake</button></div></div>${mindmapHTML(t, sheet.mindmap, imgs)}`;
-  } else if (tab === 'mindmap') body = sheet?.mindmap ? '' 
-    : empty('Mind map on request', 'A one-page colourful map of this topic — causes, features, investigations, management — plus step-by-step flowcharts and the figure pages in your books. Made only for topics you ask for.', `<button class="btn primary" data-act="genMindmap" data-id="${id}">Make mind map</button>`);
+    body = `<div class="row between mb"><span class="muted small">Made ${fmtDate(sheet.mindmap.at)} from your books</span><div class="row gap"><span class="mm-size"><button class="btn sm ghost" data-act="mmSmaller" title="Smaller">A-</button><button class="btn sm ghost" data-act="mmBigger" title="Bigger">A+</button></span><button class="btn sm" data-act="printMindmap">Download / print</button><button class="btn sm ghost" data-act="genMindmap" data-id="${id}">Remake</button></div></div>${mindmapHTML(t, sheet.mindmap, imgs)}${await lectureSlides(id)}`;
+  } else if (tab === 'mindmap') body = (await lectureSlides(id))
+    || empty('Mind map on request', 'A one-page colourful map of this topic — causes, features, investigations, management — plus step-by-step flowcharts and the figure pages in your books. Made only for topics you ask for.', `<button class="btn primary" data-act="genMindmap" data-id="${id}">Make mind map</button>`);
   else if (tab === 'compare') body = compareTab(t, sheet, books, inQueue);
   else if (tab === 'mcqs') body = mcqTab(t, live, mcqs, st, books, inQueue);
   else if (tab === 'notes') body = await notesTab(t);

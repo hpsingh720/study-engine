@@ -205,12 +205,28 @@ const Focus = {
    * Asked of the AI rather than guessed from keywords, because the seeded keyword lists are exactly
    * what does not contain the subject being asked about.
    */
-  async classify(raw) {
+  async classify(raw, context = '') {
     const systems = SEED.systems.map(s => `${s.code} = ${s.name}`).join('\n');
+    const seen = String(context || '').replace(/\s+/g, ' ').slice(0, 3000);
     const out = await fastAI({
       json: true,
       system: typeof SYSTEM_TUTOR !== 'undefined' ? SYSTEM_TUTOR : undefined,
       prompt: `A medical student is studying "${raw}" for MBBS finals in India.
+${seen ? `\nWhat was actually taught, so you can tell which subject this is — a transcript, so expect speech-recognition errors:\n<<<${seen}>>>\n` : ''}
+This is how it was written on an Indian college roster, so it is very often an abbreviation. A
+plausible-sounding guess is worse than useless: "BOH" means **bad obstetric history**, never
+"benign ovarian hyperplasia". Read it the way an Indian MBBS student would:
+BOH bad obstetric history · APH antepartum haemorrhage · PPH postpartum haemorrhage · PROM premature
+rupture of membranes · DUB dysfunctional uterine bleeding · PIH pregnancy-induced hypertension ·
+MTP medical termination of pregnancy · IUGR intrauterine growth restriction · PID pelvic
+inflammatory disease · TEF tracheo-oesophageal fistula · EA oesophageal atresia · CDH congenital
+diaphragmatic hernia · NEC necrotising enterocolitis · RDS respiratory distress syndrome ·
+HIE hypoxic ischaemic encephalopathy · CSOM chronic suppurative otitis media · ASOM acute
+suppurative otitis media · CRAO / CRVO central retinal artery / vein occlusion · ARMD age-related
+macular degeneration · AGN acute glomerulonephritis · RPGN rapidly progressive glomerulonephritis ·
+BEP benign enlargement of prostate · SOL space-occupying lesion.
+${seen ? 'Where the transcript shows what was taught, trust it over any expansion.' : ''} If you
+cannot tell what an abbreviation means, return it unchanged rather than inventing a name for it.
 
 Return JSON describing it as a syllabus topic:
 {"name":"","system":"","kw":[],"parent":"","ok":true}
@@ -314,7 +330,7 @@ Return only the JSON.`
    * Questions and the revision sheet both come from the generation that already exists, so they are
    * grounded in the student's own books and land in normal systems revision rather than a silo.
    */
-  async study(raw, { amc = 5, mbbs = 10 } = {}) {
+  async study(raw, { amc = 5, mbbs = 10, context = '' } = {}) {
     const name = String(raw || '').trim();
     if (name.length < 3) throw new Error('Type a bit more than that');
 
@@ -327,7 +343,7 @@ Return only the JSON.`
       return { topic: already, made: false, have };
     }
 
-    const c = await this.classify(name);
+    const c = await this.classify(name, context);
 
     const t = {
       id: 'f-' + slugify(c.name) + '-' + uid().slice(0, 4),

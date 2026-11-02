@@ -650,3 +650,6 @@ body.examfull #selbar.touch { bottom: calc(96px + env(safe-area-inset-bottom)); 
 /* Part → chapter → topic, so the three levels of a textbook read as three levels. */
 .part-h { font-size: 1.02rem; letter-spacing: .01em; margin-bottom: 6px; }
 .card.indent { margin-left: 14px; margin-top: 8px; }
+
+/* "More" is a button in the tab bar, so it must not look like one. */
+.tabbar button.navlink { background: none; border: 0; font: inherit; cursor: pointer; }

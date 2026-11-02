@@ -12,17 +12,33 @@ Views.lectures = async () => {
   const recorder = active
     ? `<div class="card rec-live">
          <div class="row between mid">
-           <div><p class="eyebrow">Recording</p><h2>${esc(active.topic)}</h2></div>
+           <div><p class="eyebrow">Recording</p><h2>${esc(active.topic)}</h2>
+             <button class="link small" data-act="lecRename" data-id="${active.id}">Wrong class? Rename it</button></div>
            <span class="rec-dot"></span>
          </div>
          <p class="muted small">${active.chunks * 2} min recorded${active.transcript ? ` · ${active.transcript.split(/\s+/).length} words kept` : ''}${active.unclearSeconds ? ` · ${Math.round(active.unclearSeconds / 60)} min too unclear to use` : ''}${active.error ? ` · <span class="danger">${esc(active.error)}</span>` : ''}</p>
          ${native ? '<p class="muted small">Safe to lock the screen or leave the app.</p>' : '<p class="muted small warn">Keep this tab open — browser recording stops if you leave.</p>'}
+         <input type="file" id="slide-file" accept="image/*" capture="environment" multiple hidden>
+         <div class="row gap mt">
+           <button class="btn" data-act="lecSlideAdd" data-id="${active.id}">📷 Snap the slide${active.slides?.length ? ` (${active.slides.length})` : ''}</button>
+           <a class="btn ghost" href="#/lecture/${active.id}">Open this lecture</a>
+         </div>
+         <p class="muted small">Photograph a diagram or table as it goes up — it becomes a picture question afterwards.</p>
          <button class="btn full danger mt" data-act="lecStop">Stop and make questions</button>
        </div>`
     : `<div class="card">
          <h2>Record a lecture</h2>
          ${!hasKey ? `<p class="warn">Add a free Groq key in <a href="#/settings">Settings</a> first — that is what turns speech into text.</p>` : ''}
-         ${todays.length ? `<p class="muted small">Today: ${todays.map(c => esc(c.topic)).join(' · ')}</p>` : '<p class="muted small">No classes imported for today.</p>'}
+         ${todays.length ? `<label>Which class?
+           <select id="lec-pick" data-change="pickClass">
+             ${todays.map(c => {
+               const label = `${Timetable._pretty(c.start)}–${Timetable._pretty(c.end)} · ${c.topic || c.label || c.group || 'Class'}`;
+               return `<option value="${esc(c.id)}" data-topic="${esc(c.topic || c.label || c.group || '')}" data-faculty="${esc(c.faculty || '')}" data-subject="${esc(c.department || c.subject || '')}"${c.id === suggestion?.id ? ' selected' : ''}>${esc(label)}</option>`;
+             }).join('')}
+             <option value="">Something else…</option>
+           </select></label>
+           <p class="muted small">Today's classes, from the roster. The one happening now is picked — change it if they have been swapped around.</p>`
+         : '<p class="muted small">No classes on the roster for today, so type what is being taught.</p>'}
          <label>Topic<input id="lec-topic" placeholder="e.g. COPD / Bronchial Asthma" value="${esc(suggestion?.topic || '')}"></label>
          <label>Faculty (optional)<input id="lec-faculty" value="${esc(suggestion?.faculty || '')}"></label>
          <button class="btn full primary mt" data-act="lecStart"${hasKey ? '' : ' disabled'}>Start recording</button>
@@ -42,9 +58,18 @@ Views.lectures = async () => {
       </a>`;
   }).join('');
 
+  // A lecture with no topic keeps its questions out of revision entirely, which is invisible from
+  // here unless it is said plainly.
+  const unfiled = list.filter(l => !l.topicId && (l.mcqIds?.length || l.slideMcqIds?.length || l.state === 'done'));
+
   return `<div class="page">
     <header class="page-head"><div><p class="eyebrow">College</p><h1>Lectures</h1></div>
       <a class="btn ghost" href="#/timetable">Class roster</a></header>
+    ${unfiled.length ? `<div class="card soft">
+      <p class="warn-t"><b>${unfiled.length} lecture${unfiled.length === 1 ? '' : 's'} not filed under a topic.</b> Their questions exist but never come up in practice or a system test, because they belong to nothing.</p>
+      <p class="muted small">${unfiled.map(l => esc(l.topic)).join(' · ')}</p>
+      <button class="btn full mt" data-act="lecPlaceAll">File ${unfiled.length === 1 ? 'it' : 'them all'} now</button>
+    </div>` : ''}
     ${recorder}
     ${rows ? `<h3 class="mt">Earlier lectures</h3>${rows}` : empty('No lectures yet', 'Record one in class and the questions appear here afterwards.')}
   </div>`;
@@ -87,7 +112,8 @@ Views.lecture = async id => {
 
   return `<div class="page">
     <header class="page-head"><div><p class="eyebrow">${new Date(l.started).toLocaleDateString(undefined, { day: 'numeric', month: 'long' })}${l.faculty ? ' · ' + esc(l.faculty) : ''}</p>
-      <h1>${esc(l.topic)}</h1></div><a class="btn ghost" href="#/lectures">Back</a></header>
+      <h1>${esc(l.topic)}</h1></div>
+      <div class="row gap"><button class="btn ghost sm" data-act="lecRename" data-id="${l.id}">Rename</button><a class="btn ghost" href="#/lectures">Back</a></div></header>
 
     ${topic
       ? `<p class="muted small">Added to <a href="#/topic/${topic.id}">${esc(topic.name)}</a>, so these come up in normal revision too.</p>`
@@ -238,6 +264,38 @@ Object.assign(A, {
     App.render(true);
   },
 
+  /**
+   * Rename a recording, and re-file it.
+   *
+   * The roster is not always what is actually taught — classes get swapped, and sometimes the
+   * lecturer announces the subject only once they start. Anything already written for the lecture
+   * moves with it.
+   */
+  async lecRename(el) {
+    const l = await Lectures.get(el.dataset.id);
+    if (!l) return;
+    const v = prompt('What is this lecture actually on?', l.topic || '');
+    if (v === null) return;
+    const name = v.trim();
+    if (!name) return;
+
+    l.topic = name;
+    l.topicId = '';           // re-file it: the old topic was for the old name
+    await Lectures.save(l);
+
+    try {
+      const { topic } = await Focus.study(`${name}${l.subject ? ' (' + l.subject + ')' : ''}`, { amc: 0, mbbs: 0, context: l.transcript || '' });
+      l.topicId = topic.id;
+      await Lectures.save(l);
+      for (const qid of [...(l.mcqIds || []), ...(l.slideMcqIds || [])]) {
+        const m = await DB.get('mcqs', qid);
+        if (m) { m.topicId = topic.id; m.system = topic.system || ''; await DB.put('mcqs', m); }
+      }
+      toast(`Renamed to "${name}" and filed under "${topic.name}".`, 7000);
+    } catch (e) { toast(`Renamed to "${name}".`, 5000); }
+    App.render(true);
+  },
+
   lecSlideAdd(el) {
     const inp = $('#slide-file');
     if (!inp) return;
@@ -267,13 +325,31 @@ Object.assign(A, {
     } catch (e) { toast(e.message || String(e), 7000); }
   },
 
+  /** File every stranded lecture, one at a time so a rate limit does not lose the lot. */
+  async lecPlaceAll() {
+    const list = (await Lectures.all()).filter(l => !l.topicId && (l.mcqIds?.length || l.slideMcqIds?.length || l.state === 'done'));
+    if (!list.length) return toast('Everything is already filed.');
+    let done = 0, failed = 0;
+    for (const l of list) {
+      toast(`Filing "${l.topic}" (${done + 1} of ${list.length})…`, 3000);
+      try {
+        await A.lecPlace({ dataset: { id: l.id } });
+        // lecPlace reports its own failures, so check what actually happened rather than trusting it.
+        ((await Lectures.get(l.id))?.topicId) ? done++ : failed++;
+      } catch (e) { console.warn('place', l.topic, e); failed++; }
+      await sleep(1000);
+    }
+    toast(`Filed ${done} lecture${done === 1 ? '' : 's'}${failed ? `, ${failed} could not be worked out` : ''}.`, 8000);
+    App.render(true);
+  },
+
   /** Work out what the roster's shorthand meant, and file the lecture under it. */
   async lecPlace(el) {
     const l = await Lectures.get(el.dataset.id);
     if (!l) return;
     toast(`Working out what "${l.topic}" is…`);
     try {
-      const { topic } = await Focus.study(`${l.topic}${l.subject ? ' (' + l.subject + ')' : ''}`, { amc: 0, mbbs: 0 });
+      const { topic } = await Focus.study(`${l.topic}${l.subject ? ' (' + l.subject + ')' : ''}`, { amc: 0, mbbs: 0, context: l.transcript || '' });
       l.topicId = topic.id;
       await Lectures.save(l);
       // Anything already written for this lecture moves across with it.

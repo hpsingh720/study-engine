@@ -60,6 +60,23 @@ const App = {
     // Restore the mind map text size the reader settled on.
     const mm = $('.mm');
     if (mm) mm.style.setProperty('--mmf', (+localStorage.getItem('mmFont') || 1) + 'rem');
+
+    // The record screen can sit open from one class into the next, so follow the clock: when the
+    // hour rolls over, move the picker to the class that is now happening.
+    const pick = $('#lec-pick');
+    if (pick) {
+      this.timer = setInterval(async () => {
+        const sel = $('#lec-pick');
+        if (!sel || sel.dataset.touched) return;
+        const now = await Timetable.suggestNow().catch(() => null);
+        if (!now || sel.value === now.id) return;
+        if (![...sel.options].some(o => o.value === now.id)) return;
+        sel.value = now.id;
+        C.pickClass(sel);
+        toast(`Now: ${now.topic || now.label || 'next class'}`, 4000);
+      }, 60000);
+      pick.addEventListener('change', () => { pick.dataset.touched = '1'; });
+    }
     const s = Practice.s;
     if (location.hash === '#/session' && s && !s.finished && s.limit) {
       const tick = () => {
@@ -328,6 +345,26 @@ const A = {
     await Practice.start({ kind: 'topic', title: t.name + (el.dataset.bank && el.dataset.bank !== 'all' ? ' · ' + (BANK_LABEL[el.dataset.bank] || 'Real questions') : ''), mode: 'tutor', topicId: t.id, topicIds: [t.id], type: el.dataset.type, bank: el.dataset.bank || 'all', count: 60, weightMistakes: true });
   },
   async moreMcqs(el) { await Queue.add('mcqgen', { topicId: el.dataset.id }, 0); toast('Writing more questions…'); App.render(true); },
+
+  /**
+   * The pages the bottom bar has no room for.
+   *
+   * Six tabs fit on a phone; the sidebar has nine. Ask books, Library and Help were in the sidebar
+   * only, so on a phone or iPad they could not be reached at all — "More" went straight to
+   * Settings rather than opening anything.
+   */
+  moreMenu() {
+    const items = [
+      ['#/search', '⌕', 'Ask books', 'Ask a question and get the answer out of your own books'],
+      ['#/shelves', '▤', 'Subjects', 'Subject, chapter, topic — the way the book teaches it'],
+      ['#/timetable', '🗓', 'Class roster', 'Your fixed week and this month\'s topics'],
+      ['#/library', '▦', 'Library', 'Add and manage your books'],
+      ['#/settings', '⚙', 'Settings', 'Keys, sync, theme'],
+      ['#/help', '?', 'Help', 'How to use and look after the app']
+    ];
+    openModal(`<h3>More</h3><div class="menu mt">${items.map(([href, icon, name, hint]) =>
+      `<a class="btn full" href="${href}" data-act="closeModal"><span><b>${icon} ${esc(name)}</b><br><small class="muted">${esc(hint)}</small></span></a>`).join('')}</div>`);
+  },
 
   pickShelf(el) { sessionStorage.setItem('shelf', el.dataset.id); App.render(); },
   allSubjects() { sessionStorage.removeItem('shelf'); App.render(); },
@@ -905,6 +942,15 @@ const F = {
 
 // Change / input handlers
 const C = {
+  /** Picking today's class fills the topic and the faculty from the roster. */
+  pickClass(el) {
+    const o = el.selectedOptions[0];
+    const t = $('#lec-topic'), f = $('#lec-faculty');
+    if (t) t.value = o?.dataset.topic || '';
+    if (f) f.value = o?.dataset.faculty || '';
+    if (!o?.value && t) t.focus();
+  },
+
   nblm(el) { localStorage.setItem('nblm', el.value); toast('Saved'); },
   ocrWorkers(el) { localStorage.setItem('ocrWorkers', el.value); toast('Saved — reload the page (Ctrl + R) to apply it now'); },
   bgRun(el) { localStorage.setItem('bgRun', el.checked ? '1' : '0'); if (el.checked && Object.values(Queue.running).some(Boolean)) KeepAlive.start(); else if (!el.checked) KeepAlive.stop(); toast(el.checked ? 'Will keep working when Chrome is minimised' : 'Off'); },
