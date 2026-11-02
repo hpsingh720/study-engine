@@ -246,6 +246,8 @@ LECTURE TOPIC: ${l.topic}${l.faculty ? ' (taught by ' + l.faculty + ')' : ''}
 TRANSCRIPT:
 ${l.transcript.slice(0, 60000)}
 
+${l.slideText?.length ? `WHAT WAS WRITTEN ON THE SLIDES — lists, classifications and criteria the lecturer put up and read off rather than dictated, so the transcript does not contain them. Treat these as taught material and write questions from them too:\n${l.slideText.join('\n---\n').slice(0, 12000)}\n` : ''}
+
 ${sheet ? `THE STUDENT'S EXISTING REVISION SHEET on this topic:\n${JSON.stringify({ management: sheet.sections?.management, comparison: sheet.comparison }).slice(0, 10000)}\n` : ''}
 QUESTIONS ALREADY IN THE STUDENT'S BANK on this topic — do NOT write anything that tests the same point:
 ${existing || '(none yet)'}
@@ -475,20 +477,43 @@ Return JSON: {"mcqs":[{"stem":"","options":["","","",""],"answer":0,"explanation
 Lecture transcript, for context on what was being taught around it:
 ${(l.transcript || '').slice(0, 6000) || '(no transcript)'}
 
-If the slide shows something examinable — a diagram, an X-ray or scan, a pedigree, a specimen, a graph, a classification table — write 1-3 MBBS-style questions that can only be answered by looking at it. Build the question around what is visible ("the finding arrowed", "this pattern"), not around the slide's title.
+Two jobs.
 
-If it is only a title slide, a list of bullet points, a photo of the room or anything with nothing to examine, return {"mcqs":[]}.
+1. "text": copy out everything written on the slide, as written — headings, every bullet, every
+   number, every item of a list. A slide that lists the complications of a condition is worth as
+   much as any diagram, and the transcript will not contain that list because it was read off the
+   screen rather than spoken. Return "" only if there is genuinely no text.
+
+2. "mcqs": 1-4 MBBS-style questions from this slide.
+   - If it shows something visual — a diagram, an X-ray or scan, a pedigree, a specimen, a graph —
+     write questions that need the picture, built around what is visible ("the finding arrowed",
+     "this pattern"), and set "needsImage": true on them.
+   - If it is text — a list, a classification, criteria, doses, a table — write ordinary questions
+     from what it says, and set "needsImage": false. Do not skip a text slide: its content is
+     exactly what the lecturer wanted remembered.
+   - Only a title slide, a photo of the room, or a slide with nothing examinable returns no
+     questions. Say so with "mcqs": [].
 
 EXACTLY 4 options each, one defensible answer, plausible distractors.
 "explanation": first line "Answer: <option text>", then why, then one short line per wrong option.
 "master": one line — the fact needed to never miss it.
 
-Return JSON: {"mcqs":[{"stem":"","options":["","","",""],"answer":0,"explanation":"","difficulty":"medium","master":""}]}`
+Return JSON: {"text":"","mcqs":[{"stem":"","options":["","","",""],"answer":0,"explanation":"","difficulty":"medium","master":"","needsImage":false}]}`
         });
       } catch (e) { console.warn('slide failed', e); continue; }
 
+      // A question that needs the picture carries it; one written off a list of complications is an
+      // ordinary question and should not drag an image into practice with it.
       const list = (out?.mcqs || [])
-        .map(m => cleanMcq({ ...m, type: 'IMG' }, topic, { type: 'IMG', img: s.id, src: 'lecture slide: ' + l.topic, system: topic?.system || '' }))
+        .map(m => {
+          const visual = m.needsImage !== false;
+          return cleanMcq({ ...m, type: visual ? 'IMG' : 'MBBS' }, topic, {
+            type: visual ? 'IMG' : 'MBBS',
+            img: visual ? s.id : null,
+            src: 'lecture slide: ' + l.topic,
+            system: topic?.system || ''
+          });
+        })
         .filter(Boolean);
       for (const q of list) { q.lectureId = l.id; q.keyedBy = 'lecture'; }
       if (list.length) { await DB.putMany('mcqs', list); made.push(...list); }
@@ -496,6 +521,14 @@ Return JSON: {"mcqs":[{"stem":"","options":["","","",""],"answer":0,"explanation
       const fresh = await this.get(l.id);
       const sl = (fresh.slides || []).find(x => x.id === s.id);
       if (sl) { sl.used = 1; sl.made = list.length; }
+
+      // Keep what was written on the slide with the lecture: it is content the transcript never
+      // had, because it was read off the screen rather than said aloud.
+      const text = String(out?.text || '').trim();
+      if (text) {
+        if (sl) sl.text = text.slice(0, 4000);
+        fresh.slideText = [...new Set([...(fresh.slideText || []), text.slice(0, 4000)])].slice(0, 40);
+      }
       fresh.slideMcqIds = [...new Set([...(fresh.slideMcqIds || []), ...list.map(q => q.id)])];
       await this.save(fresh);
       this._paint();
