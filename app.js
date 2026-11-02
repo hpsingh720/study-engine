@@ -363,7 +363,19 @@ const A = {
       ['#/help', '?', 'Help', 'How to use and look after the app']
     ];
     openModal(`<h3>More</h3><div class="menu mt">${items.map(([href, icon, name, hint]) =>
-      `<a class="btn full" href="${href}" data-act="closeModal"><span><b>${icon} ${esc(name)}</b><br><small class="muted">${esc(hint)}</small></span></a>`).join('')}</div>`);
+      `<button class="btn full" data-act="goPage" data-href="${href}"><span><b>${icon} ${esc(name)}</b><br><small class="muted">${esc(hint)}</small></span></button>`).join('')}</div>`);
+  },
+
+  /**
+   * Go to a page from inside a dialog.
+   *
+   * A link cannot do this: the click handler cancels the default action of anything carrying
+   * data-act that is not a button, so an <a> with an action closed the dialog and swallowed its
+   * own navigation.
+   */
+  goPage(el) {
+    closeModal();
+    location.hash = el.dataset.href;
   },
 
   pickShelf(el) { sessionStorage.setItem('shelf', el.dataset.id); App.render(); },
