@@ -1,6 +1,10 @@
 // Offline support: cache the app shell and libraries; never cache API calls.
-const CACHE = 'study-engine-v111';
+const CACHE = 'study-engine-v112';
 const LIBS = 'study-engine-libs'; // libraries kept across app updates
+// Scripts are requested with ?v=NNN so that a browser or an old service worker cannot serve a
+// stale copy after an update. The shell list has to match what the page asks for.
+const V = CACHE.split('-v')[1] || '';
+const q = u => /\.(js|css)$/.test(u) ? `${u}?v=${V}` : u;
 const SHELL = ['./', 'index.html', 'styles.css', 'manifest.webmanifest', 'icon.svg', 'icon-180.png', 'icon-512.png',
   'util.js', 'seed.js', 'db.js', 'semantic.js', 'quality.js', 'embed-worker.js', 'ai.js', 'providers.js', 'engine.js', 'review.js', 'sync.js', 'practice.js', 'planner.js', 'notes.js', 'lectures.js', 'timetable.js', 'focus.js', 'views.js', 'app.js', 'views-lectures.js',
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.3.11.174/pdf.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/pdf.3.11.174/pdf.worker.min.js'];
@@ -9,7 +13,7 @@ const SHELL = ['./', 'index.html', 'styles.css', 'manifest.webmanifest', 'icon.s
 self.addEventListener('install', e => {
   const isLib = u => /^https:/.test(u);
   e.waitUntil(Promise.all([
-    caches.open(CACHE).then(c => Promise.allSettled(SHELL.filter(u => !isLib(u)).map(u => c.add(u)))),
+    caches.open(CACHE).then(c => Promise.allSettled(SHELL.filter(u => !isLib(u)).map(u => c.add(q(u))))),
     caches.open(LIBS).then(c => Promise.allSettled(SHELL.filter(isLib).map(async u => { if (await c.match(u)) return; const old = await caches.match(u); if (old) return c.put(u, old); await c.add(u); }) /* reuse the copy an older version saved */))
   ]));
   self.skipWaiting();
