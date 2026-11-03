@@ -357,6 +357,7 @@ const A = {
     const items = [
       ['#/search', '⌕', 'Ask books', 'Ask a question and get the answer out of your own books'],
       ['#/shelves', '▤', 'Subjects', 'Subject, chapter, topic — the way the book teaches it'],
+      ['#/notes', '✐', 'Class notes', 'Handwritten notes from your own classes, with every photo read'],
       ['#/timetable', '🗓', 'Class roster', 'Your fixed week and this month\'s topics'],
       ['#/library', '▦', 'Library', 'Add and manage your books'],
       ['#/settings', '⚙', 'Settings', 'Keys, sync, theme'],

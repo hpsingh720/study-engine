@@ -435,6 +435,24 @@ Return JSON: {"mcqs":[{"stem":"","options":["","","",""],"answer":0,"explanation
     return mediaId;
   },
 
+  /**
+   * The same, for a photo already taken in the app's own camera.
+   *
+   * Comes in as a JPEG data URL that has been framed and trimmed, so it is stored a little larger
+   * than a straight file upload — a trimmed X-ray has already thrown away the room around it, and
+   * what is left is all detail worth keeping.
+   */
+  async addSlideData(id, dataUrl) {
+    const l = await this.get(id);
+    if (!l) throw new Error('That lecture is gone');
+    const mediaId = 'img-' + uid();
+    await DB.put('media', { id: mediaId, data: await compressImage(dataUrl, 1600, 0.86), kind: 'lecture' });
+    (l.slides ||= []).push({ id: mediaId, at: Date.now() });
+    await this.save(l);
+    this._paint();
+    return mediaId;
+  },
+
   async removeSlide(id, mediaId) {
     const l = await this.get(id);
     if (!l) return;
@@ -535,6 +553,276 @@ Return JSON: {"text":"","mcqs":[{"stem":"","options":["","","",""],"answer":0,"e
       await sleep(800);
     }
     return made.length;
+  },
+
+  // ---------- notes for the practical exam ----------
+
+  /**
+   * Read every photograph once, and keep the reading.
+   *
+   * A practical class is forty X-rays in ninety minutes, and the transcript of it is useless on its
+   * own: "and here you can see the classic appearance" means nothing in June. So each photograph is
+   * read on its own — what it is, what is visible, how to recognise it in the five seconds a spotter
+   * station allows, and what the examiner asks there — and that reading is stored on the slide.
+   * Stored rather than recomputed, because this is the slow part and the class should survive a
+   * dropped connection halfway through.
+   */
+  async readSlides(id, onProgress) {
+    const l = await this.get(id);
+    if (!l?.slides?.length) return 0;
+
+    const todo = [];
+    for (const [i, s] of l.slides.entries()) {
+      if (s.read) continue;
+      const m = await DB.get('media', s.id);
+      if (m?.data) todo.push({ i, id: s.id, data: m.data });
+    }
+    if (!todo.length) return 0;
+
+    let done = 0;
+    for (const s of todo) {
+      onProgress?.(done + 1, todo.length);
+      let out;
+      try {
+        out = await AI.call({
+          images: [s.data], json: true, temperature: 0.2,
+          system: typeof SYSTEM_TUTOR !== 'undefined' ? SYSTEM_TUTOR : undefined,
+          prompt: `A photograph taken by an Indian final-year MBBS student during a practical class on "${l.topic}"${l.subject ? ` (${l.subject})` : ''}.
+
+Read it the way an examiner at the station would expect it read.
+
+"kind": one of "imaging" (radiograph, CT, MRI, ultrasound, ECG), "instrument", "specimen",
+  "clinical" (a patient, or a sign), "slide" (projected or written text), "chart", "other".
+
+For imaging, instruments, specimens and clinical photographs:
+  "label"     — what it is, in the examiner's words ("AP chest radiograph of an infant")
+  "findings"  — what is actually visible, most important first. Only what you can see.
+  "diagnosis" — the single most likely diagnosis, or "" if the picture does not support one
+  "clues"     — how to recognise this in five seconds: the one or two things that give it away
+  "viva"      — the 2 to 4 questions an Indian examiner asks at this station, each with a short answer
+  "text"      — ""
+
+For a slide of text, a table or a blackboard:
+  "text" — copy out everything written, as written: headings, every bullet, every number, every
+    dose. This is the part the transcript never has, because it was read off the screen.
+  and leave "findings", "clues" and "viva" empty or very short.
+
+Be straight about doubt. If the film could be either of two things, write that in "diagnosis"
+("either X or Y, distinguished by …") instead of picking one. A wrong label learnt from this
+becomes a wrong answer at the station, which is worse than an honest maybe.
+
+If the photograph is blurred, is of the room, or has nothing examinable on it, return
+"kind":"other" and "label":"not usable".
+
+Return JSON: {"kind":"","label":"","findings":[""],"diagnosis":"","clues":[""],"viva":[{"q":"","a":""}],"text":""}`
+        });
+      } catch (e) { console.warn('read slide failed', e); continue; }
+      if (!out) continue;
+
+      const fresh = await this.get(id);
+      const sl = (fresh.slides || []).find(x => x.id === s.id);
+      if (sl) {
+        sl.read = {
+          kind: String(out.kind || 'other'),
+          label: String(out.label || '').slice(0, 200),
+          findings: (out.findings || []).map(String).slice(0, 10),
+          diagnosis: String(out.diagnosis || '').slice(0, 300),
+          clues: (out.clues || []).map(String).slice(0, 6),
+          viva: (out.viva || []).filter(v => v?.q).map(v => ({ q: String(v.q), a: String(v.a || '') })).slice(0, 5)
+        };
+        const text = String(out.text || '').trim();
+        if (text) {
+          sl.text = text.slice(0, 4000);
+          fresh.slideText = [...new Set([...(fresh.slideText || []), text.slice(0, 4000)])].slice(0, 60);
+        }
+      }
+      await this.save(fresh);
+      done++;
+      await sleep(600);
+    }
+    return done;
+  },
+
+  /**
+   * Compose the class into notes.
+   *
+   * Written from the readings rather than the pictures, so the whole class fits in one request
+   * however many photographs there were. The pictures come back at display time, pinned next to
+   * what was read off them.
+   */
+  async makeNotes(id, onProgress) {
+    const l0 = await this.get(id);
+    if (!l0) throw new Error('That lecture is gone');
+
+    await this.readSlides(id, (n, t) => onProgress?.(`Reading photo ${n} of ${t}…`));
+
+    const l = await this.get(id);
+    const slides = l.slides || [];
+    const readings = slides.map((s, i) => {
+      const r = s.read;
+      if (!r || r.label === 'not usable') return null;
+      return `PHOTO ${i}  [${r.kind}]  ${r.label}
+${r.findings?.length ? `  visible: ${r.findings.join('; ')}\n` : ''}${r.diagnosis ? `  diagnosis: ${r.diagnosis}\n` : ''}${r.clues?.length ? `  recognise by: ${r.clues.join('; ')}\n` : ''}${r.viva?.length ? `  asked here: ${r.viva.map(v => v.q + ' — ' + v.a).join(' | ')}\n` : ''}${s.text ? `  written on it: ${s.text.slice(0, 1200)}\n` : ''}`;
+    }).filter(Boolean);
+
+    if (!readings.length && !(l.transcript || '').trim()) {
+      throw new Error('Nothing to make notes from yet — record the class or add some photos first.');
+    }
+
+    onProgress?.('Writing the notes…');
+
+    const out = await AI.call({
+      json: true, temperature: 0.35,
+      system: typeof SYSTEM_TUTOR !== 'undefined' ? SYSTEM_TUTOR : undefined,
+      prompt: `Make revision notes from one class, for the Indian final-year MBBS student who sat in it.
+
+Class: "${l.topic}"${l.subject ? ` · ${l.subject}` : ''}${l.faculty ? ` · taught by ${l.faculty}` : ''}
+Date: ${new Date(l.started || Date.now()).toDateString()}
+
+These notes are what he reads the night before the practical exam, months later, when he remembers
+nothing of the room. They have to stand in for having been there. Two rules follow from that:
+everything taught goes in, and nothing that was not taught gets invented. Where the class was thin
+on something it clearly assumed, you may add it, but keep such additions to what any examiner would
+expect a final-year to know, and put them in their own section headed as background.
+
+${l.transcript ? `WHAT WAS SAID (transcript, imperfect — the Hindi and Punjabi stretches are missing):
+${l.transcript.slice(0, 30000)}
+` : '(the class was not recorded — work from the photographs)\n'}
+${readings.length ? `WHAT THE PHOTOGRAPHS SHOW — each was read one by one. The numbers are the photo's
+position, and you must reuse them in "spotters" so each entry is shown beside its own picture:
+${readings.join('\n').slice(0, 30000)}
+` : ''}
+Return JSON, and fill every part that the class supports:
+
+{
+  "title": "what this class was about, four words or so",
+  "subtitle": "one line on what it covered",
+  "approach": { "h": "e.g. Reading a paediatric chest film", "steps": ["the ordered drill to run at the station, as taught"] },
+  "sections": [{
+    "h": "heading",
+    "colour": "blue | green | amber | rose | violet",
+    "points": ["the actual content — full enough to learn from, not headings pretending to be notes"],
+    "mnemonic": "only if the lecturer gave one, or one is genuinely standard. Otherwise \\"\\".",
+    "table": { "head": ["col", "col"], "rows": [["", ""]] }
+  }],
+  "spotters": [{
+    "i": 0,
+    "label": "what the examiner calls it",
+    "diagnosis": "",
+    "clues": ["what gives it away at a glance"],
+    "viva": [{ "q": "", "a": "" }]
+  }],
+  "viva": [{ "q": "questions on the class as a whole", "a": "" }],
+  "traps": ["the mistakes that lose marks here — wrong answers students actually give"],
+  "mustKnow": ["the handful of lines that must be known cold"]
+}
+
+On the parts:
+- "sections": as many as the class needs. Use a table where the content is a comparison or a set of
+  values; use points otherwise. Give consecutive sections different colours.
+- "spotters": one per usable photograph, in photo order, carrying its "i" through unchanged. This is
+  the part he revises from, so the clues must be the ones that actually separate this film from the
+  film it gets confused with.
+- "traps": only real ones, from how the lecturer corrected the class or from what is commonly
+  confused. An empty list is better than a made-up one.
+- Leave "table" out of a section that does not need one. Leave any list empty rather than padding it.
+- Indian practice and Indian names throughout, since this is an Indian exam.`
+    });
+
+    if (!out?.title && !out?.sections?.length) throw new Error('The notes came back empty — try again in a minute.');
+
+    const notes = {
+      title: String(out.title || l.topic || 'Class notes').slice(0, 120),
+      subtitle: String(out.subtitle || '').slice(0, 300),
+      approach: out.approach?.steps?.length
+        ? { h: String(out.approach.h || 'How to approach it'), steps: out.approach.steps.map(String).slice(0, 14) } : null,
+      sections: (out.sections || []).filter(s => s?.h).map(s => ({
+        h: String(s.h).slice(0, 160),
+        colour: ['blue', 'green', 'amber', 'rose', 'violet'].includes(s.colour) ? s.colour : 'blue',
+        points: (s.points || []).map(String).slice(0, 40),
+        mnemonic: String(s.mnemonic || '').slice(0, 300),
+        table: s.table?.rows?.length ? { head: (s.table.head || []).map(String), rows: s.table.rows.map(r => (r || []).map(String)) } : null
+      })).slice(0, 30),
+      spotters: (out.spotters || []).filter(s => s && Number.isInteger(+s.i)).map(s => ({
+        i: +s.i,
+        label: String(s.label || '').slice(0, 200),
+        diagnosis: String(s.diagnosis || '').slice(0, 300),
+        clues: (s.clues || []).map(String).slice(0, 8),
+        viva: (s.viva || []).filter(v => v?.q).map(v => ({ q: String(v.q), a: String(v.a || '') })).slice(0, 6)
+      })).slice(0, 60),
+      viva: (out.viva || []).filter(v => v?.q).map(v => ({ q: String(v.q), a: String(v.a || '') })).slice(0, 25),
+      traps: (out.traps || []).map(String).slice(0, 15),
+      mustKnow: (out.mustKnow || []).map(String).slice(0, 15),
+      made: Date.now()
+    };
+
+    const fresh = await this.get(id);
+    fresh.notes = notes;
+    await this.save(fresh);
+    this._paint();
+    return notes;
+  },
+
+  /**
+   * The notes, on paper.
+   *
+   * Handwriting and colour are not decoration here: the point is that it reads like the notes he
+   * would have made himself, which is the thing people actually revise from, rather than another
+   * screen of grey prose. Photographs are pinned in beside their own reading.
+   */
+  notesHTML(notes, slideData = {}) {
+    if (!notes) return '';
+    const n = notes;
+    const li = a => (a || []).map(x => `<li>${esc(x)}</li>`).join('');
+
+    const table = t => !t?.rows?.length ? '' : `<table class="hn-table">
+      ${t.head?.length ? `<thead><tr>${t.head.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead>` : ''}
+      <tbody>${t.rows.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+
+    const spot = n.spotters.map((s, k) => {
+      const img = slideData[s.i];
+      return `<figure class="hn-spot" style="--tilt:${(k % 3 - 1) * 0.5}deg">
+        ${img ? `<img src="${img}" alt="" data-act="zoomImg">` : '<div class="hn-nopic">photo gone</div>'}
+        <figcaption>
+          <b>${esc(s.label || 'Spotter ' + (k + 1))}</b>
+          ${s.diagnosis ? `<p class="hn-dx">${esc(s.diagnosis)}</p>` : ''}
+          ${s.clues?.length ? `<p class="hn-lab">gives it away</p><ul>${li(s.clues)}</ul>` : ''}
+          ${s.viva?.length ? `<p class="hn-lab">asked here</p>${s.viva.map(v =>
+            `<p class="hn-q">${esc(v.q)}</p><p class="hn-a">${esc(v.a)}</p>`).join('')}` : ''}
+        </figcaption></figure>`;
+    }).join('');
+
+    return `<div class="hnotes">
+      <header class="hn-top">
+        <h2>${esc(n.title)}</h2>
+        ${n.subtitle ? `<p>${esc(n.subtitle)}</p>` : ''}
+      </header>
+
+      ${n.approach ? `<section class="hn-card c-violet hn-drill">
+        <h3>${esc(n.approach.h)}</h3>
+        <ol>${li(n.approach.steps)}</ol></section>` : ''}
+
+      ${n.mustKnow?.length ? `<section class="hn-must">
+        <h3>Know these cold</h3>
+        <ul>${n.mustKnow.map(x => `<li><mark>${esc(x)}</mark></li>`).join('')}</ul></section>` : ''}
+
+      ${n.sections.map(s => `<section class="hn-card c-${s.colour}">
+        <h3>${esc(s.h)}</h3>
+        ${s.points?.length ? `<ul>${li(s.points)}</ul>` : ''}
+        ${table(s.table)}
+        ${s.mnemonic ? `<p class="hn-mn">${esc(s.mnemonic)}</p>` : ''}
+      </section>`).join('')}
+
+      ${spot ? `<h3 class="hn-h">The photos, one by one</h3><div class="hn-spots">${spot}</div>` : ''}
+
+      ${n.traps?.length ? `<section class="hn-card c-rose">
+        <h3>Where marks go</h3><ul>${li(n.traps)}</ul></section>` : ''}
+
+      ${n.viva?.length ? `<section class="hn-viva"><h3>Viva</h3>
+        ${n.viva.map(v => `<p class="hn-q">${esc(v.q)}</p><p class="hn-a">${esc(v.a)}</p>`).join('')}</section>` : ''}
+
+      <p class="hn-foot">Made ${fmtDate(n.made)} from the class itself.</p>
+    </div>`;
   },
 
   // ---------- recordings started with no page open ----------

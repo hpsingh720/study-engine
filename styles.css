@@ -653,3 +653,117 @@ body.examfull #selbar.touch { bottom: calc(96px + env(safe-area-inset-bottom)); 
 
 /* "More" is a button in the tab bar, so it must not look like one. */
 .tabbar button.navlink { background: none; border: 0; font: inherit; cursor: pointer; }
+
+/* ============================================================
+   The camera (capture.js)
+   A lecturer moves through twenty films in an hour, so the preview never pauses and the shots pile
+   up in a roll underneath. Sorting out what to keep happens afterwards, not between shots.
+   ============================================================ */
+.cap { width: min(94vw, 620px); }
+.cap-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.cap-stage { position: relative; background: #000; border-radius: var(--radius); overflow: hidden; aspect-ratio: 4 / 3; }
+.cap-stage video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cap-stage.flash::after { content: ''; position: absolute; inset: 0; background: #fff; animation: capflash .14s ease-out; }
+@keyframes capflash { from { opacity: .85; } to { opacity: 0; } }
+
+.cap-roll { display: flex; gap: 6px; overflow-x: auto; padding: 8px 0 2px; min-height: 4px; scroll-behavior: smooth; }
+.cap-roll img { height: 54px; width: 54px; object-fit: cover; border-radius: 8px; border: 2px solid var(--line-2); cursor: pointer; flex: 0 0 auto; }
+.cap-roll img:hover { border-color: var(--bad); }
+.cap .btn.big { padding: 14px 22px; font-size: 1.05rem; }
+
+/* Deciding what to keep. */
+.cap-rev { width: min(94vw, 760px); }
+.rev-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; max-height: 58vh; overflow-y: auto; padding: 2px; }
+.rev { margin: 0; background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.rev img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; background: #000; }
+.rev figcaption { display: flex; justify-content: space-between; padding: 5px 8px; font-size: .82rem; }
+
+/* Trimming. The room around a film is most of the photo and none of the information. */
+.cap-crop { width: min(94vw, 680px); }
+.crop-stage { position: relative; background: #0b0b0b; border-radius: var(--radius); overflow: hidden; display: flex; align-items: center; justify-content: center; max-height: 62vh; touch-action: none; }
+.crop-stage img { max-width: 100%; max-height: 62vh; display: block; user-select: none; -webkit-user-drag: none; }
+.crop-box { position: absolute; border: 2px solid #fff; box-shadow: 0 0 0 9999px rgba(0, 0, 0, .55); cursor: move; touch-action: none; }
+.crop-box .ch { position: absolute; width: 30px; height: 30px; border: 3px solid #fff; background: rgba(255, 255, 255, .22); border-radius: 4px; }
+.crop-box .ch.tl { left: -15px; top: -15px; border-right: 0; border-bottom: 0; }
+.crop-box .ch.tr { right: -15px; top: -15px; border-left: 0; border-bottom: 0; }
+.crop-box .ch.bl { left: -15px; bottom: -15px; border-right: 0; border-top: 0; }
+.crop-box .ch.br { right: -15px; bottom: -15px; border-left: 0; border-top: 0; }
+
+/* ============================================================
+   Class notes, in handwriting
+   Paper rather than a screen, and the same paper in both themes: these get read the night before a
+   practical, and printed, and neither wants a dark-blue page. Colour marks what a thing is, so the
+   eye can find "the trap" or "the drill" without reading.
+   ============================================================ */
+.hnotes {
+  --paper: #fffdf7; --rule: #e7e0cd; --pen: #1d2a4a; --pen-2: #44506e;
+  --c-blue: #2f5fa3; --c-green: #2f7a52; --c-amber: #a5701a; --c-rose: #b4473c; --c-violet: #6245a8;
+  background: var(--paper); color: var(--pen); border-radius: var(--radius); padding: 22px 20px 16px;
+  box-shadow: var(--shadow); font-family: Caveat, var(--read); font-size: 1.32rem; line-height: 1.55;
+}
+.hnotes h2, .hnotes h3 { font-family: Caveat, var(--read); margin: 0; letter-spacing: .01em; }
+.hn-top { text-align: center; border-bottom: 2px dashed var(--rule); padding-bottom: 10px; margin-bottom: 16px; }
+.hn-top h2 { font-size: 2.1rem; color: var(--c-violet); }
+.hn-top p { margin: 2px 0 0; color: var(--pen-2); font-size: 1.15rem; }
+.hn-h { font-size: 1.5rem; margin: 22px 0 8px; color: var(--c-violet); }
+
+.hn-card { position: relative; background: #fff; border: 1px solid var(--rule); border-left: 7px solid var(--c-blue);
+  border-radius: 8px; padding: 12px 15px; margin: 0 0 14px; }
+.hn-card h3 { font-size: 1.42rem; color: var(--c-blue); margin-bottom: 5px; }
+.hn-card.c-green { border-left-color: var(--c-green); } .hn-card.c-green h3 { color: var(--c-green); }
+.hn-card.c-amber { border-left-color: var(--c-amber); } .hn-card.c-amber h3 { color: var(--c-amber); }
+.hn-card.c-rose  { border-left-color: var(--c-rose); }  .hn-card.c-rose h3  { color: var(--c-rose); }
+.hn-card.c-violet{ border-left-color: var(--c-violet); }.hn-card.c-violet h3{ color: var(--c-violet); }
+.hnotes ul, .hnotes ol { margin: 4px 0 0; padding-left: 22px; }
+.hnotes li { margin: 1px 0; }
+.hn-drill ol { counter-reset: d; list-style: none; padding-left: 0; }
+.hn-drill ol li { counter-increment: d; padding-left: 30px; position: relative; margin: 4px 0; }
+.hn-drill ol li::before { content: counter(d); position: absolute; left: 0; top: 1px; width: 22px; height: 22px;
+  border: 2px solid var(--c-violet); border-radius: 50%; text-align: center; line-height: 19px; font-size: .95rem; color: var(--c-violet); }
+.hn-mn { margin: 8px 0 0; padding: 5px 10px; background: #fdf6dd; border: 1px dashed var(--c-amber); border-radius: 6px; color: var(--c-amber); }
+
+.hn-must { margin: 0 0 16px; }
+.hn-must h3 { font-size: 1.45rem; color: var(--c-rose); margin-bottom: 4px; }
+.hn-must ul { list-style: none; padding-left: 0; }
+.hn-must li { margin: 5px 0; }
+.hn-must mark { background: linear-gradient(transparent 52%, #ffe79a 52%, #ffe79a 94%, transparent 94%); color: var(--pen); padding: 0 2px; }
+
+.hn-table { width: 100%; border-collapse: collapse; margin: 8px 0 2px; font-size: 1.1rem; }
+.hn-table th, .hn-table td { border: 1px solid var(--rule); padding: 5px 8px; text-align: left; }
+.hn-table th { background: #f6f2e6; }
+
+/* The photographs, each beside what was read off it. The slight tilt is the point: these are the
+   student's own pictures stuck onto the page, not a gallery. */
+.hn-spots { display: grid; gap: 14px; }
+.hn-spot { display: grid; grid-template-columns: minmax(150px, 230px) 1fr; gap: 14px; margin: 0;
+  background: #fff; border: 1px solid var(--rule); border-radius: 8px; padding: 12px; }
+.hn-spot img { width: 100%; border-radius: 4px; background: #000; cursor: zoom-in;
+  transform: rotate(var(--tilt, 0deg)); box-shadow: 0 2px 8px rgba(0, 0, 0, .18); }
+.hn-nopic { display: grid; place-items: center; background: var(--sunk); border-radius: 4px; color: var(--muted); font-size: .9rem; }
+.hn-spot figcaption b { font-size: 1.3rem; color: var(--c-blue); }
+.hn-dx { margin: 2px 0 6px; color: var(--c-green); font-size: 1.28rem; }
+.hn-lab { margin: 8px 0 0; font-size: .95rem; letter-spacing: .08em; text-transform: uppercase;
+  font-family: var(--font); color: var(--muted); }
+.hn-q { margin: 7px 0 0; color: var(--c-violet); }
+.hn-q::before { content: 'Q '; opacity: .6; }
+.hn-a { margin: 0; color: var(--pen-2); }
+.hn-a::before { content: 'A '; opacity: .6; }
+.hn-viva { background: #fff; border: 1px solid var(--rule); border-radius: 8px; padding: 12px 15px; }
+.hn-viva h3 { font-size: 1.42rem; color: var(--c-violet); margin-bottom: 4px; }
+.hn-foot { margin: 16px 0 0; text-align: right; color: var(--muted); font-family: var(--font); font-size: .78rem; }
+
+@media (max-width: 620px) {
+  .hnotes { font-size: 1.24rem; padding: 16px 14px 12px; }
+  .hn-spot { grid-template-columns: 1fr; }
+  .hn-spot img { max-width: 320px; }
+}
+
+/* A taste of the notes on the lecture page, so the full page is a choice rather than a surprise. */
+.hn-mini { max-height: 420px; overflow: hidden; position: relative; mask-image: linear-gradient(#000 70%, transparent); }
+
+.notes-page { max-width: 900px; }
+@media print {
+  .notes-page .no-print, .hn-lab { display: none; }
+  .hnotes { box-shadow: none; background: #fff; font-size: 12pt; }
+  .hn-card, .hn-spot, .hn-viva { break-inside: avoid; }
+}

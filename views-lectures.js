@@ -18,12 +18,12 @@ Views.lectures = async () => {
          </div>
          <p class="muted small">${active.chunks * 2} min recorded${active.transcript ? ` · ${active.transcript.split(/\s+/).length} words kept` : ''}${active.unclearSeconds ? ` · ${Math.round(active.unclearSeconds / 60)} min too unclear to use` : ''}${active.error ? ` · <span class="danger">${esc(active.error)}</span>` : ''}</p>
          ${native ? '<p class="muted small">Safe to lock the screen or leave the app.</p>' : '<p class="muted small warn">Keep this tab open — browser recording stops if you leave.</p>'}
-         <input type="file" id="slide-file" accept="image/*" capture="environment" multiple hidden>
          <div class="row gap mt">
-           <button class="btn" data-act="lecSlideAdd" data-id="${active.id}">📷 Snap the slide${active.slides?.length ? ` (${active.slides.length})` : ''}</button>
+           <button class="btn primary" data-act="lecSlideAdd" data-id="${active.id}">📷 Camera${active.slides?.length ? ` · ${active.slides.length}` : ''}</button>
+           <button class="btn" data-act="lecSlidePick" data-id="${active.id}">From photos</button>
            <a class="btn ghost" href="#/lecture/${active.id}">Open this lecture</a>
          </div>
-         <p class="muted small">Photograph a diagram or table as it goes up — it becomes a picture question afterwards.</p>
+         <p class="muted small">The camera stays open — keep tapping for each film or diagram, and sort out what to keep at the end.</p>
          <button class="btn full danger mt" data-act="lecStop">Stop and make questions</button>
        </div>`
     : `<div class="card">
@@ -64,7 +64,7 @@ Views.lectures = async () => {
 
   return `<div class="page">
     <header class="page-head"><div><p class="eyebrow">College</p><h1>Lectures</h1></div>
-      <a class="btn ghost" href="#/timetable">Class roster</a></header>
+      <div class="row gap"><a class="btn ghost" href="#/notes">Class notes</a><a class="btn ghost" href="#/timetable">Class roster</a></div></header>
     ${unfiled.length ? `<div class="card soft">
       <p class="warn-t"><b>${unfiled.length} lecture${unfiled.length === 1 ? '' : 's'} not filed under a topic.</b> Their questions exist but never come up in practice or a system test, because they belong to nothing.</p>
       <p class="muted small">${unfiled.map(l => esc(l.topic)).join(' · ')}</p>
@@ -84,24 +84,38 @@ Views.lecture = async id => {
   const topic = l.topicId ? await DB.get('topics', l.topicId) : null;
 
   // Slides photographed during the class: a diagram never reaches the transcript.
-  const slides = [];
-  for (const s of l.slides || []) {
+  // The notes refer to photographs by their position in l.slides, so that position is carried
+  // here rather than the position in this list — one missing picture would otherwise shift every
+  // reading onto the wrong photo.
+  const slides = [], byIndex = {};
+  for (const [i, s] of (l.slides || []).entries()) {
     const m = await DB.get('media', s.id);
-    if (m?.data) slides.push({ ...s, data: m.data });
+    if (m?.data) { slides.push({ ...s, data: m.data }); byIndex[i] = m.data; }
   }
   const pending = slides.filter(s => !s.used).length;
   const slidesHtml = `<section class="card">
-    <div class="card-head"><h3>Slides from the class</h3><span class="muted small">${slides.length || 'none'}${pending ? ` · ${pending} not used yet` : ''}</span></div>
-    <p class="muted small">Photograph the diagrams, X-rays and tables the lecturer puts up. They become picture questions built on what was being said at the time.</p>
+    <div class="card-head"><h3>Photos from the class</h3><span class="muted small">${slides.length || 'none'}${pending ? ` · ${pending} not used yet` : ''}</span></div>
+    <p class="muted small">Films, diagrams and tables photographed in the room. They become picture questions built on what was being said at the time, and they are what the notes are written from.</p>
     ${slides.length ? `<div class="slide-strip">${slides.map(s => `<figure class="slide${s.used ? ' used' : ''}">
-      <img src="${s.data}" alt="">
-      <figcaption>${s.used ? `${s.made || 0} question${s.made === 1 ? '' : 's'}` : 'not used yet'}
+      <img src="${s.data}" alt="" data-act="zoomImg">
+      <figcaption>${s.read?.label ? esc(s.read.label.slice(0, 40)) : s.used ? `${s.made || 0} question${s.made === 1 ? '' : 's'}` : 'not used yet'}
         <button class="link" data-act="lecSlideDrop" data-id="${l.id}" data-m="${s.id}">remove</button></figcaption></figure>`).join('')}</div>` : ''}
-    <input type="file" id="slide-file" accept="image/*" capture="environment" multiple hidden>
     <div class="row gap mt">
-      <button class="btn" data-act="lecSlideAdd" data-id="${l.id}">${slides.length ? 'Add more slides' : 'Add a slide'}</button>
-      ${pending ? `<button class="btn primary" data-act="lecSlideMcqs" data-id="${l.id}">Write questions from ${pending} slide${pending === 1 ? '' : 's'}</button>` : ''}
+      <button class="btn primary" data-act="lecSlideAdd" data-id="${l.id}">📷 Camera</button>
+      <button class="btn" data-act="lecSlidePick" data-id="${l.id}">From photos</button>
+      ${pending ? `<button class="btn" data-act="lecSlideMcqs" data-id="${l.id}">Write questions from ${pending} photo${pending === 1 ? '' : 's'}</button>` : ''}
     </div></section>`;
+
+  // Notes: the thing he comes back to in June, when the room is long forgotten.
+  const notesHtml = `<section class="card">
+    <div class="card-head"><h3>Notes</h3>${l.notes ? `<a class="btn ghost sm" href="#/notes/${l.id}">Open full page</a>` : ''}</div>
+    ${l.notes
+      ? `<div class="hn-mini">${Lectures.notesHTML(l.notes, byIndex)}</div>
+         <div class="row gap mt"><button class="btn ghost sm" data-act="lecNotes" data-id="${l.id}">Rewrite them</button>
+           <a class="btn ghost sm" href="#/notes">All class notes</a></div>`
+      : `<p class="muted small">Colourful handwritten notes from the whole class — the transcript and every photo read together, each film with how to recognise it and what the examiner asks there. Made once and kept, so this is what you open before the practical.</p>
+         <button class="btn full primary mt" data-act="lecNotes" data-id="${l.id}">Make notes from this class</button>`}
+  </section>`;
 
   const qHtml = qs.map((m, i) => `<div class="card">
       <p class="muted small">Q${i + 1}${m.fromLecture ? ' · from: “' + esc(m.fromLecture) + '”' : ''}</p>
@@ -120,6 +134,7 @@ Views.lecture = async id => {
       : `<p class="warn-t small">Not filed under any topic yet, so these questions will not appear in revision. <button class="link" data-act="lecPlace" data-id="${l.id}">File it now</button> — it works out what the roster's shorthand means.</p>`}
 
     ${slidesHtml}
+    ${notesHtml}
     ${l.state === 'transcribed' ? `<button class="btn full primary" data-act="lecGenerate" data-id="${l.id}">Write questions from this lecture</button>` : ''}
     ${l.state === 'writing' ? '<p class="muted">Writing questions…</p>' : ''}
     ${l.error ? `<p class="warn">${esc(l.error)}</p>` : ''}
@@ -235,10 +250,68 @@ Views.timetable = async () => {
   </div>`;
 };
 
+/**
+ * Every set of class notes, in one place.
+ *
+ * The lecture page is where notes get made; this is where they get used, which is months later and
+ * usually the night before a practical. So it is sorted by subject rather than by date — by then
+ * what matters is "the paediatric imaging ones", not which Tuesday they were.
+ */
+Views.classNotes = async () => {
+  const all = (await Lectures.all()).filter(l => l.notes);
+  if (!all.length) {
+    return empty('No class notes yet',
+      'Open a lecture you have recorded or photographed and press "Make notes from this class".',
+      '<a class="btn primary" href="#/lectures">Go to Lectures</a>');
+  }
+
+  const groups = {};
+  for (const l of all) (groups[l.subject || 'Other'] ||= []).push(l);
+
+  const body = Object.entries(groups).sort((a, b) => a[0].localeCompare(b[0])).map(([sub, ls]) => `
+    <h3 class="mt">${esc(sub)}</h3>
+    ${ls.sort((a, b) => b.started - a.started).map(l => {
+      const n = l.notes, spots = n.spotters?.length || 0;
+      return `<a class="card row between mid" href="#/notes/${l.id}">
+        <div><b>${esc(n.title || l.topic)}</b><br><span class="muted small">${fmtDate(l.started)}${l.faculty ? ' · ' + esc(l.faculty) : ''} · ${n.sections?.length || 0} section${n.sections?.length === 1 ? '' : 's'}${spots ? ` · ${spots} photo${spots === 1 ? '' : 's'} read` : ''}</span></div>
+        <span class="ni">›</span></a>`;
+    }).join('')}`).join('');
+
+  return `<div class="page">
+    <header class="page-head"><div><p class="eyebrow">From your classes</p><h1>Class notes</h1></div>
+      <a class="btn ghost" href="#/lectures">Lectures</a></header>
+    <p class="muted small">Written from the recording and the photographs of each class. Open one before a practical: every film you photographed is in there with how to recognise it and what gets asked at that station.</p>
+    ${body}</div>`;
+};
+
+Views.classNote = async id => {
+  const l = await Lectures.get(id);
+  if (!l?.notes) return empty('No notes', 'There are no notes for that class.', '<a class="btn" href="#/notes">All class notes</a>');
+
+  const map = {};
+  for (const [i, s] of (l.slides || []).entries()) {
+    const m = await DB.get('media', s.id);
+    if (m?.data) map[i] = m.data;
+  }
+
+  return `<div class="page notes-page">
+    <header class="page-head no-print"><div><p class="eyebrow">${fmtDate(l.started)}${l.faculty ? ' · ' + esc(l.faculty) : ''}</p>
+      <h1>${esc(l.notes.title)}</h1></div>
+      <div class="row gap">
+        <button class="btn ghost sm" data-act="printNotes">Print / PDF</button>
+        <a class="btn ghost sm" href="#/lecture/${l.id}">The class</a>
+        <a class="btn ghost" href="#/notes">All notes</a>
+      </div></header>
+    <div id="notes-print">${Lectures.notesHTML(l.notes, map)}</div>
+  </div>`;
+};
+
 // ---- routes ----
 ROUTES.push(
   [/^#\/lectures$/, () => Views.lectures()],
   [/^#\/lecture\/([\w-]+)$/, m => Views.lecture(m[1])],
+  [/^#\/notes$/, () => Views.classNotes()],
+  [/^#\/notes\/([\w-]+)$/, m => Views.classNote(m[1])],
   [/^#\/timetable$/, () => Views.timetable()]
 );
 
@@ -296,19 +369,56 @@ Object.assign(A, {
     App.render(true);
   },
 
+  /**
+   * Open the camera and leave it open.
+   *
+   * A file input closes after every shot, which is hopeless when a lecturer is moving through
+   * twenty X-rays — by the time the picker has reopened the next film is already up. This shoots
+   * continuously, then asks once at the end which to keep and whether to trim them.
+   */
   lecSlideAdd(el) {
-    const inp = $('#slide-file');
-    if (!inp) return;
-    inp.onchange = async () => {
-      const files = [...(inp.files || [])];
-      if (!files.length) return;
-      toast(`Saving ${files.length} slide${files.length === 1 ? '' : 's'}…`);
-      for (const f of files) { try { await Lectures.addSlide(el.dataset.id, f); } catch (e) { console.warn(e); } }
-      inp.value = '';
-      toast('Saved. Tap "Write questions from slides" when the class is over.', 6000);
+    const id = el.dataset.id;
+    Capture.open(urls => A._saveShots(id, urls));
+  },
+
+  /** Photographs already taken with the normal camera app, several at a time. */
+  lecSlidePick(el) {
+    const id = el.dataset.id;
+    Capture.pick(urls => A._saveShots(id, urls));
+  },
+
+  async _saveShots(id, urls) {
+    toast(`Saving ${urls.length} photo${urls.length === 1 ? '' : 's'}…`);
+    let n = 0;
+    for (const u of urls) { try { await Lectures.addSlideData(id, u); n++; } catch (e) { console.warn(e); } }
+    toast(n === urls.length
+      ? `${n} photo${n === 1 ? '' : 's'} saved to this class.`
+      : `${n} of ${urls.length} saved — the rest would not store.`, 6000);
+    App.render(true);
+  },
+
+  /** Colourful notes from the whole class: the recording and every photograph, read together. */
+  async lecNotes(el) {
+    const id = el.dataset.id;
+    if (el.dataset.busy) return;
+    el.dataset.busy = '1';
+    try {
+      toast('Reading the class…', 6000);
+      const n = await Lectures.makeNotes(id, msg => toast(msg, 6000));
+      toast(`Notes ready — ${n.sections.length} section${n.sections.length === 1 ? '' : 's'}${n.spotters.length ? ` and ${n.spotters.length} photo${n.spotters.length === 1 ? '' : 's'} read one by one` : ''}.`, 8000);
+      location.hash = '#/notes/' + id;
       App.render(true);
-    };
-    inp.click();
+    } catch (e) {
+      toast(e.message || String(e), 9000);
+    } finally { delete el.dataset.busy; }
+  },
+
+  printNotes() {
+    const src = $('#notes-print');
+    if (!src) return;
+    const area = $('#print');
+    area.innerHTML = src.innerHTML;
+    window.print();
   },
 
   async lecSlideDrop(el) {
@@ -468,7 +578,19 @@ Object.assign(A, {
 
   weeklyCancel() { Views._weekly = null; App.render(); },
 
-  async classDelete(el) { await Timetable.remove(el.dataset.id); App.render(true); }
+  async classDelete(el) { await Timetable.remove(el.dataset.id); App.render(true); },
+
+  // ---- the camera (capture.js) ----
+  capShoot() { Capture.shoot(); },
+  capFlip() { Capture.flip(); },
+  capFinish() { Capture.finish(); },
+  capDrop(el) { Capture.drop(+el.dataset.i); },
+  capCrop(el) { Capture.crop(+el.dataset.i); },
+  capRemove(el) { Capture.remove(+el.dataset.i); },
+  capSave() { Capture.save(); },
+  capCancel() { Capture.cancel(); },
+  capCropOk() { Capture.cropOk(); },
+  capCropAll() { Capture.cropAll(); }
 });
 
 // ---- helpers ----
