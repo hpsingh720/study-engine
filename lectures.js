@@ -228,7 +228,9 @@ const Lectures = {
     // topic's practice or in a system test, so the lecture looks as though it produced nothing.
     if (!topic && typeof Focus !== 'undefined') {
       try {
-        const { topic: made } = await Focus.study(`${l.topic}${l.subject ? ' (' + l.subject + ')' : ''}`, { amc: 0, mbbs: 0, context: l.transcript || '' });
+        // Add subject/department to context so the classifier gets a strong hint about what system this is
+        const contextHint = `Department/Subject: ${l.subject || 'not specified'}\nFaculty: ${l.faculty || 'not specified'}\n`;
+        const { topic: made } = await Focus.study(`${l.topic}${l.subject ? ' (' + l.subject + ')' : ''}`, { amc: 0, mbbs: 0, context: contextHint + (l.transcript || '') });
         topic = made;
       } catch (e) { console.warn('could not place the lecture', e); }
     }
@@ -770,7 +772,7 @@ On the parts:
    * would have made himself, which is the thing people actually revise from, rather than another
    * screen of grey prose. Photographs are pinned in beside their own reading.
    */
-  notesHTML(notes, slideData = {}) {
+  notesHTML(notes, slideData = {}, lecture = null) {
     if (!notes) return '';
     const n = notes;
     const li = a => (a || []).map(x => `<li>${esc(x)}</li>`).join('');
@@ -794,6 +796,7 @@ On the parts:
 
     return `<div class="hnotes">
       <header class="hn-top">
+        ${lecture ? `<p class="hn-lec">${esc(lecture.topic || 'Untitled')}${lecture.faculty ? ' · ' + esc(lecture.faculty) : ''}${lecture.subject ? ' · ' + esc(lecture.subject) : ''}<br><small>${new Date(lecture.started || 0).toDateString()}</small></p>` : ''}
         <h2>${esc(n.title)}</h2>
         ${n.subtitle ? `<p>${esc(n.subtitle)}</p>` : ''}
       </header>

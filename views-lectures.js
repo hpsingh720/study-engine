@@ -17,13 +17,11 @@ Views.lectures = async () => {
            <span class="rec-dot"></span>
          </div>
          <p class="muted small">${active.chunks * 2} min recorded${active.transcript ? ` · ${active.transcript.split(/\s+/).length} words kept` : ''}${active.unclearSeconds ? ` · ${Math.round(active.unclearSeconds / 60)} min too unclear to use` : ''}${active.error ? ` · <span class="danger">${esc(active.error)}</span>` : ''}</p>
-         ${native ? '<p class="muted small">Safe to lock the screen or leave the app.</p>' : '<p class="muted small warn">Keep this tab open — browser recording stops if you leave.</p>'}
          <div class="row gap mt">
-           <button class="btn primary" data-act="lecSlideAdd" data-id="${active.id}">📷 Camera${active.slides?.length ? ` · ${active.slides.length}` : ''}</button>
-           <button class="btn" data-act="lecSlidePick" data-id="${active.id}">From photos</button>
-           <a class="btn ghost" href="#/lecture/${active.id}">Open this lecture</a>
+           <button class="btn primary" data-act="lecSlideAdd" data-id="${active.id}">Camera${active.slides?.length ? ` (${active.slides.length})` : ''}</button>
+           <button class="btn" data-act="lecSlidePick" data-id="${active.id}">Photos</button>
+           <a class="btn ghost" href="#/lecture/${active.id}">Open</a>
          </div>
-         <p class="muted small">The camera stays open — keep tapping for each film or diagram, and sort out what to keep at the end.</p>
          <button class="btn full danger mt" data-act="lecStop">Stop and make questions</button>
        </div>`
     : `<div class="card">
@@ -94,27 +92,25 @@ Views.lecture = async id => {
   }
   const pending = slides.filter(s => !s.used).length;
   const slidesHtml = `<section class="card">
-    <div class="card-head"><h3>Photos from the class</h3><span class="muted small">${slides.length || 'none'}${pending ? ` · ${pending} not used yet` : ''}</span></div>
-    <p class="muted small">Films, diagrams and tables photographed in the room. They become picture questions built on what was being said at the time, and they are what the notes are written from.</p>
+    <div class="card-head"><h3>Photos</h3><span class="muted small">${slides.length || 'none'}${pending ? ` · ${pending} not used` : ''}</span></div>
     ${slides.length ? `<div class="slide-strip">${slides.map(s => `<figure class="slide${s.used ? ' used' : ''}">
       <img src="${s.data}" alt="" data-act="zoomImg">
       <figcaption>${s.read?.label ? esc(s.read.label.slice(0, 40)) : s.used ? `${s.made || 0} question${s.made === 1 ? '' : 's'}` : 'not used yet'}
         <button class="link" data-act="lecSlideDrop" data-id="${l.id}" data-m="${s.id}">remove</button></figcaption></figure>`).join('')}</div>` : ''}
     <div class="row gap mt">
-      <button class="btn primary" data-act="lecSlideAdd" data-id="${l.id}">📷 Camera</button>
-      <button class="btn" data-act="lecSlidePick" data-id="${l.id}">From photos</button>
-      ${pending ? `<button class="btn" data-act="lecSlideMcqs" data-id="${l.id}">Write questions from ${pending} photo${pending === 1 ? '' : 's'}</button>` : ''}
+      <button class="btn primary" data-act="lecSlideAdd" data-id="${l.id}">Camera</button>
+      <button class="btn" data-act="lecSlidePick" data-id="${l.id}">Add photos</button>
+      ${pending ? `<button class="btn" data-act="lecSlideMcqs" data-id="${l.id}">Questions from ${pending}</button>` : ''}
     </div></section>`;
 
   // Notes: the thing he comes back to in June, when the room is long forgotten.
   const notesHtml = `<section class="card">
     <div class="card-head"><h3>Notes</h3>${l.notes ? `<a class="btn ghost sm" href="#/notes/${l.id}">Open full page</a>` : ''}</div>
     ${l.notes
-      ? `<div class="hn-mini">${Lectures.notesHTML(l.notes, byIndex)}</div>
+      ? `<div class="hn-mini">${Lectures.notesHTML(l.notes, byIndex, l)}</div>
          <div class="row gap mt"><button class="btn ghost sm" data-act="lecNotes" data-id="${l.id}">Rewrite them</button>
            <a class="btn ghost sm" href="#/notes">All class notes</a></div>`
-      : `<p class="muted small">Colourful handwritten notes from the whole class — the transcript and every photo read together, each film with how to recognise it and what the examiner asks there. Made once and kept, so this is what you open before the practical.</p>
-         <button class="btn full primary mt" data-act="lecNotes" data-id="${l.id}">Make notes from this class</button>`}
+      : `<button class="btn full primary mt" data-act="lecNotes" data-id="${l.id}">Make notes from this class</button>`}
   </section>`;
 
   const qHtml = qs.map((m, i) => `<div class="card">
@@ -302,7 +298,7 @@ Views.classNote = async id => {
         <a class="btn ghost sm" href="#/lecture/${l.id}">The class</a>
         <a class="btn ghost" href="#/notes">All notes</a>
       </div></header>
-    <div id="notes-print">${Lectures.notesHTML(l.notes, map)}</div>
+    <div id="notes-print">${Lectures.notesHTML(l.notes, map, l)}</div>
   </div>`;
 };
 
@@ -402,15 +398,17 @@ Object.assign(A, {
     const id = el.dataset.id;
     if (el.dataset.busy) return;
     el.dataset.busy = '1';
+    const orig = el.innerHTML;
+    el.innerHTML = '<span class="spin"></span>Making notes…';
+    el.disabled = true;
     try {
-      toast('Reading the class…', 6000);
       const n = await Lectures.makeNotes(id, msg => toast(msg, 6000));
       toast(`Notes ready — ${n.sections.length} section${n.sections.length === 1 ? '' : 's'}${n.spotters.length ? ` and ${n.spotters.length} photo${n.spotters.length === 1 ? '' : 's'} read one by one` : ''}.`, 8000);
       location.hash = '#/notes/' + id;
       App.render(true);
     } catch (e) {
       toast(e.message || String(e), 9000);
-    } finally { delete el.dataset.busy; }
+    } finally { delete el.dataset.busy; el.disabled = false; el.innerHTML = orig; }
   },
 
   printNotes() {
