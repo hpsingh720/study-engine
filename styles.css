@@ -767,3 +767,7 @@ body.examfull #selbar.touch { bottom: calc(96px + env(safe-area-inset-bottom)); 
   .hnotes { box-shadow: none; background: #fff; font-size: 12pt; }
   .hn-card, .hn-spot, .hn-viva { break-inside: avoid; }
 }
+
+/* Notes check list in Settings */
+.gap-list { margin: .5rem 0 0; padding-left: 1.1rem; max-height: 320px; overflow: auto; }
+.gap-list li { margin: .25rem 0; }

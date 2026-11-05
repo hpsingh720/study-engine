@@ -313,11 +313,51 @@ Return JSON exactly in this shape:
 "comparison":{"bottomLine":"","rows":[{"aspect":"","india":"","australia":"","trap":"","cite":""}],"same":"","mustKnow":[""]}}`;
     const out = ctx?.provider ? await Providers.call(ctx.provider, { prompt, system: SYSTEM_TUTOR, temperature: 0.25, maxTokens: 12000 }) : await AI.call({ prompt, system: SYSTEM_TUTOR, temperature: 0.25 });
     if (!out.sections) throw new Error('AI reply missing sections');
+    // The comparison sits at the very end of a long reply, so it is the part that gets cut off or
+    // skipped. An empty one used to be saved as "No differences listed", which reads as a fact.
+    if (!Gen.hasComparison(out.comparison)) {
+      try { out.comparison = await Gen.comparison(topic, ctx); } catch (e) { console.warn('AMC comparison failed', e); }
+    }
     const sources = [];
     Object.entries(src).forEach(([col, arr]) => arr.forEach(x => sources.push({ col, bookId: x.bookId, p: x.p, book: x.book })));
     const sheet = { id: topic.id, topicId: topic.id, sections: out.sections, comparison: out.comparison || {}, sources, model: ctx?.provider ? ctx.provider.name + ' ' + ctx.provider.model : AI.model, created: Date.now() };
     await DB.put('sheets', sheet);
     return sheet;
+  },
+
+  hasComparison(c) {
+    return !!(c && Array.isArray(c.rows) && c.rows.some(r => r && (r.india || r.australia)));
+  },
+
+  // The India-vs-Australia guide on its own: a short reply, so it is not lost at the end of a long one.
+  async comparison(topic, ctx) {
+    const sysName = SEED.systems.find(s => s.code === topic.system)?.name || topic.system;
+    const amc = await retrieve(topic, 'amc', 5, 20000);
+    const mbbs = await retrieve(topic, 'mbbs', 4, 14000);
+    const prompt = `TOPIC: ${topic.name}  (system: ${sysName})
+
+The student has read this topic in Indian MBBS books. Tell them exactly what is different for the AMC Part 1 exam (Australia).
+
+=== Indian MBBS textbooks ===
+${mbbs.length ? excerptBlock(mbbs) : '(no excerpts — use standard Indian MBBS teaching)'}
+
+=== Australian / AMC sources ===
+${amc.length ? excerptBlock(amc) : '(no excerpts — use current Australian practice: eTG, Murtagh, RACGP, RCH guidelines, Australian Immunisation Handbook)'}
+
+RULES
+- rows: real differences only — first-line drugs and doses, investigation of choice, thresholds and targets, setting (GP, rural, referral), screening, legal duties, Aboriginal and Torres Strait Islander considerations. Give 4–8 rows. Almost every topic has some; for paediatric topics think of RCH guidelines.
+- Cite like [Murtagh p.512] when an excerpt supports it; otherwise start the cell with "(general knowledge)".
+- Short lines. Use **bold** for the single most-tested fact.
+- bottomLine: two or three lines — what to remember for the AMC.
+- same: one line on what is the same.
+- mustKnow: Australia-only facts with no Indian equivalent.
+
+Return JSON exactly:
+{"bottomLine":"","rows":[{"aspect":"","india":"","australia":"","trap":"","cite":""}],"same":"","mustKnow":[""]}`;
+    const out = ctx?.provider ? await Providers.call(ctx.provider, { prompt, system: SYSTEM_TUTOR, temperature: 0.2 }) : await AI.call({ prompt, system: SYSTEM_TUTOR, temperature: 0.2 });
+    const c = out?.comparison || out;
+    if (!Gen.hasComparison(c)) throw new Error('The AI did not list any differences — try again.');
+    return c;
   },
 
   async mcqs(topic, nAmc = 10, nMbbs = 8, ctx) {

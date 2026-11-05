@@ -453,6 +453,13 @@ Return JSON: {"duplicates":[{"keep":0,"drop":[3]}],"combined":[{"from":[1,4],"im
     const t = await DB.get('topics', job.payload.topicId); if (!t) return;
     await Gen.sheet(t, ctx);
   },
+  // Only the India-vs-Australia part, for notes where it came back empty. Leaves the rest alone.
+  async compare(job, ctx) {
+    const t = await DB.get('topics', job.payload.topicId), s = await DB.get('sheets', job.payload.topicId);
+    if (!t || !s || Gen.hasComparison(s.comparison)) return;
+    s.comparison = await Gen.comparison(t, ctx);
+    await DB.put('sheets', s);
+  },
   async mcqgen(job, ctx) {
     const t = await DB.get('topics', job.payload.topicId); if (!t) return;
 
@@ -559,8 +566,8 @@ const Queue = {
     if (prov.ocrApi) return j.kind === 'ocr'; // OCR.space only reads scanned pages
     if (prov.ocrOnly) return j.kind === 'ocr' && !Queue.pendingAI; // your own key only reads pages while it has no sheets/MCQs to write
     // Topic sheets and new MCQs need a big, careful model: Gemini first; Mistral takes over while Gemini is out for the day.
-    if ((j.kind === 'sheet' || j.kind === 'mcqgen') && prov.big) return true; // a second Gemini key writes sheets like the main one
-    if (j.kind === 'sheet' || j.kind === 'mcqgen') return prov.id === 'mistral' && (j.noGemini || Date.now() < (this.paused.ai || 0)) && (j.kind === 'mcqgen' || j.prio < 6 || !this._localBusy);
+    if ((j.kind === 'sheet' || j.kind === 'mcqgen' || j.kind === 'compare') && prov.big) return true; // a second Gemini key writes sheets like the main one
+    if (j.kind === 'sheet' || j.kind === 'mcqgen' || j.kind === 'compare') return prov.id === 'mistral' && (j.noGemini || Date.now() < (this.paused.ai || 0)) && (j.kind === 'mcqgen' || j.prio < 6 || !this._localBusy);
     if (['mcqtext', 'review', 'verify', 'arbit', 'twins'].includes(j.kind)) return true;
     if (prov.vision && (j.kind === 'mcqvision' || j.kind === 'practical' || j.kind === 'ocr' || j.kind === 'figure')) return true;
     return false;
@@ -685,7 +692,7 @@ const Queue = {
           await DB.put('queue', j);
           if (j.status !== 'pending' && j.payload.bookId) await markBookIfFinished(j.payload.bookId);
           this.emit();
-          if (j.status === 'done' && ['merge', 'sheet', 'mcqgen', 'mcqtext', 'mcqvision', 'practical'].includes(j.kind)) App.softRefresh();
+          if (j.status === 'done' && ['merge', 'sheet', 'compare', 'mcqgen', 'mcqtext', 'mcqvision', 'practical'].includes(j.kind)) App.softRefresh();
         } finally { this.claimed.delete(j.id); }
       }
     } finally {
@@ -828,6 +835,44 @@ async function queueTopics(topicIds, { prio = 6, force = false } = {}) {
     if (!queued.has('sheet:' + id) && (force || !hasSheet)) { await Queue.add('sheet', { topicId: id }, p); n++; }
     const hasMcq = (await DB.byIndex('mcqs', 'topicId', id)).some(m => m.src === 'ai' && !m.deleted);
     if (!queued.has('mcqgen:' + id) && (force || !hasMcq)) { await Queue.add('mcqgen', { topicId: id }, p + 0.0005); n++; }
+  }
+  return n;
+}
+
+// Notes that came back with a part missing. A blank part looks like "nothing to know" when it is
+// really a reply that got cut short, so these are found and rewritten rather than trusted.
+const GAP_LABEL = { compare: 'AMC differences', ...SECTIONS };
+function cellFilled(v) {
+  const s = Array.isArray(v) ? v.join(' ') : (v && typeof v === 'object') ? JSON.stringify(v) : String(v || '');
+  return s.replace(/general knowledge|not covered|[\s\-—–•*()[\]{}"':,.]/gi, '').length > 15;
+}
+async function findGaps() {
+  const topics = new Map((await DB.live('topics')).map(t => [t.id, t]));
+  const gaps = [];
+  for (const s of await DB.all('sheets')) {
+    const t = topics.get(s.topicId || s.id); if (!t) continue;
+    const missing = [];
+    if (!Gen.hasComparison(s.comparison)) missing.push('compare');
+    for (const sec of Object.keys(SECTIONS)) {
+      const c = s.sections?.[sec] || {};
+      if (!cellFilled(c.ref) && !cellFilled(c.mbbs)) missing.push(sec);
+    }
+    if (missing.length) gaps.push({ topic: t, sheet: s, missing });
+  }
+  return gaps.sort((a, b) => a.topic.name.localeCompare(b.topic.name));
+}
+// Rewrites whole notes only where they have not been edited by hand and this device has the books
+// to write them from; otherwise fills just the AMC differences, which never touches anything else.
+async function fixGaps(gaps, { sheets = true } = {}) {
+  const open = (await DB.all('queue')).filter(j => !['done', 'failed'].includes(j.status) && j.payload?.topicId);
+  const queued = new Set(open.map(j => j.kind + ':' + j.payload.topicId));
+  let n = 0;
+  for (const g of gaps) {
+    const id = g.topic.id;
+    if (queued.has('sheet:' + id)) continue;
+    const blankSections = g.missing.some(m => m !== 'compare');
+    if (blankSections && sheets && !g.sheet.edited) { await Queue.add('sheet', { topicId: id }, 7); n++; }
+    else if (g.missing.includes('compare') && !queued.has('compare:' + id)) { await Queue.add('compare', { topicId: id }, 7); n++; }
   }
   return n;
 }

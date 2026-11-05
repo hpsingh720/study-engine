@@ -333,6 +333,51 @@ const A = {
   },
   editSheet(el) { Views._edit = el.dataset.id + el.dataset.sec; App.render(true); },
   cancelEdit() { Views._edit = null; App.render(true); },
+  async checkGaps(el) {
+    if (el.dataset.busy) return;
+    el.dataset.busy = '1'; el.disabled = true;
+    const orig = el.innerHTML; el.innerHTML = '<span class="spin"></span>Checking…';
+    try {
+      const gaps = await findGaps(), total = (await DB.all('sheets')).length;
+      window._gaps = gaps;
+      const box = $('#gap-box');
+      if (!gaps.length) { box.innerHTML = `<p class="muted small">All ${total} topic notes are complete.</p>`; return; }
+      const items = gaps.map(g => `<li><a class="link" href="#/topic/${esc(g.topic.id)}">${esc(g.topic.name)}</a> <span class="muted small">— ${g.missing.map(m => esc(GAP_LABEL[m] || m)).join(', ')}${g.sheet.edited ? ' (you edited these notes)' : ''}</span></li>`).join('');
+      box.innerHTML = `<p class="mt"><b>${gaps.length}</b> of ${total} topic notes have missing parts.</p>
+        <ul class="gap-list">${items}</ul>
+        <button class="btn primary mt" data-act="fixGaps">Fill them in</button>`;
+    } catch (e) { toast(e.message || String(e), 9000); }
+    finally { el.innerHTML = orig; el.disabled = false; delete el.dataset.busy; }
+  },
+  async fixGaps(el) {
+    if (el.dataset.busy) return;
+    el.dataset.busy = '1'; el.disabled = true;
+    el.innerHTML = '<span class="spin"></span>Queueing…';
+    const hasBooks = (await DB.all('books')).some(b => ['ref', 'mbbs', 'amc'].includes(b.role));
+    const n = await fixGaps(window._gaps || await findGaps(), { sheets: hasBooks });
+    Queue.kick();
+    el.innerHTML = n ? `${n} queued` : 'Already queued';
+    toast(n ? `${n} topic${n === 1 ? '' : 's'} queued. They fill in over the next while — see Library for progress.${hasBooks ? '' : ' Blank sections need the laptop, which has the books; only the AMC differences are written here.'}` : 'These are already in the queue.', 9000);
+  },
+  async fillCompare(el) {
+    if (el.dataset.busy) return;
+    const id = el.dataset.id;
+    const t = await DB.get('topics', id), sheet = await DB.get('sheets', id);
+    if (!t || !sheet) return toast('Make the notes for this topic first.');
+    el.dataset.busy = '1'; el.disabled = true;
+    const orig = el.innerHTML;
+    el.innerHTML = '<span class="spin"></span>Writing the differences…';
+    try {
+      sheet.comparison = await Gen.comparison(t);
+      sheet.edited = Date.now();
+      await DB.put('sheets', sheet);
+      toast('AMC differences written.');
+      App.render(true);
+    } catch (e) {
+      toast(e.message || String(e), 9000);
+      el.innerHTML = orig; el.disabled = false; delete el.dataset.busy;
+    }
+  },
   async saveEdit(el) {
     const sheet = await DB.get('sheets', el.dataset.id);
     $$('textarea.edit').forEach(ta => { (sheet.sections[el.dataset.sec] ||= {})[ta.dataset.col] = ta.value; });
@@ -364,7 +409,7 @@ const A = {
       ['#/help', '?', 'Help', 'How to use and look after the app']
     ];
     openModal(`<h3>More</h3><div class="menu mt">${items.map(([href, icon, name, hint]) =>
-      `<button class="btn full" data-act="goPage" data-href="${href}"><span><b>${icon} ${esc(name)}</b><br><small class="muted">${esc(hint)}</small></span></button>`).join('')}</div>`);
+      `<button class="btn full" data-act="goPage" data-href="${href}"><span><b>${esc(name)}</b><br><small class="muted">${esc(hint)}</small></span></button>`).join('')}</div>`);
   },
 
   /**
@@ -1115,6 +1160,18 @@ async function init() {
   // Disputed answers get a third opinion (on the device with the books — the laptop).
   const arb = () => BookText.ownBooks().then(b => b.length && queueArbit().then(n => n && Queue.kick())).catch(console.warn);
   setTimeout(arb, 45000); setInterval(arb, 1800000);
+  // Once a day, on the device that has the books, find notes with missing parts and rewrite them.
+  const gapRun = async () => {
+    try {
+      if (!AI.key || Date.now() - (+localStorage.getItem('gaps_last') || 0) < 20 * 3600e3) return;
+      if (!(await DB.all('books')).some(b => ['ref', 'mbbs', 'amc'].includes(b.role))) return;
+      localStorage.setItem('gaps_last', Date.now());
+      const gaps = await findGaps(), n = await fixGaps(gaps);
+      localStorage.setItem('gaps_note', `Last automatic check ${new Date().toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}: ${gaps.length ? `${gaps.length} with missing parts, ${n} queued to fill in` : 'nothing missing'}.`);
+      if (n) Queue.kick();
+    } catch (e) { console.warn('notes check', e); }
+  };
+  setTimeout(gapRun, 120000); setInterval(gapRun, 3600000);
   setInterval(() => fillMindmapFigs().catch(console.warn), 300000); setTimeout(() => fillMindmapFigs().catch(console.warn), 25000);
   setTimeout(() => queueRefs().catch(console.warn), 20000); setInterval(() => queueRefs().catch(console.warn), 3600000);
   // College lectures: pick up any recording still running, and refresh the night-before reminders.

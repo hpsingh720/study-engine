@@ -446,9 +446,13 @@ function sectionTab(t, sheet, sec, books, inQueue, hl = []) {
 
 function comparisonHTML(sheet, compact = false) {
   const c = sheet?.comparison || {};
-  const rows = (c.rows || []).map(r => `<tr><th>${esc(r.aspect)}</th><td>${keyColour(md(r.india))}</td><td class="au">${keyColour(md(r.australia))}</td></tr>`).join('');
+  const rows = (c.rows || []).filter(r => r && (r.india || r.australia)).map(r => `<tr><th>${esc(r.aspect)}</th><td>${keyColour(md(r.india))}</td><td class="au">${keyColour(md(r.australia))}</td></tr>`).join('');
+  // No rows means the comparison was never written, not that India and Australia agree.
+  if (!rows) return `<div class="callout amc"><b>AMC comparison not written yet</b>
+      <p class="muted">The differences for this topic are missing.</p>
+      <button class="btn primary mt" data-act="fillCompare" data-id="${esc(sheet?.id || '')}">Write the AMC differences</button></div>`;
   return `<div class="callout amc"><b>Bottom line for AMC</b>${md(c.bottomLine) || '<p class="muted">—</p>'}</div>
-    ${rows ? `<div class="dtable-wrap"><table class="dtable"><thead><tr><th></th><th>India (MBBS)</th><th>Australia (AMC)</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="muted">No differences listed.</p>'}
+    <div class="dtable-wrap"><table class="dtable"><thead><tr><th></th><th>India (MBBS)</th><th>Australia (AMC)</th></tr></thead><tbody>${rows}</tbody></table></div>
     ${c.mustKnow?.length ? `<h4 class="mt">Australia-only must-knows</h4><div class="read">${keyColour(md(c.mustKnow))}</div>` : ''}`;
 }
 
@@ -840,6 +844,9 @@ Views.settings = async () => {
   const prefs = await Prefs.get();
   const last = +localStorage.getItem('sb_last') || 0;
   return `<div class="page"><header class="page-head"><div><h1>Settings</h1></div><div class="row gap"><a class="btn" href="#/help">Help ›</a><a class="btn" href="#/library">Library & background jobs ›</a></div></header>
+  <section class="card mb"><div class="row between wrap gap"><h3>Notes check</h3>
+    <button class="btn" data-act="checkGaps">Check for gaps</button></div>
+    <div id="gap-box">${localStorage.getItem('gaps_note') ? `<p class="muted small">${esc(localStorage.getItem('gaps_note'))}</p>` : ''}</div></section>
   <form class="card" data-submit="saveAI"><h3>Gemini (writes sheets & questions)</h3>
     <p class="muted small">Get a free key at aistudio.google.com → “Get API key”. The free key has daily limits; the app paces itself and waits when it hits them. Your Gemini app subscription does not raise these API limits — turning on billing for the key does. Only needed on the laptop.</p>
     <label>API key<input type="password" name="key" value="${esc(AI.key)}" autocomplete="off" placeholder="AIza…"></label>

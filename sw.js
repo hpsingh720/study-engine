@@ -1,5 +1,5 @@
 // Offline support: cache the app shell and libraries; never cache API calls.
-const CACHE = 'study-engine-v117';
+const CACHE = 'study-engine-v119';
 const LIBS = 'study-engine-libs'; // libraries kept across app updates
 // Scripts are requested with ?v=NNN so that a browser or an old service worker cannot serve a
 // stale copy after an update. The shell list has to match what the page asks for.
