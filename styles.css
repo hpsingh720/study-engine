@@ -771,3 +771,24 @@ body.examfull #selbar.touch { bottom: calc(96px + env(safe-area-inset-bottom)); 
 /* Notes check list in Settings */
 .gap-list { margin: .5rem 0 0; padding-left: 1.1rem; max-height: 320px; overflow: auto; }
 .gap-list li { margin: .25rem 0; }
+
+/* Camera: the board outline, zoom, and setting corners by hand */
+.cap-stage video { transform-origin: 50% 50%; transition: transform .08s linear; }
+.cap-stage { touch-action: none; }
+.cap-ov { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.cap-hint { position: absolute; left: 10px; top: 10px; padding: 3px 9px; border-radius: 999px; font-size: .78rem; background: rgba(0, 0, 0, .55); color: #cfd3e6; pointer-events: none; }
+.cap-hint.on { background: rgba(32, 120, 82, .85); color: #fff; }
+.cap-zoom { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.cap-zoom input[type=range] { flex: 1; accent-color: var(--accent, #8ea2ff); }
+.cap-zoom .small { min-width: 3.2em; text-align: right; }
+.rev { position: relative; }
+.rev-tag { position: absolute; left: 6px; top: 6px; padding: 1px 7px; border-radius: 999px; font-size: .72rem; background: rgba(0, 0, 0, .6); color: #fff; }
+.rev figcaption { gap: 6px; flex-wrap: wrap; }
+.crop-svg { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
+.crop-svg polygon { fill: rgba(125, 211, 168, .14); stroke: #7dd3a8; stroke-width: 2.5; }
+.cq { position: absolute; width: 34px; height: 34px; margin: -17px 0 0 -17px; border-radius: 50%; border: 3px solid #fff; background: rgba(125, 211, 168, .35); box-shadow: 0 0 0 2px rgba(0, 0, 0, .35); touch-action: none; cursor: grab; }
+/* The camera windows fill the dialog instead of a fixed share of the screen, which overflowed on phones. */
+.cap, .cap-rev, .cap-crop { width: 100%; }
+.modal-box:has(.cap, .cap-rev, .cap-crop) { width: min(760px, 100%); padding: 14px; }
+.cap-rev .card-head, .cap-crop .card-head { flex-wrap: wrap; gap: 4px 10px; }
+.cap-rev .rev img { object-fit: contain; }

@@ -585,6 +585,7 @@ Object.assign(A, {
   capDrop(el) { Capture.drop(+el.dataset.i); },
   capCrop(el) { Capture.crop(+el.dataset.i); },
   capRemove(el) { Capture.remove(+el.dataset.i); },
+  capMode(el) { Capture.mode(+el.dataset.i); },
   capSave() { Capture.save(); },
   capCancel() { Capture.cancel(); },
   capCropOk() { Capture.cropOk(); },
