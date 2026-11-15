@@ -156,26 +156,45 @@ public class RecorderService extends Service {
         boolean opus = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q;
         currentFile = new File(dir, "chunk_" + startedAtOrNow() + "_" + chunkIndex + (opus ? ".ogg" : ".m4a"));
 
-        recorder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+        // CAMCORDER is the microphone setting phones use for filming: it listens to the room rather
+        // than to a mouth at the phone, and lifts quiet speech. VOICE_RECOGNITION, used before, is
+        // tuned for someone talking into the phone and leaves a teacher across a hall faint and lost
+        // in echo. A few phones refuse CAMCORDER with the screen off, so fall back to the plain mic.
+        try {
+            recorder = openRecorder(MediaRecorder.AudioSource.CAMCORDER, opus);
+        } catch (Exception e) {
+            Log.w(TAG, "camcorder microphone refused, using the plain one", e);
+            try { if (recorder != null) recorder.release(); } catch (Exception ignored) {}
+            recorder = openRecorder(MediaRecorder.AudioSource.MIC, opus);
+        }
+    }
+
+    private MediaRecorder openRecorder(int source, boolean opus) throws Exception {
+        MediaRecorder r = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
                 ? new MediaRecorder(this)
                 : new MediaRecorder();
-
-        recorder.setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION);
+        r.setAudioSource(source);
         if (opus) {
-            recorder.setOutputFormat(MediaRecorder.OutputFormat.OGG);
-            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.OPUS);
-            recorder.setAudioEncodingBitRate(24000);
-            recorder.setAudioSamplingRate(16000);
+            r.setOutputFormat(MediaRecorder.OutputFormat.OGG);
+            r.setAudioEncoder(MediaRecorder.AudioEncoder.OPUS);
+            r.setAudioEncodingBitRate(32000);
+            r.setAudioSamplingRate(16000);
         } else {
-            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
-            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-            recorder.setAudioEncodingBitRate(32000);
-            recorder.setAudioSamplingRate(16000);
+            r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+            r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+            r.setAudioEncodingBitRate(48000);
+            r.setAudioSamplingRate(16000);
         }
-        recorder.setAudioChannels(1);
-        recorder.setOutputFile(currentFile.getAbsolutePath());
-        recorder.prepare();
-        recorder.start();
+        r.setAudioChannels(1);
+        r.setOutputFile(currentFile.getAbsolutePath());
+        try {
+            r.prepare();
+            r.start();
+        } catch (Exception e) {
+            try { r.release(); } catch (Exception ignored) {}
+            throw e;
+        }
+        return r;
     }
 
     private long startedAtOrNow() {

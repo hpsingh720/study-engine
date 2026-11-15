@@ -1,5 +1,6 @@
 package com.hpsingh720.studyengine;
 
+import android.app.PendingIntent;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.drawable.Icon;
@@ -35,22 +36,21 @@ public class RecordTileService extends TileService {
     @Override
     public void onClick() {
         super.onClick();
-
-        if (RecorderService.isRunning()) {
-            startService(new Intent(this, RecorderService.class).setAction(RecorderService.ACTION_STOP));
-            paint();
-            return;
-        }
-
-        Intent i = new Intent(this, RecorderService.class)
-                .setAction(RecorderService.ACTION_START)
-                .putExtra(RecorderService.EXTRA_CHUNK_SECONDS, 120)
-                .putExtra(RecorderService.EXTRA_LABEL, labelForNow());
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
-        else startService(i);
-
-        paint();
+        // The tile cannot switch the microphone on itself (Android 14 only allows that while the app
+        // is in front), so it opens an invisible screen for a moment that does it. See TileTapActivity.
+        final Intent a = new Intent(this, TileTapActivity.class)
+                .putExtra(TileTapActivity.EXTRA_LABEL, RecorderService.isRunning() ? "" : labelForNow())
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        Runnable go = () -> {
+            if (Build.VERSION.SDK_INT >= 34) {
+                startActivityAndCollapse(PendingIntent.getActivity(this, 0, a,
+                        PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
+            } else {
+                startActivityAndCollapse(a);
+            }
+        };
+        // With the phone locked, Android asks for the unlock first, then carries on.
+        if (isLocked()) unlockAndRun(go); else go.run();
     }
 
     /** The class on the roster covering right now, else the next one today, else the time. */
