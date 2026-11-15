@@ -35,21 +35,35 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void handleWebPermission(PermissionRequest request) {
-        boolean wantsCamera = false;
+        boolean wantsCamera = false, wantsMic = false;
         for (String r : request.getResources()) {
             if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(r)) wantsCamera = true;
+            if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)) wantsMic = true;
         }
-        if (!wantsCamera) {
+        if (!wantsCamera && !wantsMic) {
             request.deny();
             return;
         }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            request.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+        // The camera for photographing slides; the microphone for the voice quiz and the case
+        // simulator. Each is passed on to the page only once Android itself has granted it.
+        java.util.List<String> need = new java.util.ArrayList<>();
+        if (wantsCamera && ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) need.add(Manifest.permission.CAMERA);
+        if (wantsMic && ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) need.add(Manifest.permission.RECORD_AUDIO);
+        if (need.isEmpty()) {
+            grantAllowed(request);
             return;
         }
-        // Ask Android for the camera; the page gets its answer when the user replies.
         pendingWebRequest = request;
-        ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.CAMERA}, CAMERA_REQUEST);
+        ActivityCompat.requestPermissions(this, need.toArray(new String[0]), CAMERA_REQUEST);
+    }
+
+    private void grantAllowed(PermissionRequest request) {
+        java.util.List<String> ok = new java.util.ArrayList<>();
+        for (String r : request.getResources()) {
+            if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(r) && ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) ok.add(r);
+            if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r) && ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) ok.add(r);
+        }
+        if (ok.isEmpty()) request.deny(); else request.grant(ok.toArray(new String[0]));
     }
 
     @Override
@@ -58,9 +72,7 @@ public class MainActivity extends BridgeActivity {
         if (requestCode == CAMERA_REQUEST && pendingWebRequest != null) {
             PermissionRequest req = pendingWebRequest;
             pendingWebRequest = null;
-            boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
-            if (granted) req.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
-            else req.deny();
+            grantAllowed(req);
         }
     }
 }

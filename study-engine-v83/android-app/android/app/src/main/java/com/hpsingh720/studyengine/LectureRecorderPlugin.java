@@ -14,7 +14,11 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
+
 import java.io.File;
+import java.util.Locale;
 import java.io.FileInputStream;
 import java.io.ByteArrayOutputStream;
 
@@ -46,6 +50,7 @@ public class LectureRecorderPlugin extends Plugin {
 
     @Override
     protected void handleOnDestroy() {
+        if (tts != null) { try { tts.shutdown(); } catch (Exception ignored) {} tts = null; ttsReady = false; }
         if (instance == this) instance = null;
         super.handleOnDestroy();
     }
@@ -168,6 +173,69 @@ public class LectureRecorderPlugin extends Plugin {
         } catch (Exception e) {
             call.reject("Could not save the schedule: " + e.getMessage());
         }
+    }
+
+    // ---- the phone's own voice, for the voice quiz and the patient in the case simulator ----
+    // The app's web view has no speech of its own, so speaking goes through Android's TextToSpeech.
+
+    private TextToSpeech tts;
+    private boolean ttsReady = false;
+    private final java.util.Map<String, PluginCall> speaking = new java.util.HashMap<>();
+
+    private void withTts(Runnable then, PluginCall call) {
+        if (tts != null && ttsReady) { then.run(); return; }
+        tts = new TextToSpeech(getContext(), status -> {
+            ttsReady = status == TextToSpeech.SUCCESS;
+            if (!ttsReady) { call.reject("The phone has no text-to-speech voice installed."); return; }
+            tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                @Override public void onStart(String id) {}
+                @Override public void onDone(String id) { PluginCall c; synchronized (speaking) { c = speaking.remove(id); } if (c != null) c.resolve(); }
+                @Override public void onError(String id) { PluginCall c; synchronized (speaking) { c = speaking.remove(id); } if (c != null) c.resolve(); }
+            });
+            then.run();
+        });
+    }
+
+    @PluginMethod
+    public void speak(PluginCall call) {
+        final String text = call.getString("text", "");
+        final String lang = call.getString("lang", "en-IN");
+        final float rate = call.getFloat("rate", 1.0f);
+        if (text == null || text.isEmpty()) { call.resolve(); return; }
+        call.setKeepAlive(true);
+        withTts(() -> {
+            Locale loc = Locale.forLanguageTag(lang);
+            if (tts.isLanguageAvailable(loc) < TextToSpeech.LANG_AVAILABLE) loc = Locale.forLanguageTag("en-IN");
+            tts.setLanguage(loc);
+            tts.setSpeechRate(rate);
+            String id = "u" + System.nanoTime();
+            synchronized (speaking) { speaking.put(id, call); }
+            int r = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, id);
+            if (r != TextToSpeech.SUCCESS) { synchronized (speaking) { speaking.remove(id); } call.reject("Could not speak"); }
+        }, call);
+    }
+
+    @PluginMethod
+    public void stopSpeaking(PluginCall call) {
+        if (tts != null) tts.stop();
+        synchronized (speaking) { for (PluginCall c : speaking.values()) c.resolve(); speaking.clear(); }
+        call.resolve();
+    }
+
+    /** Ask for the microphone before the web page listens (voice quiz, case history). */
+    @PluginMethod
+    public void ensureMic(PluginCall call) {
+        if (getPermissionState("microphone") == PermissionState.GRANTED) {
+            JSObject r = new JSObject(); r.put("granted", true); call.resolve(r); return;
+        }
+        requestPermissionForAlias("microphone", call, "afterEnsureMic");
+    }
+
+    @PermissionCallback
+    private void afterEnsureMic(PluginCall call) {
+        JSObject r = new JSObject();
+        r.put("granted", getPermissionState("microphone") == PermissionState.GRANTED);
+        call.resolve(r);
     }
 
     static void emitChunk(String path, int index, boolean last) {
