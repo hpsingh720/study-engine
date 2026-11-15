@@ -24,6 +24,17 @@
 
         </activity>
 
+        <!-- Opened for a moment by the swipe-down tile: Android 14 lets an app start the microphone
+             only while it is on screen. Invisible, and gone again straight away. -->
+        <activity
+            android:name=".TileTapActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:launchMode="singleInstance"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <!-- Keeps the microphone alive with the screen off. -->
         <service
             android:name=".RecorderService"
