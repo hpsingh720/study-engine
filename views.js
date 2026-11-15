@@ -340,29 +340,50 @@ Views.system = async (code) => {
  */
 function chapterList(code, shown, st, sheetSet) {
   const loose = shown.filter(t => !(t.chapter || t.parentName));
-  const byChapter = {};
+  // One block per chapter however its name was written — "1. Introduction", "Introduction" and
+  // "INTRODUCTION" used to be three blocks, interleaved, after the book had been built twice.
+  const groups = new Map();
   for (const t of shown) {
     const ch = t.chapter || t.parentName;
-    if (ch) (byChapter[ch] ||= []).push(t);
+    if (!ch) continue;
+    const key = Focus.chapterKey(ch) || ch;
+    if (!groups.has(key)) groups.set(key, { names: {}, nos: {}, list: [], first: Infinity });
+    const g = groups.get(key);
+    const clean = String(ch).replace(/^\s*(chapter|ch\.?|unit|section)\s*/i, '').replace(/^\s*[0-9]+\s*[.:)\-–]?\s+/, '').trim() || ch;
+    g.names[clean] = (g.names[clean] || 0) + 1;
+    if (t.chapterNo) g.nos[t.chapterNo] = (g.nos[t.chapterNo] || 0) + 1;
+    g.first = Math.min(g.first, t.order || 0);
+    g.list.push(t);
   }
-  const chapters = Object.entries(byChapter);
+  const top = o => Object.entries(o).sort((a, b) => b[1] - a[1])[0]?.[0];
+  const chapters = [...groups.values()].sort((a, b) => a.first - b.first).map(g => ({ ...g, title: top(g.names), no: +top(g.nos) || 0 }));
   if (!chapters.length) {
     return `<section class="card flush mt"><div class="list">${shown.map(t => topicRow(t, st, sheetSet)).join('') || '<p class="muted pad">Nothing here.</p>'}</div></section>`;
   }
+  // The book's own chapter numbers when every chapter has a different one; otherwise count them in order.
+  const nos = chapters.map(c => c.no);
+  const useBook = nos.every(Boolean) && new Set(nos).size === nos.length;
+  chapters.forEach((c, i) => { c.n = useBook ? c.no : i + 1; });
 
-  const block = (title, list) => {
-    const read = list.filter(t => t.done).length, all = list.length;
-    return `<section class="card flush mt">
+  const block = (c, i) => {
+    const list = c.list, read = list.filter(t => t.done).length, all = list.length;
+    return `<section class="card flush mt" id="ch-${i}">
       <div class="card-head pad">
-        <h3>${esc(title)} <span class="muted small">${read}/${all} read</span></h3>
-        <button class="btn ghost small" data-act="markChapter" data-sys="${code}" data-ch="${esc(title)}" data-on="${read === all && all ? 1 : 0}">${read === all && all ? 'Unmark all' : 'Mark all read'}</button>
+        <h3><span class="ch-no">${c.n}.</span> ${esc(c.title)} <span class="muted small">${read}/${all} read</span></h3>
+        <button class="btn ghost small" data-act="markChapter" data-sys="${code}" data-ch="${esc(list[0].chapter || list[0].parentName)}" data-on="${read === all && all ? 1 : 0}">${read === all && all ? 'Unmark all' : 'Mark all read'}</button>
       </div>
       <div class="list">${list.map(t => topicRow(t, st, sheetSet)).join('')}</div>
     </section>`;
   };
 
-  return (loose.length ? `<section class="card flush mt"><div class="list">${loose.map(t => topicRow(t, st, sheetSet)).join('')}</div></section>` : '')
-    + chapters.map(([title, list]) => block(title, list)).join('');
+  const jump = chapters.length > 3 ? `<div class="ch-jump"><select data-change="jumpChapter" aria-label="Go to chapter">
+      <option value="">Go to chapter…</option>
+      ${chapters.map((c, i) => `<option value="ch-${i}">${c.n}. ${esc(c.title)} · ${c.list.length}</option>`).join('')}
+    </select></div>` : '';
+
+  return jump
+    + (loose.length ? `<section class="card flush mt"><div class="list">${loose.map(t => topicRow(t, st, sheetSet)).join('')}</div></section>` : '')
+    + chapters.map(block).join('');
 }
 
 // ---------------- Topic ----------------
@@ -646,6 +667,11 @@ Views.practice = async () => {
   // NEET-style: topic → its questions → (whole system done) → system tests mixing old, unseen and same-concept new questions.
   const topicsAll = await DB.live('topics');
   const sysT = SYS_LIST.map(x => { const ts = topicsAll.filter(t => t.system === x.code); return { ...x, n: ts.length, d: ts.filter(t => t.done).length }; }).filter(x => x.d);
+  const newModes = `<section class="card mt"><div class="card-head"><h3>Exam rehearsal</h3></div><div class="mode-grid">
+    <a class="mode" href="#/amc"><b>AMC exam simulator</b><small>150 questions · adaptive · scored out of 500</small></a>
+    <a class="mode" href="#/cases"><b>Clinical case + viva</b><small>A patient who talks · examine · present · viva</small></a>
+    <a class="mode" href="#/drills"><b>Examination drills</b><small>Where to press, which side, how long</small></a>
+    <a class="mode" href="#/voice"><b>Voice quiz</b><small>Hands-free: questions read aloud</small></a></div></section>`;
   const sysTests = `<section class="card mt"><div class="card-head"><h3>System tests</h3><span class="muted small">like NEET chapter tests</span></div>
     <p class="muted small">Study a topic → do its questions → mark it done. Then test the whole system: questions you already did (wrong ones first), ones you haven't seen, and new AI questions on the same concepts.</p>
     ${sysT.length ? `<div class="srows">${sysT.map(x => `<div class="srow srow4"><span class="srow-n">${x.name}</span><div class="stack"><i class="s-ok" style="width:${pct(x.d, x.n)}%"></i></div><span class="small muted">${x.d}/${x.n} topics${x.d === x.n ? ' ✓' : ''}</span><button class="btn sm ${x.d === x.n ? 'primary' : ''}" data-act="systemTest" data-sys="${x.code}">Test</button></div>`).join('')}</div>` : '<p class="muted small">Finish your first topic to unlock its system test.</p>'}</section>`;
@@ -661,6 +687,7 @@ Views.practice = async () => {
     <div class="card"><div class="card-head"><h3>Mistake bank</h3><span class="pill">${st.mistakes}</span></div>
       <p class="muted">Questions whose last attempt was wrong. Get them right to clear them.</p><button class="btn" data-act="startMistakes" ${st.mistakes ? '' : 'disabled'}>Review mistakes</button></div>
   </section>
+  ${newModes}
   ${sysTests}
   ${perfCards ? `<section class="card mt"><div class="card-head"><h3>Your question banks</h3><span class="muted small">green = correct · red = incorrect · grey = unused</span></div><div class="perf-grid">${perfCards}</div>
     ${sysRows ? `<h4 class="mt">AMEDEX + PYQ by system</h4><div class="srows">${sysRows}</div>` : ''}</section>` : ''}

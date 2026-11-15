@@ -17,6 +17,25 @@ alter table records enable row level security;
 drop policy if exists "personal access" on records;
 create policy "personal access" on records for all using (true) with check (true);`;
 
+/**
+ * Two copies of one topic's notes, from two devices. Whole-copy "latest wins" let an old copy
+ * overwrite a rewrite: making a mind map on the iPad saved the iPad's old notes with a new time,
+ * and that went out to every device, the laptop included. The notes text and the mind map are
+ * separate pieces of work, so each is taken from whichever copy has the newer one.
+ */
+function mergeSheet(local, remote) {
+  const stamp = s => s?.contentAt || Math.max(s?.created || 0, s?.edited || 0);
+  const out = { ...remote };
+  let fromLocal = false;
+  if (stamp(local) > stamp(remote)) {
+    for (const k of ['sections', 'comparison', 'sources', 'model', 'created', 'edited', 'contentAt']) if (k in local) out[k] = local[k];
+    fromLocal = true;
+  }
+  const la = local.mindmap?.at || 0, ra = remote.mindmap?.at || 0;
+  if (la > ra || (la && la === ra && local.mindmap.figsDone && !remote.mindmap?.figsDone)) { out.mindmap = local.mindmap; fromLocal = true; }
+  return { out, fromLocal };
+}
+
 const Sync = {
   t: null, busy: false, state: 'off', msg: '',
   cfg() { return { url: (localStorage.getItem('sb_url') || '').trim().replace(/\/$/, ''), key: (localStorage.getItem('sb_key') || '').trim() }; },
@@ -35,6 +54,8 @@ const Sync = {
       localStorage.setItem('sb_last', Date.now());
       this.set('ok', 'Synced ' + new Date().toLocaleTimeString());
       if (got) App.softRefresh();
+      // A copy that came in older than parts of ours has been merged — send the merged one back.
+      if (this._again) { this._again = false; this.soon(1500); }
     } catch (e) {
       console.warn('sync', e); this.set('error', e.message);
     } finally { this.busy = false; }
@@ -72,6 +93,14 @@ const Sync = {
       for (const row of rows) {
         if (!SYNCED.includes(row.store) || !row.data?.id) continue;
         const local = await DB.get(row.store, row.data.id);
+        if (row.store === 'sheets' && local) {
+          const { out, fromLocal } = mergeSheet(local, row.data);
+          if (fromLocal) { out.updated = Math.max(local.updated || 0, row.updated || 0) + 1; out._dirty = 1; this._again = true; }
+          else out._dirty = 0;
+          await DB.put('sheets', out, { fromSync: true });
+          got++;
+          continue;
+        }
         if (local && local._dirty && (local.updated || 0) > (row.updated || 0)) continue;
         await DB.put(row.store, { ...row.data, _dirty: 0 }, { fromSync: true });
         got++;

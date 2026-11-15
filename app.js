@@ -215,12 +215,12 @@ const A = {
     const say = t => toast(t, 4000);
     say('Reading the contents pages…');
     try {
-      const { book, chapters, made } = await Focus.fromBook(id, {
+      const { book, chapters, made, updated = 0, removed = 0 } = await Focus.fromBook(id, {
+        system: sys || '',
         onProgress: (ch, n) => say(`${ch} — ${n} topics so far`)
       });
-      if (!made.length) return toast('Nothing new — these chapters already exist as topics.', 7000);
       if (sys) await Focus.assignSystem(id, sys);
-      toast(`"${book.short || book.name}": ${chapters} chapters, ${made.length} topics. Tick off what you have read, then write questions for those.`, 10000);
+      toast(`"${book.short || book.name}": ${chapters} chapters — ${made.length} new topic${made.length === 1 ? '' : 's'}${updated ? `, ${updated} put in book order` : ''}${removed ? `, ${removed} empty duplicate${removed === 1 ? '' : 's'} removed` : ''}.`, 10000);
       App.render(true);
     } catch (e) { toast(e.message || String(e), 9000); }
   },
@@ -302,8 +302,16 @@ const A = {
     openModal(`<h3>${esc(t.name)}</h3><div class="menu">
       ${books ? `<button class="btn full" data-act="genTopic" data-id="${t.id}" data-force="1">${sheet ? 'Rewrite sheet from books' : 'Generate sheet & MCQs'}</button>` : ''}
       <button class="btn full" data-act="renameTopic" data-id="${t.id}">Rename / edit search words</button>
+      <button class="btn full" data-act="mnemonic" data-id="${t.id}">Make a mnemonic for a list</button>
       <button class="btn full ghost danger" data-act="deleteTopic" data-id="${t.id}">Delete topic</button>
       <button class="btn full" data-act="closeModal">Close</button></div>`);
+  },
+  // Only when asked, and only for a list — a mnemonic for everything is noise.
+  async mnemonic(el) {
+    const t = await DB.get('topics', el.dataset.id);
+    openModal(`<form data-submit="mnemonicMake" data-id="${t.id}"><h3>Mnemonic</h3>
+      <label>Which list in ${esc(t.name)}?<input name="list" placeholder="e.g. causes of clubbing, criteria for nephrotic syndrome" autofocus></label>
+      <div class="row gap mt end"><button type="button" class="btn" data-act="closeModal">Cancel</button><button class="btn primary">Make it</button></div></form>`);
   },
   async genTopic(el) {
     closeModal();
@@ -369,7 +377,7 @@ const A = {
     el.innerHTML = '<span class="spin"></span>Writing the differences…';
     try {
       sheet.comparison = await Gen.comparison(t);
-      sheet.edited = Date.now();
+      sheet.contentAt = Date.now();   // not "edited": that marks notes you changed by hand
       await DB.put('sheets', sheet);
       toast('AMC differences written.');
       App.render(true);
@@ -381,7 +389,7 @@ const A = {
   async saveEdit(el) {
     const sheet = await DB.get('sheets', el.dataset.id);
     $$('textarea.edit').forEach(ta => { (sheet.sections[el.dataset.sec] ||= {})[ta.dataset.col] = ta.value; });
-    sheet.edited = Date.now(); await DB.put('sheets', sheet);
+    sheet.edited = sheet.contentAt = Date.now(); await DB.put('sheets', sheet);
     Views._edit = null; toast('Saved'); App.render(true);
   },
   async practiseTopic(el) {
@@ -400,6 +408,10 @@ const A = {
    */
   moreMenu() {
     const items = [
+      ['#/amc', '', 'AMC exam simulator', '150 questions, adaptive, scored out of 500'],
+      ['#/cases', '', 'Clinical case + viva', 'A patient who talks; history, examination, viva'],
+      ['#/drills', '', 'Examination drills', 'Where to press, which side, how long'],
+      ['#/voice', '', 'Voice quiz', 'Questions read aloud, answered by voice'],
       ['#/search', '⌕', 'Ask books', 'Ask a question and get the answer out of your own books'],
       ['#/shelves', '▤', 'Subjects', 'Subject, chapter, topic — the way the book teaches it'],
       ['#/notes', '✐', 'Class notes', 'Handwritten notes from your own classes, with every photo read'],
@@ -928,6 +940,26 @@ Return JSON {"points":["…"],"flow":null}.
 
 // Form submits
 const F = {
+  async mnemonicMake(form) {
+    const list = form.list.value.trim();
+    if (!list) return;
+    const t = await DB.get('topics', form.dataset.id);
+    const b = form.querySelector('button.primary'); b.disabled = true; b.innerHTML = '<span class="spin"></span>Making';
+    try {
+      const out = await AI.call({ temperature: 0.7, prompt: `MBBS topic: ${t.name}. Make ONE memorable mnemonic for this list: "${list}".
+First give the list exactly as standard textbooks (Harrison, Davidson, Bailey, Ghai, Park) teach it — do not add or drop items to fit the letters. If it is not really a list, or a mnemonic would not help, say so instead.
+A Hindi or Punjabi flavoured line is welcome if it is genuinely easier to remember; keep it clean.
+Return JSON: {"ok":true,"mnemonic":"","items":[{"letter":"","item":""}],"note":""}` });
+      if (!out?.ok || !out.mnemonic) { toast(out?.note || 'That is not really a list — no mnemonic made.', 7000); b.disabled = false; b.textContent = 'Make it'; return; }
+      const n = await getNote(t.id);
+      const block = `Mnemonic — ${list}: ${out.mnemonic}\n${(out.items || []).map(x => `  ${x.letter} — ${x.item}`).join('\n')}`;
+      n.text = (n.text ? n.text.trim() + '\n\n' : '') + block;
+      await DB.put('notes', n);
+      closeModal();
+      toast('Saved to My notes for this topic.');
+      location.hash = '#/topic/' + t.id + '/notes';
+    } catch (e) { toast(e.message || String(e), 8000); b.disabled = false; b.textContent = 'Make it'; }
+  },
   async doSearch(form) { await runSearch(new FormData(form).get('q')); },
   async addTopicSave(form) {
     const d = new FormData(form); const sys = form.dataset.sys;
@@ -1000,6 +1032,16 @@ const F = {
 
 // Change / input handlers
 const C = {
+  /** The chapter menu on a subject page: straight to that chapter instead of scrolling for it. */
+  jumpChapter(el) {
+    const target = el.value && document.getElementById(el.value);
+    if (target) {
+      const bar = el.closest('.ch-jump');
+      const y = target.getBoundingClientRect().top + window.scrollY - (bar ? bar.offsetHeight + 12 : 12);
+      window.scrollTo({ top: y, behavior: 'smooth' });
+    }
+    el.value = '';
+  },
   /** Picking today's class fills the topic and the faculty from the roster. */
   pickClass(el) {
     const o = el.selectedOptions[0];

@@ -10,7 +10,9 @@
 
 const Lectures = {
   CHUNK_SECONDS: 120,
-  WHISPER_MODEL: 'whisper-large-v3-turbo',
+  // The full model, not turbo: turbo was distilled mostly on English and loses noticeably more of
+  // Hindi and Punjabi, which is a large part of what a lecturer here actually says.
+  WHISPER_MODEL: 'whisper-large-v3',
 
   native() { return window.Capacitor?.Plugins?.LectureRecorder || null; },
 
@@ -27,7 +29,7 @@ const Lectures = {
 
   // ---------- recording ----------
 
-  async start({ topic = '', faculty = '', subject = '' } = {}) {
+  async start({ topic = '', faculty = '', subject = '', auto = false } = {}) {
     // A lecture left open from earlier would otherwise swallow this one: every chunk of the new
     // class goes to whichever lecture is "current", so this morning's class ends up inside
     // yesterday's. Close it first unless the microphone is genuinely still running.
@@ -47,7 +49,10 @@ const Lectures = {
       started: Date.now(), ended: null,
       chunks: 0, transcript: '', seconds: 0, unclearSeconds: 0,
       state: 'recording', error: '',
-      topicId: '', mcqIds: [], generated: 0
+      topicId: '', mcqIds: [], generated: 0,
+      // The name was the roster's guess rather than something typed: check it again when the class
+      // ends, against the middle of the recording rather than the moment Start was pressed.
+      autoTopic: auto ? 1 : 0
     };
     await this.save(l);
     await DB.meta('activeLecture', l.id);
@@ -67,14 +72,49 @@ const Lectures = {
     const n = this.native();
     if (n) await n.stop();
     else await this._browserStop();
+    // Normally the recorder's final chunk closes the lecture. If that signal never comes, the
+    // lecture would sit on "recording" for ever — so once everything already sent has been
+    // transcribed, close it regardless.
+    setTimeout(async () => {
+      try {
+        await this._chain;
+        const x = await this.get(l.id);
+        if (x && x.state === 'recording') await this.finish(l.id);
+      } catch (e) {}
+    }, 45000);
     return l;
   },
 
   // ---------- chunk handling ----------
 
   /** Called for every finished chunk, from either the native service or the browser fallback. */
-  async onChunk({ path, blob, last, index, lecture }) {
-    const l = lecture || await this.current();
+  //
+  // One chunk at a time, in the order they were recorded. Handled side by side, a short final chunk
+  // could finish first and close the lecture while earlier ones were still being transcribed: the
+  // questions were then written from part of the class, and the rest of the text arrived too late.
+  onChunk(c) {
+    const run = () => this._onChunk(c).catch(e => console.warn('chunk failed', e));
+    this._chain = (this._chain || Promise.resolve()).then(run, run);
+    return this._chain;
+  },
+
+  /**
+   * The lecture a chunk was recorded in. The recorder names each file chunk_<start time>_<n>, so
+   * the file says which recording it belongs to — the latest lecture started before it. Going by
+   * "whichever lecture is open now" put the end of one class into the next whenever its last chunks
+   * were still being processed when the next class was started.
+   */
+  async _ownerOf(path) {
+    const m = /chunk_(\d{10,})_\d+\./.exec(path || '');
+    if (!m) return null;
+    const at = +m[1];
+    const near = (await this.all()).filter(x => x.started && x.started <= at + 90000 && x.started >= at - 6 * 3600e3);
+    near.sort((a, b) => b.started - a.started);
+    return near[0] || null;
+  },
+
+  async _onChunk({ path, blob, last, index, lecture }) {
+    const l = lecture || (path && await this._ownerOf(path)) || await this.current();
 
     // No lecture to attach this to — the tile recorded with no page open. Park it on disk for the
     // recovery pass instead of discarding it; audio thrown away here is a lecture lost for good.
@@ -90,9 +130,12 @@ const Lectures = {
         blob = this._b64ToBlob(data, mime);
       }
       if (blob && blob.size > 1024) {
-        const { text, dropped } = await this.transcribe(blob, l);
+        const { text, raw, dropped } = await this.transcribe(blob, l);
         const fresh = await this.get(l.id); // re-read: chunks arrive while other things write
         if (text) fresh.transcript = (fresh.transcript + ' ' + text).trim();
+        // Everything Whisper heard, unfiltered, kept alongside. If the filter ever turns out to be
+        // too strict for a room, the class is still there to rebuild from.
+        if (raw) fresh.rawTranscript = ((fresh.rawTranscript || '') + ' ' + raw).trim();
         fresh.chunks++;
         fresh.seconds += this.CHUNK_SECONDS;
         fresh.unclearSeconds = (fresh.unclearSeconds || 0) + (dropped || 0);
@@ -130,7 +173,10 @@ const Lectures = {
     // Medical vocabulary and the tail of the previous chunk both steer the model: Whisper leans on
     // this prompt for spellings it would otherwise guess ("DKA", "Addison", Punjabi-English mixing).
     const tail = (lecture.transcript || '').slice(-350);
-    fd.append('prompt', `Medical lecture for MBBS students in India, mixing English with Hindi and Punjabi. Spell anatomical and drug names correctly: aqueous humour, ciliary body, pars plicata, trabecular meshwork, ultrafiltration, anterior chamber, trachoma, xerophthalmia. ${tail}`.slice(0, 850));
+    // The class's own topic and subject, not a fixed word list: the old list named eye structures
+    // whatever was being taught, which pulled paediatrics and surgery towards ophthalmology words.
+    const about = [lecture.topic, lecture.subject].filter(Boolean).join(', ');
+    fd.append('prompt', `Medical college lecture in India${about ? ' on ' + about : ''}. The teacher mixes English with Hindi and Punjabi. Medical terms, drug names, eponyms, signs and abbreviations are spelled correctly, e.g. haemoglobin, ferritin, iron deficiency anaemia, pleural effusion, tetralogy of Fallot, TEF, VSD, ORS, IV fluids, mg/kg. ${tail}`.slice(0, 850));
 
     const lang = localStorage.getItem('lectureLang') || '';
     if (lang) fd.append('language', lang);
@@ -152,41 +198,61 @@ const Lectures = {
   },
 
   /**
-   * Keep only what was really said.
+   * Keep only what was really said — without throwing away a lecturer who is simply far away.
    *
-   * Three things get dropped: low-confidence segments (invented English over Hindi/Punjabi),
-   * segments Whisper itself thinks are silence, and repetition loops ("absorb them absorb them"),
-   * which are a known failure mode on unclear audio.
+   * The old filter dropped anything scoring below -0.8, on the belief that real speech sits between
+   * -0.2 and -0.7. That holds for a phone at your mouth. A teacher across a hall, with echo, scores
+   * -0.7 to -1.1 while being transcribed correctly, so most of every lecture was being discarded
+   * and came back as "too little speech captured" with the microphone working fine.
    *
-   * Returns { text, dropped } so the lecture can report how much was unusable rather than
-   * quietly pretending the transcript is complete.
+   * Now it follows Whisper's own rules. A segment is a failure only below -1.0; a repetition loop
+   * (compression ratio over 2.4) is never real speech. It counts as silence only when Whisper thinks
+   * so AND is unsure of the words — good confidence overrides the silence guess rather than the
+   * other way round. The phrases Whisper invents on noise ("thanks for watching") always go. And if
+   * all that would still remove most of a chunk, the chunk is kept whole: losing a real stretch of
+   * the class costs more than a few odd words, which the question writer reads past anyway.
+   *
+   * Returns { text, raw, dropped } — raw is everything Whisper heard, kept for rebuilding.
    */
   cleanSegments(d) {
     const segs = d.segments;
-    if (!Array.isArray(segs) || !segs.length) return { text: (d.text || '').trim(), dropped: 0 };
+    if (!Array.isArray(segs) || !segs.length) {
+      const t = (d.text || '').trim();
+      return { text: this._phantom(t) ? '' : t, raw: t, dropped: 0 };
+    }
 
-    const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
-    const kept = [];
-    let dropped = 0, repeats = 0, lastText = '';
+    const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9\u0900-\u0a7f ]/g, '').trim();
+    const kept = [], all = [];
+    let dropped = 0, total = 0, repeats = 0, lastText = '';
 
     for (const s of segs) {
       const secs = Math.max(0, (s.end || 0) - (s.start || 0));
       const t = (s.text || '').trim();
+      if (!t) continue;
+      total += secs;
 
-      // -0.8 sits in the gap seen on real lectures: genuine speech lands around -0.2 to -0.7,
-      // hallucinated runs around -1.0 and worse.
-      const unsure = typeof s.avg_logprob === 'number' && s.avg_logprob < -0.8;
-      const silent = typeof s.no_speech_prob === 'number' && s.no_speech_prob > 0.6;
-
-      const same = norm(t) && norm(t) === lastText;
+      const same = norm(t) === lastText;
       repeats = same ? repeats + 1 : 0;
       lastText = norm(t);
+      const loop = typeof s.compression_ratio === 'number' && s.compression_ratio > 2.4;
+      if (repeats >= 2 || loop || this._phantom(t)) { dropped += secs; continue; }  // never real, kept nowhere
+      all.push(t);
 
-      if (!t || unsure || silent || repeats >= 2) { dropped += secs; continue; }
+      const lp = typeof s.avg_logprob === 'number' ? s.avg_logprob : 0;
+      const failed = lp < -1.0;
+      const silent = typeof s.no_speech_prob === 'number' && s.no_speech_prob > 0.6 && lp < -1.0;
+      if (failed || silent) { dropped += secs; continue; }
       kept.push(t);
     }
 
-    return { text: kept.join(' ').replace(/\s+/g, ' ').trim(), dropped: Math.round(dropped) };
+    const raw = all.join(' ').replace(/\s+/g, ' ').trim();
+    if (total > 0 && dropped / total > 0.6) return { text: raw, raw, dropped: 0 };
+    return { text: kept.join(' ').replace(/\s+/g, ' ').trim(), raw, dropped: Math.round(dropped) };
+  },
+
+  // What Whisper writes over noise or silence. None of it is ever said in a medical lecture.
+  _phantom(t) {
+    return /thank(s| you) (so much )?for watching|subscribe|like and share|my (youtube )?channel|see you (in the )?next (video|time)|^(thank you\.?|you\.?|bye\.?)$|amara\.org|subtitles by/i.test(String(t).trim());
   },
 
   // ---------- after the lecture ----------
@@ -196,6 +262,20 @@ const Lectures = {
     if (!l || l.state === 'done') return;
     l.ended = Date.now();
     l.state = 'transcribed';
+    // A name the roster guessed is checked against the middle of the recording. Started at 8:58
+    // for the nine o'clock class, or left running into the next hour, the moment Start was pressed
+    // names the wrong class; the middle of what was recorded does not.
+    if (l.autoTopic && !l.topicId) {
+      try {
+        const mid = l.started + Math.max(0, (l.chunks || 0) * this.CHUNK_SECONDS * 1000) / 2;
+        const cls = await this.classAt(mid);
+        if (cls?.topic && cls.topic !== l.topic) {
+          l.topic = cls.topic;
+          l.faculty = cls.faculty || l.faculty;
+          l.subject = cls.department || cls.subject || l.subject;
+        }
+      } catch (e) {}
+    }
     await this.save(l);
     await DB.meta('activeLecture', null);
     this._paint();
@@ -216,6 +296,25 @@ const Lectures = {
    * Fed three things on purpose: the transcript, the existing topic sheet, and the questions already
    * in the bank. Without the last two the model happily rewrites questions you already have.
    */
+  /**
+   * The moments a teacher says "this is important". Spoken in English, Hindi or Punjabi, in Latin or
+   * native script — the transcript has all of them. Returns the surrounding stretch of each, merged
+   * where they overlap, so the question writer can make several questions from each one.
+   */
+  emphasis(text) {
+    const t = String(text || '');
+    const cue = /\b(important|imp\b|exam|examination|mcqs?|viva|asked|ask(?:s|ing)? (?:this|it)|remember|note (?:this|it|down)|must know|high[- ]yield|favou?rite question|frequently|don'?t forget|never forget|very common question|zaroor[iy]?|jaroor[iy]?|yaad rakh\w*|dhyan rakh\w*|dhiyan\w*|puch(?:h)?(?:da|de|di|eya|te|ta|enge|nge)\w*|pooch\w*|aata hai|aunda|aaonda|paper vich|paper mein|exam vich|exam mein)\b|याद|ज़रूरी|जरूरी|महत्वपूर्ण|पूछ|परीक्षा|ਯਾਦ|ਜ਼ਰੂਰੀ|ਜਰੂਰੀ|ਪੁੱਛ|ਪੇਪਰ|ਇਮਤਿਹਾਨ/gi;
+    const spans = [];
+    let m;
+    while ((m = cue.exec(t))) {
+      const a = Math.max(0, m.index - 260), b = Math.min(t.length, m.index + 260);
+      const last = spans[spans.length - 1];
+      if (last && a <= last[1]) last[1] = Math.max(last[1], b); else spans.push([a, b]);
+      if (spans.length >= 12) break;
+    }
+    return spans.map(([a, b]) => t.slice(a, b).replace(/\s+/g, ' ').trim());
+  },
+
   async generate(id) {
     const l = await this.get(id);
     if (!l) return;
@@ -241,6 +340,13 @@ const Lectures = {
       ? (await DB.byIndex('mcqs', 'topicId', topic.id)).filter(m => !m.deleted).slice(-60).map(m => '- ' + m.stem.slice(0, 120)).join('\n')
       : '';
 
+    // How many questions the class can carry: about one for every three minutes of usable speech.
+    // An hour gives around twenty, before the extra ones for points the teacher flagged.
+    const minutes = Math.max(1, Math.round((l.chunks || 0) * this.CHUNK_SECONDS / 60 - (l.unclearSeconds || 0) / 60));
+    const flagged = this.emphasis(l.transcript);
+    const base = Math.max(8, Math.min(24, Math.round(minutes / 3)));
+    const target = Math.min(40, base + flagged.length * 3);
+
     const prompt = `A lecturer has just taught this class. Below is an automatic transcript of what was actually said. It contains speech-recognition errors, Hindi/Punjabi words, repetition and digressions — read through them.
 
 LECTURE TOPIC: ${l.topic}${l.faculty ? ' (taught by ' + l.faculty + ')' : ''}
@@ -254,6 +360,11 @@ ${sheet ? `THE STUDENT'S EXISTING REVISION SHEET on this topic:\n${JSON.stringif
 QUESTIONS ALREADY IN THE STUDENT'S BANK on this topic — do NOT write anything that tests the same point:
 ${existing || '(none yet)'}
 
+${flagged.length ? `THE LECTURER FLAGGED THESE AS IMPORTANT (exam, MCQ, viva, "yaad rakhna", "zaroori" and the like). For EACH one, write 3–4 questions that test it from different angles — the fact itself, a clinical case that needs it, the commonest wrong belief about it:
+${flagged.map((f, i) => `${i + 1}. …${f}…`).join('\n')}
+` : ''}
+Before writing, correct mis-heard medical words using the topic and the slides — the transcript is automatic, so "paldry hypolytic" is pulmonary hypoplasia and "TNV" may be TAPVC. Never quote a garbled word in a question.
+
 Write questions that only this lecture makes possible. Specifically:
 - Points the lecturer stressed, repeated, or called exam-important.
 - Where the lecturer gave a local (Indian) figure, protocol or practice that differs from the textbook.
@@ -261,7 +372,7 @@ Write questions that only this lecture makes possible. Specifically:
 - Anything the lecturer explicitly corrected or warned against.
 Skip anything the transcript covers only in passing, and skip anything already in the bank list.
 
-Write 6–12 MBBS-style questions (EXACTLY 4 options each). Fewer, sharper questions are better than filling a quota — if the lecture only supports 4 good questions, write 4.
+Write about ${target} MBBS-style questions (EXACTLY 4 options each)${flagged.length ? `, including 3–4 for every flagged point above` : ''}. Cover the whole class from start to end, not just the opening minutes. Go below ${target} only if the transcript genuinely has nothing more to test.
 
 QUALITY RULES
 - Clinical reasoning, not recall of a sentence: diagnosis, next step, investigation of choice, first-line treatment, complication, contraindication.
@@ -448,7 +559,7 @@ Return JSON: {"mcqs":[{"stem":"","options":["","","",""],"answer":0,"explanation
     const l = await this.get(id);
     if (!l) throw new Error('That lecture is gone');
     const mediaId = 'img-' + uid();
-    await DB.put('media', { id: mediaId, data: await compressImage(dataUrl, 1600, 0.86), kind: 'lecture' });
+    await DB.put('media', { id: mediaId, data: await compressImage(dataUrl, 2200, 0.86), kind: 'lecture' });
     (l.slides ||= []).push({ id: mediaId, at: Date.now() });
     await this.save(l);
     this._paint();
@@ -912,7 +1023,7 @@ On the parts:
       started, ended: null,
       chunks: 0, transcript: '', seconds: 0, unclearSeconds: 0,
       state: 'recording', error: '',
-      topicId: '', mcqIds: [], generated: 0, fromTile: 1
+      topicId: '', mcqIds: [], generated: 0, fromTile: 1, autoTopic: 1
     };
     await this.save(l);
     await DB.meta('activeLecture', l.id);
@@ -966,7 +1077,7 @@ On the parts:
             started, ended: null,
             chunks: 0, transcript: '', seconds: 0, unclearSeconds: 0,
             state: 'recording', error: '',
-            topicId: '', mcqIds: [], generated: 0, fromTile: 1
+            topicId: '', mcqIds: [], generated: 0, fromTile: 1, autoTopic: 1
           };
           await this.save(l);
         }

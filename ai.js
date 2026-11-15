@@ -320,7 +320,11 @@ Return JSON exactly in this shape:
     }
     const sources = [];
     Object.entries(src).forEach(([col, arr]) => arr.forEach(x => sources.push({ col, bookId: x.bookId, p: x.p, book: x.book })));
-    const sheet = { id: topic.id, topicId: topic.id, sections: out.sections, comparison: out.comparison || {}, sources, model: ctx?.provider ? ctx.provider.name + ' ' + ctx.provider.model : AI.model, created: Date.now() };
+    // Rewriting the notes keeps the topic's mind map: it is its own piece of work, and losing it
+    // silently to a rewrite is worse than it being a little older than the notes.
+    const prev = await DB.get('sheets', topic.id);
+    const sheet = { id: topic.id, topicId: topic.id, sections: out.sections, comparison: out.comparison || {}, sources, model: ctx?.provider ? ctx.provider.name + ' ' + ctx.provider.model : AI.model, created: Date.now(), contentAt: Date.now() };
+    if (prev?.mindmap) sheet.mindmap = prev.mindmap;
     await DB.put('sheets', sheet);
     return sheet;
   },

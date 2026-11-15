@@ -458,6 +458,7 @@ Return JSON: {"duplicates":[{"keep":0,"drop":[3]}],"combined":[{"from":[1,4],"im
     const t = await DB.get('topics', job.payload.topicId), s = await DB.get('sheets', job.payload.topicId);
     if (!t || !s || Gen.hasComparison(s.comparison)) return;
     s.comparison = await Gen.comparison(t, ctx);
+    s.contentAt = Date.now();
     await DB.put('sheets', s);
   },
   async mcqgen(job, ctx) {

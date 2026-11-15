@@ -513,12 +513,12 @@ Rules:
     // Contents runs over consecutive pages, so take the best one and everything adjoining it.
     scored.sort((a, b) => b.s - a.s);
     const best = scored[0].p;
-    const near = new Set(scored.filter(x => Math.abs(x.p - best) <= 12).map(x => x.p));
+    const near = new Set(scored.filter(x => Math.abs(x.p - best) <= 24).map(x => x.p));
     // A contents runs over consecutive pages, and the odd one of them scores badly — a page that
     // is mostly part headings, or one the OCR made a mess of. Take the neighbours regardless.
     const have = new Set(pages);
     for (const p of [...near]) for (const d of [-2, -1, 1, 2]) if (have.has(p + d)) near.add(p + d);
-    const run = [...near].sort((a, b) => a - b).slice(0, 16);
+    const run = [...near].sort((a, b) => a - b).slice(0, 32);
 
     const out = [];
     let chars = 0;
@@ -528,7 +528,7 @@ Rules:
       const t = pg.text.slice(0, 5000);
       out.push(`[p.${p}]\n${t}`);
       chars += t.length;
-      if (chars > 40000) break;
+      if (chars > 130000) break;
     }
     return out.join('\n\n');
   },
@@ -601,6 +601,84 @@ Rules:
   },
 
   /**
+   * One chapter's identity, whatever way it was written: "1. Introduction", "Chapter 1
+   * Introduction" and "INTRODUCTION" are the same chapter. Used to keep one block per chapter.
+   */
+  chapterKey(name) {
+    return this._norm(String(name || '').replace(/^\s*(chapter|ch\.?|unit|section)\s*/i, '').replace(/^\s*[0-9ivxlc]+\s*[.:)\-–]?\s+/i, ''));
+  },
+
+  /**
+   * A long answer from the full model. The quick path gives up after 20 seconds and a short reply,
+   * which suits a question asked while studying, not a whole contents page — on the iPad it failed
+   * every time with "all the AIs are busy". Main key first, then any other key you have added.
+   */
+  async _bigAI({ prompt, json = true, system }) {
+    const cap = (pr, ms) => Promise.race([pr, new Promise((_, no) => setTimeout(() => no(new Error('timed out')), ms))]);
+    let last;
+    if (AI.key) {
+      try { return await cap(AI.call({ prompt, json, system }), 240000); } catch (e) { last = e; }
+    }
+    for (const p of Providers.active().filter(p => !p.ocrOnly && !p.ocrApi)) {
+      try { return await cap(Providers.call(p, { prompt, json, system, maxTokens: 16000 }), 240000); } catch (e) { last = e; }
+    }
+    throw new Error(last ? `Could not read it: ${last.message || last}` : 'Add your Gemini key in Settings first.');
+  },
+
+  /**
+   * The contents, a few pages per request, joined back into one list. A chapter that runs across
+   * two contents pages is stitched back together rather than appearing twice.
+   */
+  async _readContents(book, front, onProgress) {
+    const blocks = front.split(/\n\n(?=\[p\.\d+\]\n)/);
+    const groups = [];
+    let cur = [], size = 0;
+    for (const b of blocks) {
+      if (cur.length && (cur.length >= 3 || size + b.length > 14000)) { groups.push(cur); cur = []; size = 0; }
+      cur.push(b); size += b.length;
+    }
+    if (cur.length) groups.push(cur);
+
+    const chapters = [];
+    for (let g = 0; g < groups.length; g++) {
+      onProgress?.(`Reading the contents (part ${g + 1} of ${groups.length})…`, 0);
+      const prev = chapters[chapters.length - 1];
+      const out = await this._bigAI({
+        json: true,
+        system: typeof SYSTEM_TUTOR !== 'undefined' ? SYSTEM_TUTOR : undefined,
+        prompt: `Below ${groups.length > 1 ? `is part ${g + 1} of ${groups.length} of` : 'are'} the contents pages of "${book.name}", scanned and read by OCR.
+
+Copy out exactly what these pages print, chapters and every entry listed under each:
+{"chapters":[{"no":0,"part":"","name":"","page":0,"topics":[{"name":"","page":0}]}]}
+
+- "no": the chapter number as printed (1, 2, 3…), or 0 if the book does not number chapters.
+- "part": the part or section heading this chapter sits under, if the book has them. Repeat it on every chapter in that part. "" if none.
+- "name": the CHAPTER title as printed, without its number. Do not rename, merge, shorten or invent anything, and never return a part as if it were a chapter.
+- "page": the page number the contents gives, as a number; 0 where there is none.
+- "topics": EVERY entry listed under that chapter on these pages, in order — all of them, however many. Many Indian textbooks print a detailed contents; copy each line. If the contents lists chapter titles only, return "topics": [].
+${prev ? `- The previous pages ended inside chapter ${prev.no || ''} "${prev.name}". If these pages begin with entries that still belong to it, put them under a chapter with that same name and number.
+` : ''}- If these pages hold no contents at all, return {"chapters":[]}.
+
+PAGES:
+${groups[g].join('\n\n')}`
+      });
+      for (const c of (Array.isArray(out?.chapters) ? out.chapters : [])) {
+        const key = this.chapterKey(c?.name);
+        if (!key) continue;
+        // The same chapter again — continued on the next page, or repeated by the model — joins up.
+        const same = chapters.find(x => this.chapterKey(x.name) === key || (c.no && x.no && +c.no === +x.no && key.slice(0, 12) === this.chapterKey(x.name).slice(0, 12)));
+        if (same) {
+          const seen = new Set((same.topics || []).map(t => this._norm(t?.name)));
+          for (const t of (c.topics || [])) if (!seen.has(this._norm(t?.name))) { same.topics.push(t); seen.add(this._norm(t?.name)); }
+          if (!same.page && c.page) same.page = c.page;
+          if (!same.no && c.no) same.no = c.no;
+        } else chapters.push({ ...c, name: String(c.name || '').replace(/^\s*[0-9]+\s*[.:)\-–]?\s+/, ''), topics: Array.isArray(c.topics) ? c.topics.slice() : [] });
+      }
+    }
+    return { chapters };
+  },
+
+  /**
    * Build the syllabus out of the student's own textbook.
    *
    * Not the model's idea of what a textbook contains — the book sitting in the app, read from its
@@ -610,9 +688,10 @@ Rules:
    * AMC follows from this rather than leading it: once a topic exists, generation writes both
    * AMC-style and MBBS-style questions for it.
    */
-  async fromBook(bookId, { onProgress } = {}) {
+  async fromBook(bookId, { onProgress, system = '' } = {}) {
     const book = await this.book(bookId);
     if (!book) throw new Error('Book not found');
+    const sys = book.system || system;
 
     const pages = [];
     await DB.each('pages', 'bookId', bookId, pg => { if (pg.text) pages.push(pg.p); });
@@ -627,27 +706,15 @@ Rules:
     // look like a contents — many lines ending in a page number — and read those.
     const front = await this._findContents(bookId, pages);
 
-    const toc = front ? await fastAI({
-      json: true,
-      system: typeof SYSTEM_TUTOR !== 'undefined' ? SYSTEM_TUTOR : undefined,
-      prompt: `Below are pages from "${book.name}", scanned and read by OCR. They are the ones that look like its table of contents.
-
-Copy it out exactly as this book prints it, chapters and everything listed under them:
-{"chapters":[{"part":"","name":"","page":0,"topics":[{"name":"","page":0}]}]}
-
-- "part": the part or section heading this chapter sits under, if the book has them ("Part 1 Basic principles", "Section 3 Abdomen"). Repeat it on every chapter in that part. Leave "" if the book has no parts.
-- "name": the CHAPTER title as printed — the level below the part. Do not rename, merge, shorten or invent anything, and never return a part as if it were a chapter.
-- "page": the page number the contents gives, as a number. Use 0 where there is none.
-- "topics": the entries listed underneath that chapter in the contents, in the book's order. Many Indian textbooks print these; copy every one. If this book's contents lists chapters only, return "topics": [] for them — do not make entries up.
-- Keep the book's own order and include every chapter, to the end of the book.
-- If there is no contents page in this text at all, return {"chapters":[]} rather than guessing.
-
-PAGES:
-${front}`
-    }) : null;
+    // The contents is read a few pages at a time, by the full model. In one request a big
+    // textbook's contents — thirty chapters with every heading under them — is a longer reply than
+    // the quick model gets time for, so it came back cut off: chapters missing half their topics,
+    // and each attempt saving a different piece of the book.
+    const toc = front ? await this._readContents(book, front, onProgress) : null;
 
     let chapters = (Array.isArray(toc?.chapters) ? toc.chapters : [])
       .map(c => ({
+        no: +c?.no || 0,
         name: String(c?.name || '').trim().slice(0, 90),
         part: String(c?.part || '').trim().slice(0, 70),
         page: +c?.page || 0,
@@ -691,13 +758,45 @@ ${front}`
       if (found) break;
     }
 
-    const have = new Set((await DB.live('topics')).map(t => this._norm(t.name)));
-    const made = [];
+    // Building again updates the topics already there rather than adding a second set beside them.
+    // A topic keeps its id, so its notes, questions and "read" tick stay attached to it.
+    const all = await DB.live('topics');
+    const mine = new Map(all.filter(t => t.bookId === bookId).map(t => [this._norm(t.name), t]));
+    const others = new Map(all.filter(t => t.bookId !== bookId).map(t => [this._norm(t.name), t]));
+    const made = [], kept = [], seenHere = new Set();
     let order = 0;
+    const place = (fields) => {
+      const key = this._norm(fields.name);
+      if (seenHere.has(key)) return;
+      seenHere.add(key);
+      const old = mine.get(key);
+      if (old) {
+        Object.assign(old, { chapter: fields.chapter, parentName: fields.chapter, chapterNo: fields.chapterNo, part: fields.part || '', order: fields.order });
+        if (!old.bookPage && fields.bookPage) old.bookPage = fields.bookPage;
+        if (fields.kw?.length && (old.kw || []).length < 3) old.kw = fields.kw;
+        kept.push(old);
+        return;
+      }
+      // The same subject already has this topic. One not tied to any book (the starter list, or one
+      // you added) moves into this chapter; one another book of this subject owns stays where it is.
+      // A topic of the same name in a different subject is a different topic — this chapter gets its
+      // own, so it is never missing "Acid base disorders" because Medicine has one.
+      const other = others.get(key);
+      if (other && (!other.system || other.system === sys)) {
+        if (other.bookId) return;
+        Object.assign(other, { bookId, chapter: fields.chapter, parentName: fields.chapter, chapterNo: fields.chapterNo, part: fields.part || '', order: fields.order, system: sys || other.system });
+        if (!other.bookPage && fields.bookPage) other.bookPage = fields.bookPage;
+        kept.push(other);
+        return;
+      }
+      made.push(this._topic(fields));
+    };
 
     for (let i = 0; i < chapters.length; i++) {
       const ch = chapters[i];
-      onProgress?.(ch.name, made.length);
+      const chapterNo = ch.no || i + 1;
+      order = 1000 + (i + 1) * 1000;        // chapters stay together and in the book's order
+      onProgress?.(ch.name, made.length + kept.length);
 
       // The chapter's own pages, so the subtopics are the headings this book actually prints.
       // The contents already lists what is in the chapter. Reading the chapter to rediscover it
@@ -705,13 +804,11 @@ ${front}`
       // whose contents gives chapter titles alone.
       if (ch.topics.length) {
         for (const s of ch.topics) {
-          if (have.has(this._norm(s.name))) continue;
-          have.add(this._norm(s.name));
-          made.push(this._topic({
-            name: s.name, chapter: ch.name, part: ch.part, bookId,
+          place({
+            name: s.name, chapter: ch.name, chapterNo, part: ch.part, bookId,
             bookPage: s.page || ch.page || 0,
-            system: book.system || '', order: 1000 + (order += 1)
-          }));
+            system: sys || '', order: (order += 1)
+          });
         }
         continue;
       }
@@ -727,7 +824,7 @@ ${front}`
 
       let subs;
       try {
-        subs = await fastAI({
+        subs = await this._bigAI({
           json: true,
           system: typeof SYSTEM_TUTOR !== 'undefined' ? SYSTEM_TUTOR : undefined,
           prompt: body
@@ -760,38 +857,60 @@ Same rules: one entry per separately examinable subject, textbook wording, 8-14 
 
       for (const s of (Array.isArray(subs?.topics) ? subs.topics : [])) {
         const name = String(s?.name || '').trim().slice(0, 80);
-        if (!name || have.has(this._norm(name))) continue;
-        have.add(this._norm(name));
+        if (!name) continue;
 
         const kw = [...new Set([
           ...(Array.isArray(s.kw) ? s.kw : []).map(k => String(k).toLowerCase().trim()).filter(k => k.length > 2),
           this._norm(name)
         ])].slice(0, 16);
 
-        made.push(this._topic({
-          name, kw, chapter: ch.name, part: ch.part, bookId, bookPage: ch.page || 0,
-          system: book.system || '', order: 1000 + (order += 1)
-        }));
+        place({
+          name, kw, chapter: ch.name, chapterNo, part: ch.part, bookId, bookPage: ch.page || 0,
+          system: sys || '', order: (order += 1)
+        });
       }
 
       await sleep(900); // the free keys rate-limit well before the chapters run out
     }
 
+    // Topics from an earlier, cut-off build that the full contents does not list. Ones with nothing
+    // attached — no notes, no questions, not ticked — were only ever noise, and go. Anything you
+    // have used is kept, moved under its chapter when the chapter can be told from its old name.
+    const removed = [];
+    // Never on a build much smaller than what is there already — that is a failed read, not a cleanup.
+    if (chapters.length >= 3 && seenHere.size >= mine.size * 0.5) {
+      const sheetIds = new Set((await DB.all('sheets')).map(x => x.id));
+      const withQs = new Set((await DB.all('mcqs')).filter(m => !m.deleted).map(m => m.topicId));
+      const chKey = c => this.chapterKey(c);
+      const chIndex = new Map(chapters.map((c, i) => [chKey(c.name), i]));
+      for (const [key, t] of mine) {
+        if (seenHere.has(key)) continue;
+        if (!t.done && !sheetIds.has(t.id) && !withQs.has(t.id)) { t.deleted = 1; removed.push(t); continue; }
+        const i = chIndex.get(chKey(t.chapter || t.parentName));
+        if (i != null) {
+          t.chapter = t.parentName = chapters[i].name;
+          t.chapterNo = chapters[i].no || i + 1;
+          t.order = 1000 + (i + 1) * 1000 + 900;
+        } else t.order = 1000 + (chapters.length + 1) * 1000;
+        kept.push(t);
+      }
+    }
+
+    if (made.length || kept.length || removed.length) await DB.putMany('topics', [...made, ...kept, ...removed]);
     if (made.length) {
-      await DB.putMany('topics', made);
       // Topics taken straight from the contents have only their own name to search the books with.
       // Fill in the textbook terms afterwards, in batches, so the tree appears immediately.
       this.enrich(made.filter(t => t.kw.length < 3).map(t => t.id), onProgress).catch(e => console.warn('keywords', e));
     }
-    return { book, chapters: chapters.length, made };
+    return { book, chapters: chapters.length, made, updated: kept.length, removed: removed.length };
   },
 
-  _topic({ name, kw, chapter, part, bookId, bookPage, system, order }) {
+  _topic({ name, kw, chapter, chapterNo, part, bookId, bookPage, system, order }) {
     return {
       id: 'f-' + slugify(name) + '-' + uid().slice(0, 4),
       system: system || '', name,
       kw: kw && kw.length ? kw : [this._norm(name)],
-      chapter, part: part || '', bookId, bookPage: bookPage || 0,
+      chapter, chapterNo: chapterNo || 0, part: part || '', bookId, bookPage: bookPage || 0,
       order, done: 0, doneAt: null,
       custom: 1, parentName: chapter, created: Date.now()
     };
@@ -816,7 +935,7 @@ Same rules: one entry per separately examinable subject, textbook wording, 8-14 
 
       let out;
       try {
-        out = await fastAI({
+        out = await this._bigAI({
           json: true,
           prompt: `For each MBBS topic below, give 8-14 lowercase terms that would be printed on the textbook pages about it — synonyms, classic signs, drug names, organisms, scores, classifications, eponyms.
 
@@ -881,7 +1000,9 @@ Return only the JSON.`
 
   /** Mark a whole chapter read or unread in one go. */
   async markChapter(code, chapter, read) {
-    const ts = (await DB.live('topics')).filter(t => t.system === code && (t.chapter || t.parentName) === chapter);
+    // By chapter identity, so "1. Introduction" and "Introduction" — one block on screen — are marked together.
+    const key = this.chapterKey(chapter);
+    const ts = (await DB.live('topics')).filter(t => t.system === code && this.chapterKey(t.chapter || t.parentName) === key);
     for (const t of ts) {
       t.done = read ? 1 : 0;
       t.doneAt = read ? (t.doneAt || Date.now()) : null;

@@ -314,9 +314,13 @@ ROUTES.push(
 // ---- actions ----
 Object.assign(A, {
   async lecStart() {
-    const topic = $('#lec-topic')?.value.trim();
+    const inp = $('#lec-topic'), sel = $('#lec-pick');
+    const topic = inp?.value.trim();
     if (!topic) return toast('Give the lecture a topic first');
-    await Lectures.start({ topic, faculty: $('#lec-faculty')?.value.trim() || '' });
+    // Left exactly as the roster filled it in means "whatever is on now" — checked again when the
+    // class ends. Typed or picked by hand, it is kept as given.
+    const auto = inp.value === inp.defaultValue && (!sel || !!sel.options[sel.selectedIndex]?.defaultSelected);
+    await Lectures.start({ topic, faculty: $('#lec-faculty')?.value.trim() || '', subject: sel?.options[sel.selectedIndex]?.dataset.subject || '', auto });
     toast('Recording. You can lock the screen.');
     App.render();
   },
@@ -349,6 +353,7 @@ Object.assign(A, {
     if (!name) return;
 
     l.topic = name;
+    l.autoTopic = 0;          // named by hand: never second-guessed from the roster again
     l.topicId = '';           // re-file it: the old topic was for the old name
     await Lectures.save(l);
 

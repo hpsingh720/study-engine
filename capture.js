@@ -187,7 +187,7 @@ const Scan = {
   },
 
   /** Cut the board out along its four corners, flatten it, and lift washed-out contrast. */
-  warp(img, q, maxSide = 2000) {
+  warp(img, q, maxSide = 2600) {
     const [tl, tr, br, bl] = q;
     const L = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
     let W = Math.max(L(tl, tr), L(bl, br)), H = Math.max(L(tl, bl), L(tr, br));
@@ -220,8 +220,26 @@ const Scan = {
       }
     }
     this._levels(O);
+    this._sharpen(O, W, H);
     og.putImageData(out, 0, 0);
-    return oc.toDataURL('image/jpeg', 0.9);
+    return oc.toDataURL('image/jpeg', 0.92);
+  },
+
+  // Straightening blurs a little, and a slide shot from far back is soft to begin with. A gentle
+  // unsharp mask brings the edges of letters back without making the noise grainy.
+  _sharpen(O, W, H, amount = 0.6) {
+    const src = new Uint8ClampedArray(O);
+    for (let y = 1; y < H - 1; y++) {
+      for (let x = 1; x < W - 1; x++) {
+        const i = (y * W + x) * 4;
+        for (let ch = 0; ch < 3; ch++) {
+          const p = i + ch, r = W * 4;
+          const blur = (src[p - 4] + src[p + 4] + src[p - r] + src[p + r] + 4 * src[p]) / 8;
+          const v = src[p] + amount * (src[p] - blur);
+          O[p] = v < 0 ? 0 : v > 255 ? 255 : v;
+        }
+      }
+    }
   },
 
   // A projected slide photographed in a lit room comes out grey on grey. Stretch each colour so the
@@ -297,7 +315,7 @@ const Capture = {
 
   async _start(facing) {
     this.stop();
-    const want = { facingMode: facing, width: { ideal: 2200 }, height: { ideal: 2200 } };
+    const want = { facingMode: facing, width: { ideal: 1920 }, height: { ideal: 1080 } };
     // Asking for zoom lets phones that support it use the real lens zoom; if the request is
     // refused for that reason alone, ask again without it and zoom digitally instead.
     try { this.stream = await navigator.mediaDevices.getUserMedia({ video: { ...want, zoom: true }, audio: false }); }
@@ -316,6 +334,7 @@ const Capture = {
     const caps = track?.getCapabilities?.() || {};
     this._hwZoom = caps.zoom && caps.zoom.max > caps.zoom.min ? { min: caps.zoom.min, max: Math.min(caps.zoom.max, 10), step: caps.zoom.step || 0.1 } : null;
     this._track = track;
+    this._ic = null;
     const r = document.getElementById('cap-zoom');
     if (r) {
       const z = this._hwZoom || { min: 1, max: 4, step: 0.1 };
@@ -390,21 +409,56 @@ const Capture = {
     catch (e) { toast('No other camera on this device'); }
   },
 
-  /** Grab the current frame — the zoomed part, at full sensor size — and look for the board in it. */
-  shoot() {
+  /**
+   * Take a photo. A frame grabbed from the live preview was what this used to save, and inside the
+   * Android app the preview is often only 1280×720 or less — fine to aim with, unreadable for the
+   * small print on a slide across the room. So it asks the camera for a proper still at the
+   * sensor's full resolution, the way the phone's own camera app does, and only falls back to the
+   * preview frame on phones that cannot do that.
+   */
+  async shoot() {
     const v = this._video;
-    if (!v || !v.videoWidth) return;
-    const R = this._region();
-    const c = document.createElement('canvas');
-    c.width = Math.round(R.w); c.height = Math.round(R.h);
-    c.getContext('2d').drawImage(v, R.x, R.y, R.w, R.h, 0, 0, c.width, c.height);
-    let quad = null;
-    try { quad = Scan.detect(c); } catch (e) {}
-    this.shots.push({ src: c.toDataURL('image/jpeg', 0.9), quad });
-    this._paintRoll();
-    // A small flash so it is obvious the shot was taken, since the preview never pauses.
+    if (!v || !v.videoWidth || this._busy) return;
+    this._busy = true;
     const st = document.querySelector('.cap-stage');
     if (st) { st.classList.add('flash'); setTimeout(() => st.classList.remove('flash'), 140); }
+    const btn = document.querySelector('button[data-act="capShoot"]');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span>Saving'; }
+    try {
+      const still = await this._still();
+      const src = still || v;
+      const sw = still ? still.width : v.videoWidth, sh = still ? still.height : v.videoHeight;
+      // The zoomed part of the frame, in this picture's own pixels (a still is usually larger, and
+      // may be 4:3 where the preview is 16:9).
+      const R = this._region();
+      const fx = sw / v.videoWidth, fy = sh / v.videoHeight;
+      let rx = R.x * fx, ry = R.y * fy, rw = R.w * fx, rh = R.h * fy;
+      const k = Math.min(1, 3200 / Math.max(rw, rh));
+      const c = document.createElement('canvas');
+      c.width = Math.round(rw * k); c.height = Math.round(rh * k);
+      c.getContext('2d').drawImage(src, rx, ry, rw, rh, 0, 0, c.width, c.height);
+      let quad = null;
+      try { quad = Scan.detect(c); } catch (e) {}
+      this.shots.push({ src: c.toDataURL('image/jpeg', 0.92), quad, still: !!still });
+      this._paintRoll();
+    } catch (e) {
+      toast('Could not take that photo — try again');
+    } finally {
+      this._busy = false;
+      if (btn) { btn.disabled = false; btn.textContent = 'Take photo'; }
+    }
+  },
+
+  async _still() {
+    if (typeof ImageCapture === 'undefined' || !this._track || this._track.readyState !== 'live') return null;
+    try {
+      this._ic = this._ic && this._ic.track === this._track ? this._ic : new ImageCapture(this._track);
+      const blob = await Promise.race([this._ic.takePhoto(), new Promise((_, no) => setTimeout(() => no(new Error('slow')), 4000))]);
+      if (!blob || blob.size < 5000) return null;
+      return await createImageBitmap(blob);
+    } catch (e) {
+      return null;
+    }
   },
 
   _paintRoll() {
@@ -443,7 +497,7 @@ const Capture = {
       const shots = [];
       for (const f of files) {
         try {
-          const src = await compressImage(f, 2200, 0.9);
+          const src = await compressImage(f, 3200, 0.92);
           let quad = null;
           try { quad = Scan.detect(await loadImage(src)); } catch (e) {}
           shots.push({ src, quad });
