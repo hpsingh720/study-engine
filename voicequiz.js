@@ -145,7 +145,8 @@ Views.voice = async (sub) => {
   const topics = (await DB.live('topics')).filter(t => t.done).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0)).slice(0, 40);
   return `<div class="page"><header class="page-head"><div><p class="eyebrow"><a class="link" href="#/practice">Practice</a></p><h1>Voice quiz</h1></div></header>
     <section class="card">
-      <p class="muted">Questions read aloud; answer by saying A, B, C or D. Say “repeat”, “skip” or “stop” any time.</p>
+      <div class="row between mid"><p class="muted">Questions read aloud; answer by saying A, B, C or D. Say “repeat”, “skip” or “stop” any time.</p>
+        <button class="btn ghost sm" data-act="voiceMode">${Voice.natural() ? 'Natural voice' : 'Phone voice'}</button></div>
       <button class="btn primary full lg mt" data-act="vqSay">Say what to quiz you on</button>
       <p class="muted small center mt" id="vq-hint">e.g. “Quiz me on nephrotic syndrome” · “my mistakes” · “cardiology”</p>
     </section>
@@ -160,6 +161,14 @@ Views.voice = async (sub) => {
 };
 
 Object.assign(A, {
+  // Natural (Gemini) sounds human but takes a moment to arrive; the phone's own voice is instant.
+  voiceMode(el) {
+    const nat = !Voice.natural();
+    localStorage.setItem('voiceNatural', nat ? '1' : '0');
+    Voice._gemOff = false;
+    el.textContent = nat ? 'Natural voice' : 'Phone voice';
+    toast(nat ? 'Natural voice — sounds human, a second or two to start.' : 'Phone voice — starts instantly. Needs the latest Android app; on the laptop it uses the browser voice.', 6000);
+  },
   async vqSay(el) {
     if (el.dataset.busy) return;
     el.dataset.busy = '1'; el.disabled = true;

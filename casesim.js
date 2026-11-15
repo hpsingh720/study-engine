@@ -24,7 +24,57 @@ const CaseSim = {
     // Your own college's case-sheet format, when you have added it in Settings; otherwise the standard one.
     let own = null; try { own = JSON.parse(localStorage.getItem('caseFormats') || 'null'); } catch (e) {}
     const k = c.subject === 'paeds' ? 'paeds' : c.subject === 'obg' ? 'obg' : 'general';
-    return (own?.[c.subject] || own?.[k])?.length ? own[c.subject] || own[k] : CASE_FORMATS[k];
+    if ((own?.[c.subject] || own?.[k])?.length) return own[c.subject] || own[k];
+    if (c.proforma?.length >= 6) return c.proforma;
+    return CASE_FORMATS[k];
+  },
+
+  // ---- the book every case is built from ----
+  async books() { return typeof TechBook !== 'undefined' ? TechBook.books() : []; },
+
+  /**
+   * The book's pages for this case. With a condition named, its pages; without, a condition the
+   * book itself covers — from its chapters if the subject was built from it, otherwise a page of the
+   * book that describes a disease — never one picked from outside the book.
+   */
+  async bookPages(book, topic) {
+    const words = t => String(t).toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 2);
+    if (topic) return TechBook.pagesFor(book, { name: topic, kw: [topic.toLowerCase(), ...words(topic)] }, 5, 24000);
+    let recent = []; try { recent = JSON.parse(localStorage.getItem('caseRecent') || '[]'); } catch (e) {}
+    const fromTree = shuffle((await DB.live('topics')).filter(t => t.bookId === book.id && !recent.includes(t.name)));
+    for (const t of fromTree.slice(0, 4)) {
+      const pages = await TechBook.pagesFor(book, t, 5, 24000);
+      if (pages.length) return pages;
+    }
+    const cand = [];
+    await DB.each('pages', 'bookId', book.id, pg => {
+      // A page about a disease: several of these words, and not the proforma, contents or index.
+      const t = pg.text || '';
+      if (t.length < 800 || /proforma|case sheet|table of contents|^\s*contents|^\s*index/im.test(t.slice(0, 600))) return;
+      const hits = ['clinical features', 'symptoms', 'signs', 'aetiology', 'etiology', 'causes', 'investigation', 'management', 'treatment', 'complications', 'diagnosis'].filter(w => t.toLowerCase().includes(w)).length;
+      if (hits >= 2) cand.push(pg.p);
+    });
+    if (!cand.length) return [];
+    const p0 = cand[Math.floor(Math.random() * cand.length)], out = [];
+    // The page before as well: a page from the middle of a topic needs the start of it (its heading, the symptoms).
+    for (const p of [p0 - 1, p0, p0 + 1, p0 + 2]) { const pg = await DB.get('pages', [book.id, p]); if (pg?.text) out.push({ bookId: book.id, p, text: pg.text, book: book.short || book.name }); }
+    return out;
+  },
+
+  // The headings the book itself uses for a case sheet, read once and kept.
+  async proforma(book) {
+    const key = 'caseFormat-' + book.id;
+    const have = await DB.get('prefs', key);
+    if (have) return have.headings || [];
+    const pages = await TechBook.pagesFor(book, { name: 'case sheet proforma', kw: ['case sheet', 'proforma', 'history taking', 'chief complaints', 'presenting complaints', 'general physical examination', 'systemic examination', 'provisional diagnosis'] }, 4, 14000);
+    if (!pages.length) return [];
+    const out = await AI.call({ temperature: 0.1, prompt: `These are pages from "${book.name}". If they show how this book sets out a clinical case sheet (proforma) for a long case, list its section headings in order, exactly as the book writes them. Otherwise return {"found":false}.
+JSON {"found":true,"headings":[""]}
+
+${excerptBlock(pages)}` }).catch(() => null);
+    const headings = out?.found ? (out.headings || []).map(String).filter(Boolean).slice(0, 30) : [];
+    await DB.put('prefs', { id: key, headings, at: Date.now() });
+    return headings;
   },
   voiceFor(p) {
     const female = /^f/i.test(p?.sex || '') || p?.informant && /mother|mata|maa/i.test(p.informant);
@@ -32,9 +82,21 @@ const CaseSim = {
   },
   langCode(c) { return { hi: 'hi-IN', pa: 'pa-IN', en: 'en-IN', mix: 'en-IN' }[c.lang] || 'en-IN'; },
 
-  async create({ subject, topic, lang, kind, difficulty }) {
+  async create({ subject, topic, lang, kind, difficulty, book: bookId, quick }) {
     const findingKeys = TECHNIQUES.map(t => t.finding).filter(Boolean);
-    const prompt = `Create a realistic ${kind === 'short' ? 'SHORT case' : 'LONG case'} for an Indian MBBS final-year clinical exam in ${SUBJECTS[subject]}${topic ? `, on or around: ${topic}` : ' — pick a condition commonly kept for MBBS finals'}. Difficulty: ${difficulty}.
+    const book = bookId && bookId !== 'none' ? (await this.books()).find(b => b.id === bookId) : null;
+    let pages = [], proforma = Promise.resolve([]);
+    if (book) {
+      pages = await this.bookPages(book, topic);
+      if (!pages.length) throw new Error(topic ? `"${topic}" is not in ${book.short || book.name}. Leave the condition empty for a case the book covers, or pick "No book".` : `Could not find a case in ${book.short || book.name} — is it fully read into the app on this device?`);
+      proforma = this.proforma(book).catch(() => []);
+    }
+    const fromBook = book ? `
+THE BOOK — build this case ONLY from these pages of "${book.name}". The diagnosis must be a condition these pages describe. Every key history point, examination finding, investigation and viva question with its answer must come from these pages, in the book's own terms. Add the page label, like [${book.short || 'Book'} p.N], to the end of each keyHistory item and each viva answer. Never bring in anything the pages do not say.
+
+${excerptBlock(pages)}
+` : '';
+    const prompt = `${fromBook}Create a realistic ${kind === 'short' ? 'SHORT case' : 'LONG case'} for an Indian MBBS final-year clinical exam in ${SUBJECTS[subject]}${topic ? `, on or around: ${topic}` : ' — pick a condition commonly kept for MBBS finals'}. Difficulty: ${difficulty}.
 The patient is a real-feeling Indian patient (rural or urban Punjab/North India unless the condition suggests otherwise). For a child, the history is given by the mother. For obstetrics, a pregnant woman with full obstetric details.
 
 Return JSON:
@@ -51,10 +113,16 @@ RULES
 - exam: every key above gets the finding for THIS patient in one short line ("Present — bilateral pitting up to mid-shin", "Absent", "Raised, 6 cm above the sternal angle", "Not applicable"). Consistent with the diagnosis.
 - tests: 6-12 relevant investigations with realistic values and units.
 - viva: 8 questions an Indian examiner asks on this case, with model answers (short).
-- Everything internally consistent.`;
-    const out = await AI.call({ prompt, system: SYSTEM_TUTOR, temperature: 0.8 });
-    if (!out?.patient || !out?.facts) throw new Error('Could not make the case — try again.');
-    this.c = { id: 'case-' + uid(), subject, topic, lang, kind, difficulty, started: Date.now(), stage: 'history', case: out, chat: [], exams: [], tests: [], sheet: {}, presentation: '', viva: [], report: null, mood: out.patient.mood || 'calm' };
+- Everything internally consistent.${book ? '\n- "source": the page range used, e.g. "[' + (book.short || 'Book') + ' p.212-214]". Add it to the JSON.' : ''}`;
+    const tok = (this._tok = uid());
+    const out = await AI.call({ prompt, system: SYSTEM_TUTOR, temperature: book ? 0.5 : 0.8, ...(quick ? { model: AI.bulkModel } : {}) });
+    if (tok !== this._tok) return this.c;   // a slower earlier attempt finishing late: the newer patient stays
+    if (!out?.patient || !out?.facts) throw new Error('The AI reply was incomplete — try again.');
+    this.c = { id: 'case-' + uid(), subject, topic, lang, kind, difficulty, started: Date.now(), stage: 'history', case: out, chat: [], exams: [], tests: [], sheet: {}, presentation: '', viva: [], report: null, mood: out.patient.mood || 'calm',
+      book: book ? { id: book.id, name: book.short || book.name } : null,
+      // The pages are kept with the case, so the examiner and the viva mark against the same text.
+      excerpt: book ? excerptBlock(pages).slice(0, 20000) : '', proforma: await proforma };
+    if (book) { try { const r = JSON.parse(localStorage.getItem('caseRecent') || '[]'); localStorage.setItem('caseRecent', JSON.stringify([out.diagnosis, ...r].slice(0, 12))); } catch (e) {} }
     this.save();
     return this.c;
   },
@@ -87,7 +155,7 @@ Return JSON: {"reply":"","mood":"calm|anxious|pain|tired|confused"}`;
 
   async speakPatient(text) {
     const c = this.c, p = c.case.patient;
-    const style = { anxious: 'in a worried, anxious voice', pain: 'in a strained voice, in pain', tired: 'in a tired, slow voice', confused: 'sounding unsure' }[c.mood] || 'naturally';
+    const style = { anxious: 'sounding worried', pain: 'a little strained, without moaning', tired: 'sounding tired', confused: 'sounding unsure' }[c.mood] || '';
     await Voice.say(text, { lang: this.langCode(c), voice: this.voiceFor(p), style });
   },
 
@@ -123,6 +191,10 @@ Return JSON: {"finding":""}`, temperature: 0.3, model: AI.bulkModel }).catch(() 
     const out = await AI.call({ system: SYSTEM_TUTOR, temperature: 0.3, prompt: `You are a strict but fair Indian MBBS final-exam examiner. Mark this ${c.kind} case.
 
 THE CASE (hidden from the student): ${JSON.stringify({ diagnosis: k.diagnosis, differentials: k.differentials, keyHistory: k.keyHistory, exam: k.exam, tests: k.tests })}
+${c.excerpt ? `
+THE BOOK THE CASE IS FROM (${c.book.name}) — mark against what it says, and add its page label to each missed point and each viva question:
+${c.excerpt}
+` : ''}
 
 WHAT THE STUDENT ASKED THE PATIENT:
 ${c.chat.filter(m => m.who === 'you').map(m => '- ' + m.text).join('\n') || '(nothing)'}
@@ -156,7 +228,8 @@ score is out of 10.` });
   async gradeViva(q, answer) {
     const k = this.c.case;
     const model = (k.viva || []).map(v => `Q: ${v.q}\nA: ${v.a}`).join('\n');
-    const out = await AI.call({ temperature: 0.3, model: AI.bulkModel, prompt: `Examiner's viva on ${k.diagnosis}. Reference answers:\n${model}\n\nQuestion: ${q}\nStudent's answer (spoken, transcribed): ${answer || '(no answer)'}\nReturn JSON: {"verdict":"good|partial|wrong","say":"what you say back, one short sentence, like an examiner","ideal":"the answer they should have given, 1-2 lines"}` })
+    const c = this.c;
+    const out = await AI.call({ temperature: 0.3, model: AI.bulkModel, prompt: `Examiner's viva on ${k.diagnosis}. Reference answers:\n${model}\n${c.excerpt ? `\nThe book (${c.book.name}) — the answer must agree with it; quote its page in "ideal":\n${c.excerpt.slice(0, 12000)}\n` : ''}\nQuestion: ${q}\nStudent's answer (spoken, transcribed): ${answer || '(no answer)'}\nReturn JSON: {"verdict":"good|partial|wrong","say":"what you say back, one short sentence, like an examiner","ideal":"the answer they should have given, 1-2 lines"}` })
       .catch(() => AI.call({ prompt: `Q: ${q}\nAnswer: ${answer}\nJSON {"verdict":"partial","say":"","ideal":""}` }));
     this.c.viva.push({ q, answer, ...out });
     this.save();
@@ -179,25 +252,64 @@ window.CaseSim = CaseSim;
 // ---------- the face ----------
 
 function patientFace(p, mood) {
-  const female = /^f/i.test(p?.sex || ''), age = parseInt(p?.age) || 40, child = age < 13;
+  const female = /^f/i.test(p?.sex || ''), age = parseInt(p?.age) || 40, child = age < 13, old = age > 58;
   const sikh = /\b(singh|kaur)\b/i.test(p?.name || '');
-  const hair = age > 58 ? '#c9c9c9' : '#2a1d16';
-  const skin = '#c99a74';
-  const brow = { pain: 'M86 96 L112 102 M188 96 L162 102', anxious: 'M86 100 L112 94 M188 100 L162 94', tired: 'M86 100 L112 100 M188 100 L162 100', confused: 'M86 98 L112 92 M188 96 L162 100' }[mood] || 'M86 98 Q99 93 112 98 M188 98 Q175 93 162 98';
-  return `<svg class="face" viewBox="0 0 280 300" aria-hidden="true">
-    ${female ? `<path d="M50 150 Q40 40 140 34 Q240 40 230 150 L236 270 L44 270 Z" fill="${hair}"/>` : ''}
-    <rect x="104" y="214" width="72" height="50" fill="${skin}"/>
-    <path d="M30 300 Q40 250 140 246 Q240 250 250 300 Z" fill="${female ? '#7a3b5c' : '#3a5a7a'}"/>
-    <ellipse cx="140" cy="140" rx="${child ? 76 : 70}" ry="${child ? 84 : 92}" fill="${skin}"/>
-    ${sikh && !female ? `<path d="M64 120 Q60 30 140 28 Q220 30 216 120 Q180 84 140 86 Q100 84 64 120 Z" fill="#1e3a6e"/>` : !female ? `<path d="M70 110 Q72 46 140 44 Q208 46 210 110 Q176 74 140 76 Q104 74 70 110 Z" fill="${hair}"/>` : `<path d="M72 112 Q80 52 140 50 Q200 52 208 112 Q172 76 140 80 Q108 76 72 112 Z" fill="${hair}"/>`}
-    ${sikh && !female && age > 18 ? `<path d="M80 176 Q90 268 140 272 Q190 268 200 176 Q180 214 140 216 Q100 214 80 176 Z" fill="${hair}"/>` : ''}
-    <path class="brow" d="${brow}" stroke="#2a1d16" stroke-width="5" fill="none" stroke-linecap="round"/>
-    <g class="eyes"><ellipse cx="100" cy="122" rx="11" ry="8" fill="#fff"/><ellipse cx="180" cy="122" rx="11" ry="8" fill="#fff"/>
-      <circle cx="100" cy="123" r="5" fill="#2a1d16"/><circle cx="180" cy="123" r="5" fill="#2a1d16"/>
-      <rect class="lid" x="86" y="112" width="28" height="0" fill="${skin}"/><rect class="lid" x="166" y="112" width="28" height="0" fill="${skin}"/></g>
-    <path d="M140 132 Q134 160 140 168 Q146 170 150 166" stroke="#9b6f50" stroke-width="3" fill="none"/>
-    <ellipse id="mouth" cx="140" cy="196" rx="18" ry="3" fill="#7a3434"/>
-  </svg>`;
+  // A steady look per patient: the same name always gets the same skin tone and clothes.
+  const h = [...String(p?.name || 'x')].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) >>> 0, 7);
+  const tones = [['#d2a27c', '#b5845f'], ['#c08d66', '#a2714d'], ['#a8774f', '#8a5f3c'], ['#dcb08c', '#bf9068']];
+  const [skin, shade] = tones[h % tones.length];
+  const hair = old ? '#bdbab5' : '#231913';
+  const cloth = ['#3d5a80', '#6b4f7a', '#2f6b5e', '#8a4b3a', '#4f5d75'][h % 5];
+  const dupatta = ['#c2556f', '#d08b3a', '#5e8fb5', '#8a6fb0', '#c76b4a'][(h >> 3) % 5];
+  const turban = old ? '#e9e6df' : ['#1f3a68', '#7a1f2b', '#d9822b', '#1d1d1d', '#2f5d3a'][(h >> 5) % 5];
+  const covered = female && (old || age > 45);              // older women here usually keep the dupatta over the head
+  const beard = sikh && !female && age > 17, moustache = !female && age > 22 && !beard;
+  const eyeY = child ? 104 : 100, eyeS = child ? 1.18 : 1;
+  const squint = mood === 'pain', heavy = mood === 'tired';
+  const brow = {
+    pain: 'M70 87 Q80 90 92 92 M130 87 Q120 90 108 92', anxious: 'M70 90 Q80 84 92 86 M130 90 Q120 84 108 86',
+    tired: 'M70 89 Q81 88 92 90 M130 89 Q119 88 108 90', confused: 'M70 88 Q80 82 92 86 M130 86 Q120 89 108 90'
+  }[mood] || 'M70 88 Q81 83 92 87 M130 88 Q119 83 108 87';
+  const eye = (cx) => `<g class="eye" style="transform-origin:${cx}px ${eyeY}px">
+      <path d="M${cx - 12 * eyeS} ${eyeY} Q${cx} ${eyeY - (squint ? 4 : 8) * eyeS} ${cx + 12 * eyeS} ${eyeY} Q${cx} ${eyeY + (squint ? 2 : 6) * eyeS} ${cx - 12 * eyeS} ${eyeY} Z" fill="#f6f1ea"/>
+      ${squint ? '' : `<circle cx="${cx}" cy="${eyeY}" r="${5 * eyeS}" fill="#3a2416"/><circle cx="${cx}" cy="${eyeY}" r="${2.3 * eyeS}" fill="#0d0907"/><circle cx="${cx + 1.6}" cy="${eyeY - 1.8}" r="1.3" fill="#fff"/>`}
+      <path d="M${cx - 12.5 * eyeS} ${eyeY} Q${cx} ${eyeY - (squint ? 5 : heavy ? 5 : 9) * eyeS} ${cx + 12.5 * eyeS} ${eyeY}" stroke="#2a1a12" stroke-width="2" fill="${heavy ? skin : 'none'}"/></g>`;
+  const face = child
+    ? 'M58 100 Q58 52 100 50 Q142 52 142 100 Q142 142 100 156 Q58 142 58 100 Z'
+    : 'M60 96 Q60 50 100 48 Q140 50 140 96 Q140 136 117 150 Q100 159 83 150 Q60 136 60 96 Z';
+  const parts = [];
+  // hair falling behind the shoulders
+  if (female && !covered) parts.push(`<path d="M58 84 Q50 150 56 196 L144 196 Q150 150 142 84 Z" fill="${hair}"/>`);
+  if (covered) parts.push(`<path d="M44 120 Q40 34 100 28 Q160 34 156 120 L162 200 L38 200 Z" fill="${dupatta}"/>`);
+  // shoulders and clothes
+  parts.push(`<path d="M14 232 Q18 184 68 172 L132 172 Q182 184 186 232 Z" fill="${cloth}"/>`);
+  if (!female) parts.push(`<path d="M88 172 L100 198 L112 172" fill="none" stroke="rgba(0,0,0,.25)" stroke-width="3"/><circle cx="100" cy="206" r="2" fill="rgba(255,255,255,.5)"/><circle cx="100" cy="218" r="2" fill="rgba(255,255,255,.5)"/>`);
+  else parts.push(`<path d="M30 190 Q100 222 176 184 L184 206 Q100 244 26 210 Z" fill="${dupatta}" opacity=".92"/>`);
+  parts.push(`<path d="M86 138 L86 176 Q100 186 114 176 L114 138 Z" fill="${shade}"/>`);
+  if (!covered && !(sikh && !female)) parts.push(`<ellipse cx="59" cy="104" rx="7" ry="12" fill="${skin}"/><ellipse cx="141" cy="104" rx="7" ry="12" fill="${skin}"/>`);
+  if (female && !covered) parts.push(`<circle cx="59" cy="117" r="2.6" fill="#d8b04a"/><circle cx="141" cy="117" r="2.6" fill="#d8b04a"/>`);
+  parts.push(`<path d="${face}" fill="${skin}"/>`);
+  // hair, turban or patka on top
+  if (sikh && !female && !child) parts.push(`<path d="M55 92 Q50 30 100 24 Q150 30 145 92 Q136 70 100 68 Q64 70 55 92 Z" fill="${turban}"/>
+      <path d="M60 76 Q100 50 140 70 M62 62 Q100 38 138 56 M70 48 Q100 30 130 44" fill="none" stroke="rgba(0,0,0,.18)" stroke-width="2.5"/>
+      <path d="M100 26 L104 68" stroke="rgba(0,0,0,.12)" stroke-width="3"/>`);
+  else if (sikh && !female && child) parts.push(`<path d="M58 88 Q56 46 100 42 Q144 46 142 88 Q130 66 100 64 Q70 66 58 88 Z" fill="${turban}"/><circle cx="100" cy="40" r="11" fill="${turban}"/>`);
+  else if (covered) parts.push(`<path d="M62 96 Q62 60 100 58 Q138 60 138 96 Q130 70 100 68 Q70 70 62 96 Z" fill="${hair}"/><path d="M50 110 Q48 46 100 40 Q152 46 150 110 Q144 62 100 58 Q56 62 50 110 Z" fill="${dupatta}"/>`);
+  else if (female) parts.push(`<path d="M59 102 Q56 50 100 45 Q144 50 141 102 Q134 70 104 62 L100 72 L96 62 Q66 70 59 102 Z" fill="${hair}"/>`);
+  else parts.push(`<path d="M59 92 Q57 48 100 44 Q143 48 141 92 Q136 68 118 64 Q100 58 82 64 Q64 68 59 92 Z" fill="${hair}"/>`);
+  if (beard) parts.push(`<path d="M61 100 Q60 162 100 182 Q140 162 139 100 Q134 134 118 146 Q100 156 82 146 Q66 134 61 100 Z" fill="${hair}"/>`);
+  // features
+  parts.push(`<path class="brow" d="${brow}" stroke="${old ? '#8c8882' : '#21160f'}" stroke-width="${female ? 3 : 4.2}" fill="none" stroke-linecap="round"/>`);
+  parts.push(eye(child ? 82 : 82), eye(child ? 118 : 118));
+  parts.push(`<path d="M100 104 Q97 118 93 123 Q100 128 107 123" stroke="${shade}" stroke-width="2.4" fill="none" stroke-linecap="round"/>`);
+  if (female || child) parts.push(`<circle cx="76" cy="122" r="8" fill="#d9625a" opacity=".12"/><circle cx="124" cy="122" r="8" fill="#d9625a" opacity=".12"/>`);
+  if (old) parts.push(`<path d="M80 74 Q100 70 120 74 M84 80 Q100 77 116 80 M66 104 l-6 3 M134 104 l6 3 M86 128 Q82 138 84 144 M114 128 Q118 138 116 144" stroke="${shade}" stroke-width="1.4" fill="none" opacity=".7"/>`);
+  if (mood === 'pain') parts.push(`<path d="M94 80 L98 84 M106 80 L102 84" stroke="${shade}" stroke-width="1.6"/>`);
+  const corners = mood === 'pain' || mood === 'anxious' ? 'M88 140 Q100 134 112 140' : mood === 'tired' ? 'M88 138 Q100 137 112 138' : 'M88 137 Q100 141 112 137';
+  parts.push(`<path d="${corners}" stroke="#8f4a44" stroke-width="2.6" fill="none" stroke-linecap="round"/>`);
+  parts.push(`<ellipse id="mouth" cx="100" cy="138" rx="9" ry="0.5" fill="#5a2424"/>`);
+  if (beard || moustache) parts.push(`<path d="M83 132 Q92 126 100 129 Q108 126 117 132 Q108 137 100 134 Q92 137 83 132 Z" fill="${hair}"/>`);
+  return `<svg class="face" viewBox="0 0 200 232" aria-hidden="true">${parts.join('')}</svg>`;
 }
 
 // The mouth follows the voice; the eyes blink on their own.
@@ -207,8 +319,8 @@ function animateFace() {
     const m = document.getElementById('mouth');
     if (!m) return;
     const v = Voice.speaking ? Voice.level : 0;
-    m.setAttribute('ry', (3 + v * 14).toFixed(1));
-    m.setAttribute('rx', (18 - v * 4).toFixed(1));
+    m.setAttribute('ry', (0.5 + v * 9).toFixed(1));
+    m.setAttribute('rx', (9 - v * 2).toFixed(1));
     animateFace._r = requestAnimationFrame(loop);
   };
   loop();
@@ -218,6 +330,7 @@ function animateFace() {
 
 Views.cases = async (sub) => {
   const c = CaseSim.load();
+  const books = await CaseSim.books();
   if (sub === 'run' && c && c.stage !== 'report') return caseRun(c);
   if (sub === 'report' && c) return caseReport(c);
   let hist = []; try { hist = JSON.parse(localStorage.getItem('caseHistory') || '[]'); } catch (e) {}
@@ -232,8 +345,10 @@ Views.cases = async (sub) => {
         <label>Patient speaks<select name="lang">${Object.entries(LANGS).map(([k, v]) => `<option value="${k}" ${k === 'mix' ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
         <label>Difficulty<select name="difficulty"><option>usual exam case</option><option>straightforward</option><option>tricky</option></select></label>
       </div>
-      <label>Condition (optional)<input name="topic" placeholder="Leave empty for a surprise — or e.g. nephrotic syndrome"></label>
-      <button class="btn primary full lg mt" type="submit">Meet the patient</button>
+      <label>From the book<select name="book">${books.map(b => `<option value="${esc(b.id)}">${esc(b.short || b.name)}</option>`).join('')}<option value="none" ${books.length ? '' : 'selected'}>No book — any condition</option></select></label>
+      <label>Condition (optional)<input name="topic" placeholder="${books.length ? `Leave empty for a case from ${esc(books[0].short || books[0].name)}` : 'Leave empty for a surprise'} — or e.g. nephrotic syndrome"></label>
+      ${CaseSim._lastErr && !CaseSim._creating ? `<p class="form-err danger small">${esc(CaseSim._lastErr)}</p>` : ''}
+      <button class="btn primary full lg mt" type="submit" ${CaseSim._creating ? 'disabled data-busy="1"' : ''}>${CaseSim._creating ? '<span class="spin"></span>The patient is being admitted…' : 'Meet the patient'}</button>
     </form>
     ${hist.length ? `<section class="card mt"><div class="card-head"><h3>Past cases</h3></div><div class="list">${hist.slice(0, 10).map(h => `<div class="row between pad"><span>${fmtDate(h.date)} · ${esc(SUBJECTS[h.subject] || '')} · ${esc(h.diagnosis || '')}</span><b>${h.score ?? '—'}/10</b></div>`).join('')}</div></section>` : ''}
   </div>`;
@@ -282,10 +397,10 @@ function caseRun(c) {
         <div class="vq-meter"><i id="vq-lvl"></i></div>`
         : `<button class="btn primary full lg" data-act="caseFinish">See the full report</button>`}`;
   }
-  setTimeout(animateFace, 50);
+  setTimeout(() => { animateFace(); const ch = document.getElementById('case-chat'); if (ch) ch.scrollTop = ch.scrollHeight; }, 30);
   return `<div class="page case-page">
     <header class="page-head"><div><p class="eyebrow"><a class="link" href="#/cases">Clinical cases</a> · ${esc(SUBJECTS[c.subject])} · ${c.kind === 'short' ? 'short' : 'long'} case</p></div>
-      <button class="btn ghost sm" data-act="caseQuit">End case</button></header>
+      <div class="row gap"><button class="btn ghost sm" data-act="voiceMode">${Voice.natural() ? 'Natural voice' : 'Phone voice'}</button><button class="btn ghost sm" data-act="caseQuit">End case</button></div></header>
     ${face}${stageBar}<section class="card mt case-body">${body}</section></div>`;
 }
 
@@ -299,7 +414,7 @@ function caseReport(c) {
     <section class="card mt"><h3>History</h3>${list('Done well', r.history?.good)}${list('Not asked', r.history?.missed, 'bad-list')}</section>
     <section class="card mt"><h3>Examination</h3>${list('Technique errors', r.examination?.technique, 'bad-list')}${list('Not examined', r.examination?.missed, 'bad-list')}${list('Done well', r.examination?.good)}</section>
     <section class="card mt"><h3>Presentation</h3>${list('Good', r.presentation?.good)}${list('Improve', r.presentation?.improve)}</section>
-    <section class="card mt"><h3>The case</h3><p class="small">${esc(k.diagnosis)} · differentials: ${esc((k.differentials || []).join(', '))}</p>
+    <section class="card mt"><h3>The case</h3><p class="small">${esc(k.diagnosis)} · differentials: ${esc((k.differentials || []).join(', '))}${c.book ? ` · from ${esc(c.book.name)} ${esc(k.source || '')}` : ''}</p>
       ${list('What the examiner expected you to ask', k.keyHistory)}
       <p class="eyebrow mt">Tests</p><p class="small">${esc(Object.entries(k.tests || {}).map(([a, b]) => `${a}: ${b}`).join(' · '))}</p></section>
   </div>`;
@@ -371,6 +486,7 @@ async function caseAskPatient(q) {
   try {
     const a = await CaseSim.reply(q);
     App.render(true);
+    setTimeout(() => { const ch = document.getElementById('case-chat'); if (ch) ch.scrollTop = ch.scrollHeight; }, 60);
     await CaseSim.speakPatient(a);
   } catch (e) { toast(e.message || String(e), 8000); App.render(true); }
 }
@@ -389,13 +505,32 @@ Object.assign(F, {
   async caseStart(form) {
     const d = Object.fromEntries(new FormData(form));
     const btn = form.querySelector('button[type=submit]');
-    if (btn?.dataset.busy) return;
-    if (btn) { btn.dataset.busy = '1'; btn.disabled = true; btn.innerHTML = '<span class="spin"></span>The patient is being admitted…'; }
+    if (btn?.dataset.busy || CaseSim._creating) return;
+    const cur = CaseSim.load();
+    if (cur && cur.stage !== 'report' && !confirm(`${cur.case.patient.name}'s case is still open. Start a new patient and close that one?`)) return;
+    CaseSim._creating = Date.now();
+    const err = form.querySelector('.form-err') || form.insertAdjacentElement('beforeend', Object.assign(document.createElement('p'), { className: 'form-err danger small' }));
+    err.textContent = ''; CaseSim._lastErr = '';
+    const t0 = Date.now();
+    const tick = () => { if (btn) btn.innerHTML = `<span class="spin"></span>The patient is being admitted… ${Math.round((Date.now() - t0) / 1000)} s`; };
+    if (btn) { btn.dataset.busy = '1'; btn.disabled = true; }
+    tick(); const clock = setInterval(tick, 1000);
     try {
-      const c = await CaseSim.create(d);
+      // The full model writes the richest case, but on a busy day it can take minutes. After 90
+      // seconds, hand the same job to the lighter model rather than keep you waiting.
+      const limit = (pr, ms) => Promise.race([pr, new Promise((_, no) => setTimeout(() => no(new Error('slow')), ms))]);
+      try { await limit(CaseSim.create(d), 90000); }
+      catch (e) {
+        if (e.message !== 'slow') throw e;
+        await limit(CaseSim.create({ ...d, quick: 1 }), 90000).catch(e2 => { throw e2.message === 'slow' ? new Error('Gemini is very slow right now — it did not answer within three minutes. Try again in a little while.') : e2; });
+      }
       location.hash = '#/cases/run';
       setTimeout(() => { const cur = CaseSim.c; cur.chat.push({ who: 'patient', text: cur.case.opening, at: Date.now() }); CaseSim.save(); App.render(true); CaseSim.speakPatient(cur.case.opening); }, 400);
-    } catch (e) { toast(e.message || String(e), 9000); if (btn) { btn.disabled = false; delete btn.dataset.busy; btn.textContent = 'Meet the patient'; } }
+    } catch (e) {
+      // Kept on screen, not a toast that disappears while you are looking away.
+      err.textContent = CaseSim._lastErr = 'Could not admit the patient: ' + (e.message || String(e));
+      if (btn) { btn.disabled = false; delete btn.dataset.busy; btn.textContent = 'Try again'; }
+    } finally { clearInterval(clock); CaseSim._creating = 0; }
   },
   async caseAsk(form) { const q = form.q.value.trim(); if (!q) return; form.q.value = ''; await caseAskPatient(q); },
   async caseExamOther(form) {

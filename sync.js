@@ -190,7 +190,8 @@ const PageRelay = {
 const BookText = {
   CH: 40,
   remote() { try { return JSON.parse(localStorage.getItem('remoteBooks') || '[]'); } catch (e) { return []; } },
-  async ownBooks() { return (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc'].includes(b.role)); },
+  // The clinical-methods book goes too: the examination drills and the clinical cases are built from it on the phone and iPad as well.
+  async ownBooks() { return (await DB.all('books')).filter(b => ['ref', 'mbbs', 'amc', 'practical'].includes(b.role)); },
   async post(rows) {
     const { url } = Sync.cfg();
     const r = await fetch(url + '/rest/v1/records', { method: 'POST', headers: { ...Sync.headers(), Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify(rows), signal: AbortSignal.timeout(60000) });

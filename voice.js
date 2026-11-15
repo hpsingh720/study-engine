@@ -25,6 +25,8 @@ const Voice = {
   stop() {
     this._cancel = true;
     try { this._src?.stop(); } catch (e) {}
+    for (const x of this._srcs || []) { try { x.stop(); } catch (e) {} }
+    this._srcs = []; this._metering = false;
     try { window.speechSynthesis?.cancel(); } catch (e) {}
     try { this.native()?.stopSpeaking?.(); } catch (e) {}
     this.speaking = false;
@@ -61,12 +63,21 @@ const Voice = {
     let last;
     for (const model of models) {
       const body = {
-        contents: [{ role: 'user', parts: [{ text: style ? `Say this ${style}: ${text}` : text }] }],
+        contents: [{ role: 'user', parts: [{ text: `Speak at a normal conversational pace${style ? ', ' + style : ''}: ${text}` }] }],
         generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } }
       };
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(AI.key)}`;
+      const base = `https://generativelanguage.googleapis.com/v1beta/models/${model}`;
+      const key = encodeURIComponent(AI.key);
       try {
-        const res = await AI.gfetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        // Streamed: the first words play while the rest is still being made, instead of waiting
+        // two seconds or more for the whole sentence.
+        if (!this._noStream) {
+          try {
+            if (await this._stream(`${base}:streamGenerateContent?alt=sse&key=${key}`, body)) { localStorage.setItem('tts_model', model); return; }
+            this._noStream = true;
+          } catch (e) { if (this._cancel) return; this._noStream = true; }
+        }
+        const res = await AI.gfetch(`${base}:generateContent?key=${key}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         const d = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(d.error?.message || 'voice ' + res.status);
         const part = (d.candidates?.[0]?.content?.parts || []).find(p => p.inlineData || p.inline_data);
@@ -74,7 +85,8 @@ const Voice = {
         if (!inl?.data) throw new Error('no audio in reply');
         localStorage.setItem('tts_model', model);
         if (this._cancel) return;
-        await this._playPcm(inl.data, +((inl.mimeType || inl.mime_type || '').match(/rate=(\d+)/) || [])[1] || 24000);
+        const pcm = this._pcm(inl.data, inl.mimeType || inl.mime_type);
+        await this._play([pcm]);
         return;
       } catch (e) { last = e; }
     }
@@ -83,18 +95,94 @@ const Voice = {
     throw last || new Error('no natural voice');
   },
 
-  async _playPcm(b64, rate) {
-    const bin = atob(b64), n = bin.length >> 1, ctx = this.ctx();
-    const buf = ctx.createBuffer(1, n, rate), ch = buf.getChannelData(0);
-    for (let i = 0; i < n; i++) { let v = bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8); if (v > 32767) v -= 65536; ch[i] = v / 32768; }
-    const src = ctx.createBufferSource(), an = ctx.createAnalyser();
-    an.fftSize = 512; src.buffer = buf; src.connect(an); an.connect(ctx.destination);
-    this._src = src;
+  /**
+   * Audio bytes → samples at their true rate. Older voices send bare 16-bit PCM with the rate in
+   * the type ("rate=24000"); newer ones send a WAV file with the rate written in its header. Reading
+   * WAV as bare PCM at an assumed rate is what made the voice slow and deep.
+   */
+  _pcm(b64, mime = '') {
+    const bin = atob(b64), bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const dv = new DataView(bytes.buffer);
+    let rate = +(String(mime).match(/rate=(\d+)/) || [])[1] || 24000, off = 0, len = bytes.length, ch = 1;
+    if (bytes.length > 44 && String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF') {
+      ch = dv.getUint16(22, true) || 1;
+      rate = dv.getUint32(24, true) || rate;
+      let p = 12;
+      while (p + 8 <= bytes.length) {
+        const id = String.fromCharCode(...bytes.slice(p, p + 4)), size = dv.getUint32(p + 4, true);
+        if (id === 'data') { off = p + 8; len = Math.min(size, bytes.length - off); break; }
+        p += 8 + size + (size & 1);
+      }
+    }
+    const n = Math.floor(len / 2 / ch), out = new Float32Array(n);
+    for (let i = 0; i < n; i++) out[i] = dv.getInt16(off + i * 2 * ch, true) / 32768;
+    return { samples: out, rate };
+  },
+
+  async _stream(url, body) {
+    const res = await AI.gfetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!res.ok || !res.body) throw new Error('no stream');
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    const ctx = this.ctx(), an = ctx.createAnalyser();
+    an.fftSize = 512; an.connect(ctx.destination);
+    let buf = '', at = 0, got = 0, lastEnd = Promise.resolve();
+    this._srcs = [];
+    this._meter(an);
+    for (;;) {
+      let value, done;
+      // Cut off part-way: keep what already played rather than saying the sentence twice.
+      try { ({ value, done } = await reader.read()); } catch (e) { if (got) break; throw e; }
+      if (done || this._cancel) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+        if (!line.startsWith('data:')) continue;
+        let d; try { d = JSON.parse(line.slice(5)); } catch (e) { continue; }
+        for (const part of d.candidates?.[0]?.content?.parts || []) {
+          const inl = part.inlineData || part.inline_data;
+          if (!inl?.data) continue;
+          const { samples, rate } = this._pcm(inl.data, inl.mimeType || inl.mime_type);
+          if (!samples.length) continue;
+          const b = ctx.createBuffer(1, samples.length, rate);
+          b.getChannelData(0).set(samples);
+          const src = ctx.createBufferSource();
+          src.buffer = b; src.connect(an);
+          at = Math.max(at, ctx.currentTime + 0.05);
+          src.start(at); at += b.duration; got++;
+          this._srcs.push(src);
+          lastEnd = new Promise(r => { src.onended = r; });
+        }
+      }
+    }
+    if (!got) return false;
+    await lastEnd;
+    this._metering = false; this.level = 0;
+    return true;
+  },
+
+  _meter(an) {
     const data = new Float32Array(an.fftSize);
-    let alive = true;
-    const meter = () => { if (!alive) return; an.getFloatTimeDomainData(data); let s = 0; for (const x of data) s += x * x; this.level = Math.min(1, Math.sqrt(s / data.length) * 6); requestAnimationFrame(meter); };
-    await new Promise(res => { src.onended = res; src.start(); meter(); });
-    alive = false; this.level = 0; this._src = null;
+    this._metering = true;
+    const tick = () => { if (!this._metering) return; an.getFloatTimeDomainData(data); let s = 0; for (const x of data) s += x * x; this.level = Math.min(1, Math.sqrt(s / data.length) * 6); requestAnimationFrame(tick); };
+    tick();
+  },
+
+  async _play(chunks) {
+    const ctx = this.ctx(), an = ctx.createAnalyser();
+    an.fftSize = 512; an.connect(ctx.destination);
+    this._meter(an);
+    for (const { samples, rate } of chunks) {
+      if (this._cancel || !samples.length) continue;
+      const b = ctx.createBuffer(1, samples.length, rate);
+      b.getChannelData(0).set(samples);
+      const src = ctx.createBufferSource();
+      src.buffer = b; src.connect(an);
+      this._src = src;
+      await new Promise(r => { src.onended = r; src.start(); });
+    }
+    this._metering = false; this.level = 0; this._src = null;
   },
 
   _browser(text, lang) {
@@ -118,7 +206,7 @@ const Voice = {
     if (!(typeof Lectures !== 'undefined' && Lectures.groqKey())) throw new Error('Add your Groq key in Settings — it is what turns your voice into text.');
     const n = this.native();
     if (n?.ensureMic) { const r = await n.ensureMic().catch(() => ({ granted: false })); if (r && r.granted === false) throw new Error('Microphone permission is needed.'); }
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    const stream = await this._mic();
     this._cancel = false;
     this.listening = true;
     const ctx = this.ctx(), an = ctx.createAnalyser();
@@ -154,6 +242,30 @@ const Voice = {
     onLevel?.(0);
     if (!spoke || !blob || blob.size < 2000 || this._cancel) return '';
     return this.transcribe(blob, { prompt, language });
+  },
+
+  /**
+   * The microphone. "Could not start audio source" means something else already has it — most often
+   * a lecture recording still running, since the recorder holds the microphone the whole class.
+   * Some phones also refuse the cleaned-up voice settings, so it tries once more with plain ones.
+   */
+  async _mic() {
+    try {
+      const st = await this.native()?.getState?.();
+      if (st?.recording) throw new Error('A lecture is being recorded, and that recording is using the microphone. Stop it (Lectures page or the swipe-down tile), then try again.');
+    } catch (e) { if (/lecture is being recorded/.test(e.message)) throw e; }
+    try {
+      return await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    } catch (e) {
+      if (e?.name === 'NotAllowedError' || e?.name === 'SecurityError') throw new Error('Microphone permission is off for Study Engine. Allow it: phone Settings → Apps → Study Engine → Permissions → Microphone (on a laptop, the lock icon in the address bar).');
+      await sleep(500);
+      try { return await navigator.mediaDevices.getUserMedia({ audio: true }); }
+      catch (e2) {
+        if (e2?.name === 'NotReadableError' || /could not start/i.test(e2?.message || '')) throw new Error('The microphone is busy — another app is using it (a lecture recording, a call, WhatsApp voice, Google Assistant). Close that, then tap Speak again.');
+        if (e2?.name === 'NotFoundError') throw new Error('No microphone found on this device.');
+        throw new Error('Could not open the microphone: ' + (e2?.message || e2));
+      }
+    }
   },
 
   async transcribe(blob, { prompt = '', language = '' } = {}) {

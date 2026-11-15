@@ -856,9 +856,9 @@ body.station-open { overflow: hidden; }
 
 /* clinical case */
 .case-face { display: flex; align-items: center; gap: 14px; }
-.face { width: 96px; height: 104px; flex: none; }
-.face .lid { animation: blink 5s infinite; }
-@keyframes blink { 0%, 95%, 100% { height: 0; } 97% { height: 18px; } }
+.face { width: 124px; height: 144px; flex: none; border-radius: 18px; background: var(--surface-2); }
+.face .eye { transform-box: fill-box; animation: blink 5.5s infinite; }
+@keyframes blink { 0%, 94%, 100% { transform: scaleY(1); } 96% { transform: scaleY(.1); } }
 .case-tabs { overflow-x: auto; flex-wrap: nowrap; margin-top: 12px; }
 .case-tabs .tab { background: none; border: 0; font: inherit; cursor: pointer; white-space: nowrap; }
 .chat { display: flex; flex-direction: column; gap: 8px; max-height: 52vh; overflow: auto; padding: 4px; }
@@ -874,3 +874,5 @@ body.station-open { overflow: hidden; }
 .viva-item { padding: 10px 0; border-bottom: 1px solid var(--line); } .viva-item.now { border-bottom: 0; }
 .bad-list li { color: var(--bad); }
 .body-svg .art { fill: none; stroke: #b8465a; stroke-width: 2.5; opacity: .55; }
+.gap-steps { padding-left: 1.3rem; } .gap-steps li { margin: 4px 0; } .gap-steps li.gap { color: var(--accent); }
+.book-steps ol { padding-left: 1.3rem; } .book-steps li { margin: 5px 0; } .book-steps summary { cursor: pointer; }

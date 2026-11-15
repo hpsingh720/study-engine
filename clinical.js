@@ -194,7 +194,9 @@ const TECHNIQUES = [
       wrong: { ijvL: 'Wrong side. The JVP is assessed on the RIGHT: the right internal jugular runs in a straight line through the SVC to the right atrium. The left can read falsely high.', ejvR: 'That is the external jugular. It can be kinked or obstructed — use the internal jugular, between the two heads of the sternocleidomastoid.', ejvL: 'External jugular, and the left side — use the RIGHT internal jugular.', carR: 'That is the carotid pulse, medial to the sternocleidomastoid higher up. The internal jugular is lower, between the two heads of the muscle.' } },
       { view: 'neck', ask: 'Measure the height of the column — from which point?', ok: ['angle'], wrong: { notch: 'Measure the vertical height from the STERNAL ANGLE, not the suprasternal notch.', clavR: 'Measure the vertical height from the sternal angle, not the clavicle.' } }],
     steps: [{ ask: 'The head is…', options: ['Turned slightly to the left, chin a little up, on a pillow', 'Turned fully to the right', 'Flexed onto the chest'], answer: 0, why: 'Slightly away from the side you are looking at, neck muscles relaxed. Turning fully tightens the sternocleidomastoid and hides the vein.' },
+      { ask: 'Lighting:', options: ['A torch shone tangentially across the neck, from the side', 'A torch shone straight at the neck', 'No light is needed'], answer: 0, why: 'Light from the side throws shadows that make the soft venous pulsation visible.' },
       { ask: 'Which tells it is venous, not the carotid?', options: ['Double wave, not palpable, falls on inspiration, rises with abdominal pressure', 'Single sharp beat that you can feel', 'It does not change with position'], answer: 0, why: 'Venous pulsation: biphasic, impalpable, obliterated by gentle pressure at the root of the neck, varies with respiration and position, rises with hepatojugular reflux.' },
+      { ask: 'You measure the height with…', options: ['Two scales: one held vertical on the sternal angle, the other horizontal from the top of the pulsation across to it', 'A tape laid along the slope of the neck', 'An estimate by eye'], answer: 0, why: 'The horizontal scale carries the top of the column across to the vertical one; read the vertical height in centimetres.' },
       { ask: 'Normal JVP is up to…', options: ['3–4 cm above the sternal angle', '10 cm above the sternal angle', 'Level with the earlobe'], answer: 0, why: 'Up to about 3–4 cm vertically above the sternal angle (≈ 8 cm of water above the right atrium).' }],
     teach: 'Patient at 45°, you on the right, head slightly to the left. Right internal jugular, between the heads of the sternocleidomastoid. Vertical height above the sternal angle.' },
 
@@ -301,23 +303,104 @@ const TECHNIQUES = [
     teach: 'From behind, head slightly flexed; a fixed sequence of groups; size, number, consistency, tenderness, fixity, matting.' }
 ];
 const TECH = Object.fromEntries(TECHNIQUES.map(t => [t.id, t]));
+const TECH_TERMS = {
+  oedema: ['pitting oedema', 'pedal oedema', 'edema', 'medial malleolus', 'sacral oedema'], jvp: ['jugular venous pressure', 'jvp', 'internal jugular', 'sternal angle', 'hepatojugular'],
+  pallor: ['pallor', 'palpebral conjunctiva', 'anaemia'], icterus: ['icterus', 'jaundice', 'sclera', 'bulbar conjunctiva'], cyanosis: ['cyanosis', 'central cyanosis', 'peripheral cyanosis', 'tongue'],
+  clubbing: ['clubbing', 'schamroth', 'nail bed', 'lovibond'], pulse: ['radial pulse', 'pulse rate', 'radio-femoral', 'radio-radial', 'rhythm'], bp: ['blood pressure', 'sphygmomanometer', 'korotkoff', 'cuff', 'auscultatory gap'],
+  crt: ['capillary refill', 'capillary filling'], carotid: ['carotid pulse', 'carotid'], apex: ['apex beat', 'apical impulse', 'intercostal space', 'midclavicular'], trachea: ['trachea', 'trail sign', 'suprasternal notch', 'tracheal position'],
+  liver: ['liver', 'hepatomegaly', 'palpation of liver', 'right iliac fossa'], spleen: ['spleen', 'splenomegaly', 'palpation of spleen'], murphy: ['murphy', 'gallbladder', 'cholecystitis'],
+  shifting: ['shifting dullness', 'ascites', 'fluid thrill'], kneejerk: ['knee jerk', 'patellar reflex', 'reflexes', 'jendrassik'], lymph: ['lymph nodes', 'cervical lymph', 'lymphadenopathy']
+};
+
+/**
+ * The steps as YOUR clinical book teaches them. The drills above carry the essentials; the book
+ * carries every step an examiner watches for — the torch for the JVP, the two scales, warming the
+ * hands, the order things are done in. Read once per technique from the book's own pages, kept
+ * with your settings so every device has it, and quoted with page numbers.
+ */
+const TechBook = {
+  key: id => 'tech-' + id,
+  async get(id) { return DB.get('prefs', this.key(id)); },
+  // Read in on this device, or its text sent across from the laptop — either way its pages are here.
+  async books() {
+    const all = await DB.all('books');
+    const remote = (typeof BookText !== 'undefined' ? BookText.remote() : []).filter(r => r.complete && !all.some(b => b.id === r.id)).map(r => ({ ...r, remote: 1 }));
+    const pool = [...all, ...remote];
+    const practical = pool.filter(b => b.role === 'practical');
+    return practical.length ? practical : pool.filter(b => b.role === 'ref');
+  },
+
+  /** The pages of one particular book that best match a topic. */
+  async pagesFor(book, topic, maxPages = 5, maxChars = 20000) {
+    const terms = topicTerms(topic), top = [];
+    await DB.each('pages', 'bookId', book.id, pg => { const s = scorePage(pg.text, terms); if (s > 0) top.push({ s, bookId: book.id, p: pg.p, text: pg.text, book: book.short || book.name }); });
+    top.sort((a, b) => b.s - a.s);
+    const out = []; let chars = 0;
+    for (const x of top) { if (out.length >= maxPages || (chars + Math.min(x.text.length, 9000) > maxChars && out.length)) break; out.push(x); chars += Math.min(x.text.length, 9000); }
+    return out.sort((a, b) => a.p - b.p);
+  },
+  async learn(id) {
+    const t = TECH[id];
+    const topic = { name: t.name, kw: TECH_TERMS[id] || [t.name.toLowerCase()] };
+    if (!(await this.books()).length) throw new Error('No clinical-methods book on this device. In the Library, set your clinical book (e.g. Boloor) to the role "Practical / clinical methods".');
+    let pages = [];
+    for (const b of await this.books()) { pages = await this.pagesFor(b, topic, 4, 16000); if (pages.length) break; }
+    // The book is there but does not describe this one — say so for this technique only.
+    if (!pages.length) return { id: this.key(id), techId: id, found: false };
+    const out = await AI.call({ temperature: 0.1, system: typeof SYSTEM_TUTOR !== 'undefined' ? SYSTEM_TUTOR : undefined, prompt: `Below are pages from the student's clinical-methods book. Write how to examine: "${t.name}", EXACTLY as THIS book teaches it.
+
+- Every step, in the book's order, short and in the imperative: preparation (introduce, consent, position, exposure, light — e.g. a torch shone tangentially — warm hands, instruments such as scales, tape, hammer, torch), the act itself (where, which side, which hand, how long), how to read or measure it, and what is normal.
+- Do not add steps the book does not describe, and do not drop any it does.
+- Cite each step with the bracket label of the page it comes from, like [Boloor p.112].
+- If these pages do not cover this examination, return {"found":false}.
+
+Return JSON: {"found":true,"steps":[{"text":"","cite":""}],"equipment":[""],"normal":"","pitfalls":[""]}
+
+PAGES:
+${excerptBlock(pages)}` });
+    const rec = { id: this.key(id), techId: id, found: !!out?.found && (out.steps || []).length >= 3, steps: (out?.steps || []).slice(0, 18), equipment: out?.equipment || [], normal: out?.normal || '', pitfalls: out?.pitfalls || [], book: pages[0].book, at: Date.now() };
+    await DB.put('prefs', rec);
+    return rec;
+  }
+};
+window.TechBook = TechBook;
 
 /** One technique, done on the drawing, step by step. `done(result)` is called at the end. */
 const Station = {
   t: null, st: null,
-  open(id, { done, finding } = {}) {
+  async open(id, { done, finding } = {}) {
     this.t = TECH[id];
     this.st = { stage: this.t.pos ? 'pos' : this.t.stand ? 'stand' : this.t.taps?.length ? 'tap' : 'steps', tap: 0, step: 0, checks: [], touches: [], done, finding };
+    this.book = null;
     this.paint();
+    try {
+      this.book = await TechBook.get(id);
+      // Not read from the book yet: do it now, quietly, so the next attempt has it.
+      if (!this.book && AI.key && (await TechBook.books()).length) TechBook.learn(id).then(r => { if (this.t?.id === id) this.book = r; }).catch(() => {});
+    } catch (e) {}
+  },
+
+  // One step of the book's sequence hidden; you pick the one that belongs there. This is what
+  // catches "forgot the torch" — knowing the idea but skipping a step the examiner watches for.
+  gapQuestion() {
+    const b = this.book;
+    if (!b?.found || (b.steps || []).length < 4) return null;
+    if (this.st.gap) return this.st.gap;
+    const steps = b.steps.map(x => x.text);
+    const prefer = steps.map((x, i) => i).filter(i => /torch|light|scale|ruler|tape|warm|consent|expos|position|explain|wash|hammer|stethoscope|cuff|minute|second/i.test(steps[i]));
+    const hide = (prefer.length ? prefer : steps.map((x, i) => i))[Math.floor(Math.random() * (prefer.length || steps.length))];
+    const others = TECHNIQUES.filter(t => t.id !== this.t.id).flatMap(t => (t.steps || []).map(q => q.options[q.answer])).filter(x => x && x !== steps[hide]);
+    const opts = shuffle([steps[hide], ...shuffle(others).slice(0, 3)]);
+    return (this.st.gap = { steps, hide, opts, answer: opts.indexOf(steps[hide]), cite: b.steps[hide].cite });
   },
   check(ok, what, msg) { this.st.checks.push({ ok, what, msg }); },
   next() {
     const s = this.st, t = this.t;
-    const order = ['pos', 'stand', 'tap', 'steps', 'result'];
+    const order = ['pos', 'stand', 'tap', 'steps', 'gap', 'result'];
     if (s.stage === 'tap' && s.tap < (t.taps?.length || 0) - 1) { s.tap++; return this.paint(); }
     if (s.stage === 'steps' && s.step < (t.steps?.length || 0) - 1) { s.step++; return this.paint(); }
     let i = order.indexOf(s.stage) + 1;
-    while (order[i] === 'stand' && !t.stand || order[i] === 'tap' && !t.taps?.length || order[i] === 'steps' && !t.steps?.length) i++;
+    while (order[i] === 'stand' && !t.stand || order[i] === 'tap' && !t.taps?.length || order[i] === 'steps' && !t.steps?.length || order[i] === 'gap' && !this.gapQuestion()) i++;
     s.stage = order[i];
     if (s.stage === 'result') this.finish();
     this.paint();
@@ -366,6 +449,12 @@ const Station = {
       const order = shuffle(q.options.map((o, i) => i));
       host.innerHTML = `${head}<p class="st-ask">${esc(q.ask)}</p>
         <div class="menu">${order.map(i => `<button class="btn full" data-act="stStep" data-i="${i}">${esc(q.options[i])}</button>`).join('')}</div>`;
+    } else if (s.stage === 'gap') {
+      const g = this.gapQuestion();
+      host.innerHTML = `${head}<p class="st-ask">Your book's steps — which one is missing?</p>
+        <ol class="gap-steps">${g.steps.map((x, i) => `<li class="${i === g.hide ? 'gap' : ''}">${i === g.hide ? '<b>?</b>' : esc(x)}</li>`).join('')}</ol>
+        <div class="menu">${g.opts.map((o, i) => `<button class="btn full" data-act="stGap" data-i="${i}">${esc(o)}</button>`).join('')}</div>
+        <p class="muted small">From ${esc(this.book.book || 'your clinical book')}.</p>`;
     } else if (s.stage === 'result') {
       const shown = (t.taps || []).map((tp, i) => {
         const touch = s.touches[i];
@@ -379,6 +468,10 @@ const Station = {
         ${shown ? `<div class="st-minis">${shown}</div><p class="muted small center">Green: where it is done. Your touch: the dot.</p>` : ''}
         ${s.finding != null ? `<div class="callout mt"><b>Finding</b><p>${s.techniqueOk ? esc(s.finding || 'Normal.') : 'Not elicited — the technique was not right, so there is no reliable finding. The examiner noticed.'}</p></div>` : ''}
         <p class="muted small mt">${esc(t.teach)}</p>
+        ${this.book?.found ? `<details class="book-steps mt" open><summary><b>As ${esc(this.book.book || 'your book')} teaches it</b></summary>
+          <ol>${this.book.steps.map(x => `<li>${esc(x.text)} <span class="muted small">${esc(x.cite || '')}</span></li>`).join('')}</ol>
+          ${this.book.normal ? `<p class="small"><b>Normal:</b> ${esc(this.book.normal)}</p>` : ''}
+          ${this.book.pitfalls?.length ? `<p class="small"><b>Common mistakes:</b> ${esc(this.book.pitfalls.join(' · '))}</p>` : ''}</details>` : ''}
         <div class="row gap mt"><button class="btn" data-act="stAgain">Do it again</button><button class="btn primary" data-act="stClose">Done</button></div>`;
     }
   },
@@ -461,6 +554,11 @@ Object.assign(A, {
     Station.check(ok, 'step', ok ? q.why : `${q.ask} ${q.options[q.answer]}. ${q.why}`);
     Station.next();
   },
+  stGap(el) {
+    const g = Station.gapQuestion(), ok = +el.dataset.i === g.answer;
+    Station.check(ok, 'gap', ok ? `Right — the missing step was: ${g.steps[g.hide]}.` : `The missing step was: ${g.steps[g.hide]} ${g.cite || ''}. You chose: ${g.opts[+el.dataset.i]}.`);
+    Station.next();
+  },
   stAgain() { Station.open(Station.t.id, { done: Station.st.done, finding: Station.st.finding }); },
   stClose() { const h = document.getElementById('station'); if (h) { h.innerHTML = ''; h.hidden = true; } document.body.classList.remove('station-open'); App.render(true); }
 });
@@ -483,6 +581,13 @@ Views.drills = async () => {
   return `<div class="page"><header class="page-head"><div><p class="eyebrow"><a class="link" href="#/practice">Practice</a></p><h1>Examination drills</h1></div>
       <button class="btn primary" data-act="drillWeak" ${weak.length ? '' : 'disabled'}>Drill my mistakes${weak.length ? ` (${weak.length})` : ''}</button></header>
     <p class="muted">Where to stand, how the patient lies, the exact spot and side, how long to press. The patient faces you — their right is on your left.</p>
+    ${await (async () => {
+      const learned = (await Promise.all(TECHNIQUES.map(t => TechBook.get(t.id)))).filter(r => r?.found).length;
+      const books = await TechBook.books();
+      if (!books.length) return `<p class="muted small">Tip: set your clinical-methods book (e.g. Boloor) to the role "Practical" in the Library, and every drill will also follow its steps.</p>`;
+      return `<div class="card soft mt row between mid wrap gap"><span class="small">${learned} of ${TECHNIQUES.length} techniques follow <b>${esc(books[0].short || books[0].name)}</b> step by step.</span>
+        ${learned < TECHNIQUES.length ? `<button class="btn sm" data-act="drillLearn">Read the rest from the book</button>` : `<button class="btn ghost sm" data-act="drillLearn" data-all="1">Read again</button>`}</div>`;
+    })()}
     ${Object.entries(groups).map(([g, ts]) => `<section class="card flush mt"><div class="card-head pad"><h3>${esc(g)}</h3></div><div class="list">
       ${ts.map(t => { const e = log[t.id]; return `<button class="row between pad drill-row" data-act="drillGo" data-id="${t.id}"><span><b>${esc(t.name)}</b>${e?.misses?.[0] && e.ok < e.n ? `<br><small class="warn-t">Last time: ${esc(e.misses[0].slice(0, 90))}</small>` : ''}</span><span class="small ${e ? (e.ok === e.n ? 'ok-t' : 'warn-t') : 'muted'}">${e ? `${e.ok}/${e.n}` : 'not tried'}</span></button>`; }).join('')}
     </div></section>`).join('')}
@@ -491,6 +596,18 @@ Views.drills = async () => {
 
 Object.assign(A, {
   drillGo(el) { openStation(el.dataset.id, {}); },
+  async drillLearn(el) {
+    if (el.dataset.busy) return;
+    el.dataset.busy = '1'; el.disabled = true;
+    let n = 0, fail = '';
+    for (const t of TECHNIQUES) {
+      if (!el.dataset.all && (await TechBook.get(t.id))?.found) continue;
+      el.innerHTML = `<span class="spin"></span>${esc(t.name)}…`;
+      try { const r = await TechBook.learn(t.id); if (r.found) n++; } catch (e) { fail = e.message || String(e); if (/No clinical-methods book|Gemini API key/.test(fail)) break; }
+    }
+    toast(fail && !n ? fail : `${n} technique${n === 1 ? '' : 's'} now follow your book.${fail ? ' Some could not be read: ' + fail : ''}`, 9000);
+    App.render(true);
+  },
   drillWeak() {
     let log = {}; try { log = JSON.parse(localStorage.getItem('drillLog') || '{}'); } catch (e) {}
     const weak = TECHNIQUES.filter(t => log[t.id] && log[t.id].ok < log[t.id].n).sort((a, b) => (log[a.id].last || 0) - (log[b.id].last || 0));
