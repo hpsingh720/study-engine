@@ -201,13 +201,20 @@ public class LectureRecorderPlugin extends Plugin {
         final String text = call.getString("text", "");
         final String lang = call.getString("lang", "en-IN");
         final float rate = call.getFloat("rate", 1.0f);
+        final float pitch = call.getFloat("pitch", 1.0f);
         if (text == null || text.isEmpty()) { call.resolve(); return; }
         call.setKeepAlive(true);
         withTts(() -> {
             Locale loc = Locale.forLanguageTag(lang);
-            if (tts.isLanguageAvailable(loc) < TextToSpeech.LANG_AVAILABLE) loc = Locale.forLanguageTag("en-IN");
+            if (tts.isLanguageAvailable(loc) < TextToSpeech.LANG_AVAILABLE) {
+                // Punjabi or Hindi read out by the English voice is gibberish, so say so instead.
+                if (!lang.startsWith("en")) { call.reject("nolang " + lang, "nolang"); return; }
+                loc = Locale.forLanguageTag("en-IN");
+            }
             tts.setLanguage(loc);
             tts.setSpeechRate(rate);
+            // A lower pitch for a man's voice; the phone's voices are mostly female.
+            tts.setPitch(pitch);
             String id = "u" + System.nanoTime();
             synchronized (speaking) { speaking.put(id, call); }
             int r = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, id);
