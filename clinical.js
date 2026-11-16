@@ -318,16 +318,26 @@ const TECH_TERMS = {
  * hands, the order things are done in. Read once per technique from the book's own pages, kept
  * with your settings so every device has it, and quoted with page numbers.
  */
+// Names of clinical-methods books, so one is found even if it was filed as an ordinary textbook.
+const CLIN_RE = /boloor|archith|bedside clinic|clinical (methods|examination|medicine|surgery)|hutchison|macleod|s\.?\s*das|manipal manual|clinical case/i;
+
 const TechBook = {
   key: id => 'tech-' + id,
   async get(id) { return DB.get('prefs', this.key(id)); },
-  // Read in on this device, or its text sent across from the laptop — either way its pages are here.
+  // Every textbook whose pages are on this device — read in here, or its text sent from the laptop.
+  // Question banks and reading copies are left out: they are not textbooks.
+  async all() {
+    const own = (await DB.all('books')).filter(b => !String(b.role || '').startsWith('mcq') && b.role !== 'reader');
+    const remote = (typeof BookText !== 'undefined' ? BookText.remote() : []).filter(r => !own.some(b => b.id === r.id) && !String(r.role || '').startsWith('mcq')).map(r => ({ ...r, remote: 1 }));
+    return [...own, ...remote];
+  },
+  // A clinical-methods book, whatever type it was given in the Library: Boloor first.
+  isClinical(b) { return b.role === 'practical' || CLIN_RE.test(`${b.name || ''} ${b.short || ''}`); },
+  rank(b) { return /boloor|archith/i.test(`${b.name || ''} ${b.short || ''}`) ? 0 : this.isClinical(b) ? 1 : 2; },
   async books() {
-    const all = await DB.all('books');
-    const remote = (typeof BookText !== 'undefined' ? BookText.remote() : []).filter(r => r.complete && !all.some(b => b.id === r.id)).map(r => ({ ...r, remote: 1 }));
-    const pool = [...all, ...remote];
-    const practical = pool.filter(b => b.role === 'practical');
-    return practical.length ? practical : pool.filter(b => b.role === 'ref');
+    const pool = (await this.all()).sort((a, b) => this.rank(a) - this.rank(b));
+    const clin = pool.filter(b => this.isClinical(b));
+    return clin.length ? clin : pool.filter(b => b.role === 'ref');
   },
 
   /** The pages of one particular book that best match a topic. */
@@ -342,7 +352,7 @@ const TechBook = {
   async learn(id) {
     const t = TECH[id];
     const topic = { name: t.name, kw: TECH_TERMS[id] || [t.name.toLowerCase()] };
-    if (!(await this.books()).length) throw new Error('No clinical-methods book on this device. In the Library, set your clinical book (e.g. Boloor) to the role "Practical / clinical methods".');
+    if (!(await this.books()).length) throw new Error('No clinical-methods book on this device. Add your clinical book (e.g. Boloor) in the Library, or let the laptop send its text.');
     let pages = [];
     for (const b of await this.books()) { pages = await this.pagesFor(b, topic, 4, 16000); if (pages.length) break; }
     // The book is there but does not describe this one — say so for this technique only.

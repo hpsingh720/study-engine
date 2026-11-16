@@ -30,6 +30,7 @@ const Voice = {
     try { window.speechSynthesis?.cancel(); } catch (e) {}
     try { this.native()?.stopSpeaking?.(); } catch (e) {}
     this.speaking = false;
+    this._stopBtn(false);
   },
 
   // Markdown, arrows and symbols read badly aloud.
@@ -47,52 +48,110 @@ const Voice = {
     if (!text) return;
     this._cancel = false;
     this.speaking = true;
+    this._stopBtn(true);
     try {
-      if (this.natural() && AI.key && !this._gemOff) {
-        try { await this._gemini(text, voice, style); return; } catch (e) { if (this._cancel) return; console.warn('natural voice unavailable', e); }
+      if (this.natural() && AI.key && Date.now() > (this._restUntil || 0)) {
+        try { await this._gemini(text, voice, style); return; } catch (e) { if (this._cancel) return; console.warn('natural voice unavailable', e); this._fellBack(e); }
       }
+      if (this._cancel) return;
       const n = this.native();
-      if (n?.speak) { try { await n.speak({ text, lang, rate: 1.0 }); return; } catch (e) { console.warn('phone voice failed', e); } }
+      if (n?.speak) {
+        // Male patients get a lower pitch, so Harbhajan Singh does not sound like a woman.
+        try { await n.speak({ text, lang, rate: 1.0, pitch: this.MALE.has(voice) ? 0.78 : 1.0 }); return; }
+        catch (e) {
+          if (/nolang/i.test(e?.message || e?.code || '')) { this._noLang(lang); return; }
+          console.warn('phone voice failed', e);
+        }
+      }
       if (window.speechSynthesis) { await this._browser(text, lang); return; }
-    } finally { this.speaking = false; this.level = 0; }
+    } finally { this.speaking = false; this.level = 0; this._stopBtn(false); }
   },
 
+  MALE: new Set(['Charon', 'Puck', 'Fenrir', 'Orus', 'Enceladus', 'Iapetus', 'Umbriel', 'Algieba', 'Algenib', 'Rasalgethi', 'Alnilam', 'Schedar', 'Achird', 'Zubenelgenubi', 'Sadachbia', 'Sadaltager']),
+
+  // A Stop button on screen for as long as anything is being said.
+  _stopBtn(on) {
+    let b = document.getElementById('voice-stop');
+    if (!on) { b?.remove(); return; }
+    if (b) return;
+    b = Object.assign(document.createElement('button'), { id: 'voice-stop', className: 'voice-stop', type: 'button', innerHTML: '<i></i>Stop' });
+    b.onclick = () => this.stop();
+    document.body.appendChild(b);
+  },
+
+  // Say once, plainly, why the voice changed — instead of quietly swapping to the phone's voice.
+  _fellBack(e) {
+    if (this._toldFallback) return;
+    this._toldFallback = true;
+    const q = e?.quota;
+    toast(q ? `Google's free natural voice is used up ${e.daily ? 'for today' : 'for a minute'}. Using the phone's voice until then.` : 'The natural voice did not answer, so the phone\'s voice is speaking for now.', 8000);
+  },
+  _noLang(lang) {
+    if (this._toldLang === lang) return;
+    this._toldLang = lang;
+    const name = { 'pa-IN': 'Punjabi', 'hi-IN': 'Hindi' }[lang] || lang;
+    toast(`This phone has no ${name} voice, so it can't read that aloud. Install it: phone Settings → search "Text-to-speech" → Google → Install voice data → ${name}.`, 12000);
+  },
+
+  /**
+   * Gemini's voice. One request per sentence: a refused request (free allowance used up) is not
+   * sent again a second way, because each extra try uses up the allowance faster.
+   */
   async _gemini(text, voice, style) {
+    const now = Date.now();
+    this._dead ||= {}; this._rest ||= {};
     const tried = localStorage.getItem('tts_model');
-    const models = tried ? [tried, ...this.TTS_MODELS.filter(m => m !== tried)] : this.TTS_MODELS;
+    const models = (tried ? [tried, ...this.TTS_MODELS.filter(m => m !== tried)] : this.TTS_MODELS).filter(m => this.TTS_MODELS.includes(m) && !this._dead[m] && !(this._rest[m] > now));
     let last;
     for (const model of models) {
       const body = {
-        contents: [{ role: 'user', parts: [{ text: `Speak at a normal conversational pace${style ? ', ' + style : ''}: ${text}` }] }],
+        // Only the words themselves — an English instruction in front gives Punjabi an English accent.
+        contents: [{ role: 'user', parts: [{ text: style ? `Say this ${style}: ${text}` : text }] }],
         generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } }
       };
       const base = `https://generativelanguage.googleapis.com/v1beta/models/${model}`;
       const key = encodeURIComponent(AI.key);
       try {
-        // Streamed: the first words play while the rest is still being made, instead of waiting
-        // two seconds or more for the whole sentence.
         if (!this._noStream) {
-          try {
-            if (await this._stream(`${base}:streamGenerateContent?alt=sse&key=${key}`, body)) { localStorage.setItem('tts_model', model); return; }
-            this._noStream = true;
-          } catch (e) { if (this._cancel) return; this._noStream = true; }
+          const r = await this._stream(`${base}:streamGenerateContent?alt=sse&key=${key}`, body);
+          if (r === true) { localStorage.setItem('tts_model', model); this._toldFallback = false; return; }
+          if (this._cancel) return;
+          // Streaming not offered for this voice: plain request from now on.
+          this._noStream = true;
         }
         const res = await AI.gfetch(`${base}:generateContent?key=${key}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         const d = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(d.error?.message || 'voice ' + res.status);
+        if (!res.ok) throw this._err(res.status, d);
         const part = (d.candidates?.[0]?.content?.parts || []).find(p => p.inlineData || p.inline_data);
         const inl = part?.inlineData || part?.inline_data;
         if (!inl?.data) throw new Error('no audio in reply');
-        localStorage.setItem('tts_model', model);
+        localStorage.setItem('tts_model', model); this._toldFallback = false;
         if (this._cancel) return;
-        const pcm = this._pcm(inl.data, inl.mimeType || inl.mime_type);
-        await this._play([pcm]);
+        await this._play([this._pcm(inl.data, inl.mimeType || inl.mime_type)]);
         return;
-      } catch (e) { last = e; }
+      } catch (e) {
+        if (this._cancel) return;
+        last = e;
+        if (e.quota) this._rest[model] = Date.now() + e.wait;
+        else if (e.status === 404 || e.status === 403) this._dead[model] = 1;
+      }
     }
-    // Not on this key (or out of today's allowance): use the other voices for the rest of the session.
-    this._gemOff = true;
+    // Every voice model is resting: the phone's voice until the soonest one is back.
+    const rests = Object.values(this._rest).filter(t => t > Date.now());
+    if (rests.length && rests.length >= this.TTS_MODELS.filter(m => !this._dead[m]).length) this._restUntil = Math.min(...rests);
     throw last || new Error('no natural voice');
+  },
+
+  _err(status, d) {
+    const err = d?.error || {}, det = JSON.stringify(err.details || []);
+    const e = new Error(err.message || 'voice ' + status);
+    e.status = status;
+    if (status === 429) {
+      const m = det.match(/"retryDelay":"(\d+)/);
+      e.quota = true; e.daily = /PerDay|per_day|daily/i.test(det + ' ' + (err.message || ''));
+      e.wait = e.daily ? 3 * 3600000 : (m ? +m[1] * 1000 + 1000 : 60000);
+    }
+    return e;
   },
 
   /**
@@ -122,7 +181,14 @@ const Voice = {
 
   async _stream(url, body) {
     const res = await AI.gfetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!res.ok || !res.body) throw new Error('no stream');
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      const e = this._err(res.status, d);
+      // 400 = this voice does not stream: try the plain request. Anything else is a real refusal.
+      if (res.status === 400 && !/key|api_key|permission/i.test(e.message)) return false;
+      throw e;
+    }
+    if (!res.body) return false;
     const reader = res.body.getReader(), dec = new TextDecoder();
     const ctx = this.ctx(), an = ctx.createAnalyser();
     an.fftSize = 512; an.connect(ctx.destination);
@@ -204,6 +270,7 @@ const Voice = {
    */
   async listen({ maxMs = 25000, silenceMs = 1500, waitMs = 9000, prompt = '', language = '', onLevel } = {}) {
     if (!(typeof Lectures !== 'undefined' && Lectures.groqKey())) throw new Error('Add your Groq key in Settings — it is what turns your voice into text.');
+    if (this.speaking) this.stop();   // tapping Speak cuts the patient off, as at a real bedside
     const n = this.native();
     if (n?.ensureMic) { const r = await n.ensureMic().catch(() => ({ granted: false })); if (r && r.granted === false) throw new Error('Microphone permission is needed.'); }
     const stream = await this._mic();
@@ -261,7 +328,12 @@ const Voice = {
       await sleep(500);
       try { return await navigator.mediaDevices.getUserMedia({ audio: true }); }
       catch (e2) {
-        if (e2?.name === 'NotReadableError' || /could not start/i.test(e2?.message || '')) throw new Error('The microphone is busy — another app is using it (a lecture recording, a call, WhatsApp voice, Google Assistant). Close that, then tap Speak again.');
+        if (e2?.name === 'NotReadableError' || /could not start/i.test(e2?.message || '')) {
+          // In the Android app this was the app's own fault: it lacked one Android permission the
+          // web view needs before it may open the microphone. The new app (v125) has it.
+          if (this.native()) throw new Error('The app could not open the microphone. Install the new Android app (built after v125) over this one — it fixes this. Until then, type your questions.');
+          throw new Error('The microphone is busy — another app or tab is using it (a call, a meeting, another recording). Close that, then tap Speak again.');
+        }
         if (e2?.name === 'NotFoundError') throw new Error('No microphone found on this device.');
         throw new Error('Could not open the microphone: ' + (e2?.message || e2));
       }

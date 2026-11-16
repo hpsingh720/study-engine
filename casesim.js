@@ -30,7 +30,9 @@ const CaseSim = {
   },
 
   // ---- the book every case is built from ----
-  async books() { return typeof TechBook !== 'undefined' ? TechBook.books() : []; },
+  // Every textbook on this device, Boloor (and other clinical-methods books) at the top.
+  async books() { return typeof TechBook !== 'undefined' ? (await TechBook.all()).sort((a, b) => TechBook.rank(a) - TechBook.rank(b)) : []; },
+  pickedBook(books) { const id = localStorage.getItem('caseBook'); return books.find(b => b.id === id) ? id : (books[0]?.id || 'none'); },
 
   /**
    * The book's pages for this case. With a condition named, its pages; without, a condition the
@@ -177,7 +179,8 @@ Return JSON: {"finding":""}`, temperature: 0.3, model: AI.bulkModel }).catch(() 
     let result = have ? `${have[0]}: ${have[1]}` : '';
     if (!result) {
       const out = await AI.call({ prompt: `Patient with ${k.diagnosis}. Known results: ${JSON.stringify(k.tests)}. The student orders: "${test}". Give a realistic result consistent with the case, one line with units. JSON {"result":""}`, temperature: 0.3, model: AI.bulkModel }).catch(() => ({ result: 'Result not available.' }));
-      result = `${test}: ${out?.result || 'not available'}`;
+      // Honest about it: a result the book's case did not include is made up to fit.
+      result = `${test}: ${out?.result || 'not available'}${this.c.book && out?.result ? ` (not in ${this.c.book.name}'s case — made up to fit)` : ''}`;
     }
     this.c.tests.push({ test, result, at: Date.now() });
     this.save();
@@ -260,8 +263,14 @@ function patientFace(p, mood) {
   const [skin, shade] = tones[h % tones.length];
   const hair = old ? '#bdbab5' : '#231913';
   const cloth = ['#3d5a80', '#6b4f7a', '#2f6b5e', '#8a4b3a', '#4f5d75'][h % 5];
-  const dupatta = ['#c2556f', '#d08b3a', '#5e8fb5', '#8a6fb0', '#c76b4a'][(h >> 3) % 5];
-  const turban = old ? '#e9e6df' : ['#1f3a68', '#7a1f2b', '#d9822b', '#1d1d1d', '#2f5d3a'][(h >> 5) % 5];
+  const dupatta = ['#c2556f', '#d08b3a', '#5e8fb5', '#8a6fb0', '#c76b4a'][(h >>> 3) % 5];
+  // Turban colours seen in a Punjab ward: navy, maroon, kesri, white, olive, pink, sky blue. Never
+  // black — a black dome on the head read as a cap. Older men more often wear white or navy.
+  const turbans = ['#1f3a7a', '#7d1f33', '#e0861c', '#f1eee6', '#4c6b35', '#c4527e', '#4f86c6'];
+  const turban = old ? ['#f1eee6', '#1f3a7a', '#f1eee6', '#4f86c6'][(h >>> 5) % 4] : turbans[(h >>> 5) % turbans.length];
+  const light = /f1eee6|e0861c|4f86c6/.test(turban);
+  const fold = light ? 'rgba(90,60,30,.22)' : 'rgba(0,0,0,.28)', shine = light ? 'rgba(255,255,255,.55)' : 'rgba(255,255,255,.16)';
+  const fifty = turban === '#e0861c' ? '#1f3a7a' : turban === '#f1eee6' ? '#7d1f33' : '#e0861c';   // the thin under-strip at the forehead
   const covered = female && (old || age > 45);              // older women here usually keep the dupatta over the head
   const beard = sikh && !female && age > 17, moustache = !female && age > 22 && !beard;
   const eyeY = child ? 104 : 100, eyeS = child ? 1.18 : 1;
@@ -290,10 +299,21 @@ function patientFace(p, mood) {
   if (female && !covered) parts.push(`<circle cx="59" cy="117" r="2.6" fill="#d8b04a"/><circle cx="141" cy="117" r="2.6" fill="#d8b04a"/>`);
   parts.push(`<path d="${face}" fill="${skin}"/>`);
   // hair, turban or patka on top
-  if (sikh && !female && !child) parts.push(`<path d="M55 92 Q50 30 100 24 Q150 30 145 92 Q136 70 100 68 Q64 70 55 92 Z" fill="${turban}"/>
-      <path d="M60 76 Q100 50 140 70 M62 62 Q100 38 138 56 M70 48 Q100 30 130 44" fill="none" stroke="rgba(0,0,0,.18)" stroke-width="2.5"/>
-      <path d="M100 26 L104 68" stroke="rgba(0,0,0,.12)" stroke-width="3"/>`);
-  else if (sikh && !female && child) parts.push(`<path d="M58 88 Q56 46 100 42 Q144 46 142 88 Q130 66 100 64 Q70 66 58 88 Z" fill="${turban}"/><circle cx="100" cy="40" r="11" fill="${turban}"/>`);
+  if (sikh && !female && !child) {
+    // A tied pagg: taller and wider than the head, flaring a little towards the top, covering the
+    // ears, its layers rising from each ear and meeting in a V over the middle of the forehead.
+    const L = [[54, 104, 76], [50, 88, 60], [47, 72, 44], [46, 56, 28], [52, 40, 14]];   // [x at the side, y at the side, y at the centre]
+    const bands = L.slice(0, -1).map(([x, y, c], i) => i % 2 ? '' : `<path d="M${x} ${y} L100 ${c} L${200 - x} ${y} L${200 - L[i + 1][0]} ${L[i + 1][1]} L100 ${L[i + 1][2]} L${L[i + 1][0]} ${L[i + 1][1]} Z" fill="${fold}" opacity=".45"/>`).join('');
+    const lines = L.map(([x, y, c]) => `M${x} ${y} L100 ${c} L${200 - x} ${y}`).join(' ');
+    parts.push(`<path d="M55 110 L45 62 Q43 34 60 22 Q80 9 100 4 Q120 9 140 22 Q157 34 155 62 L145 110 Q140 88 101 81 L100 85 L99 81 Q60 88 55 110 Z" fill="${turban}"/>
+      ${bands}<path d="${lines}" fill="none" stroke="${fold}" stroke-width="2.2" stroke-linejoin="round"/>
+      <path d="M57 98 L100 72 M51 66 L100 40" fill="none" stroke="${shine}" stroke-width="1.6"/>
+      <path d="M55 110 Q60 88 99 81 L100 85 L101 81 Q140 88 145 110" fill="none" stroke="${fifty}" stroke-width="3.4" stroke-linejoin="round"/>`);
+  }
+  // A boy: a patka tied over the joora, the knot sitting on top.
+  else if (sikh && !female && child) parts.push(`<path d="M56 96 Q52 50 100 42 Q148 50 144 96 Q132 72 100 68 Q68 72 56 96 Z" fill="${turban}"/>
+      <path d="M58 90 Q100 60 142 90" fill="none" stroke="${fold}" stroke-width="2.4"/>
+      <circle cx="100" cy="38" r="13" fill="${turban}"/><path d="M90 34 Q100 28 110 34" fill="none" stroke="${fold}" stroke-width="2"/>`);
   else if (covered) parts.push(`<path d="M62 96 Q62 60 100 58 Q138 60 138 96 Q130 70 100 68 Q70 70 62 96 Z" fill="${hair}"/><path d="M50 110 Q48 46 100 40 Q152 46 150 110 Q144 62 100 58 Q56 62 50 110 Z" fill="${dupatta}"/>`);
   else if (female) parts.push(`<path d="M59 102 Q56 50 100 45 Q144 50 141 102 Q134 70 104 62 L100 72 L96 62 Q66 70 59 102 Z" fill="${hair}"/>`);
   else parts.push(`<path d="M59 92 Q57 48 100 44 Q143 48 141 92 Q136 68 118 64 Q100 58 82 64 Q64 68 59 92 Z" fill="${hair}"/>`);
@@ -330,7 +350,7 @@ function animateFace() {
 
 Views.cases = async (sub) => {
   const c = CaseSim.load();
-  const books = await CaseSim.books();
+  const books = await CaseSim.books(), pick = CaseSim.pickedBook(books);
   if (sub === 'run' && c && c.stage !== 'report') return caseRun(c);
   if (sub === 'report' && c) return caseReport(c);
   let hist = []; try { hist = JSON.parse(localStorage.getItem('caseHistory') || '[]'); } catch (e) {}
@@ -345,8 +365,9 @@ Views.cases = async (sub) => {
         <label>Patient speaks<select name="lang">${Object.entries(LANGS).map(([k, v]) => `<option value="${k}" ${k === 'mix' ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
         <label>Difficulty<select name="difficulty"><option>usual exam case</option><option>straightforward</option><option>tricky</option></select></label>
       </div>
-      <label>From the book<select name="book">${books.map(b => `<option value="${esc(b.id)}">${esc(b.short || b.name)}</option>`).join('')}<option value="none" ${books.length ? '' : 'selected'}>No book — any condition</option></select></label>
-      <label>Condition (optional)<input name="topic" placeholder="${books.length ? `Leave empty for a case from ${esc(books[0].short || books[0].name)}` : 'Leave empty for a surprise'} — or e.g. nephrotic syndrome"></label>
+      <label>From the book<select name="book">${books.map(b => `<option value="${esc(b.id)}" ${pick === b.id ? 'selected' : ''}>${esc(b.short || b.name)}${b.remote && !b.complete ? ' (text still coming from the laptop)' : ''}</option>`).join('')}<option value="none" ${pick === 'none' ? 'selected' : ''}>No book — any condition</option></select></label>
+      ${books.length && TechBook.rank(books[0]) ? `<p class="muted small">Boloor isn't on this device yet. Read it into the Library on the laptop; its text then comes across to the phone and iPad by itself.</p>` : ''}
+      <label>Condition (optional)<input name="topic" placeholder="Leave empty for a case the book covers — or e.g. nephrotic syndrome"></label>
       ${CaseSim._lastErr && !CaseSim._creating ? `<p class="form-err danger small">${esc(CaseSim._lastErr)}</p>` : ''}
       <button class="btn primary full lg mt" type="submit" ${CaseSim._creating ? 'disabled data-busy="1"' : ''}>${CaseSim._creating ? '<span class="spin"></span>The patient is being admitted…' : 'Meet the patient'}</button>
     </form>
@@ -504,6 +525,7 @@ async function caseVivaAnswer(a) {
 Object.assign(F, {
   async caseStart(form) {
     const d = Object.fromEntries(new FormData(form));
+    try { localStorage.setItem('caseBook', d.book || 'none'); } catch (e) {}
     const btn = form.querySelector('button[type=submit]');
     if (btn?.dataset.busy || CaseSim._creating) return;
     const cur = CaseSim.load();

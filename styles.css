@@ -876,3 +876,11 @@ body.station-open { overflow: hidden; }
 .body-svg .art { fill: none; stroke: #b8465a; stroke-width: 2.5; opacity: .55; }
 .gap-steps { padding-left: 1.3rem; } .gap-steps li { margin: 4px 0; } .gap-steps li.gap { color: var(--accent); }
 .book-steps ol { padding-left: 1.3rem; } .book-steps li { margin: 5px 0; } .book-steps summary { cursor: pointer; }
+
+/* Stop button while the patient, examiner or quiz is speaking */
+.voice-stop { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(84px + env(safe-area-inset-bottom)); z-index: 9000;
+  display: inline-flex; align-items: center; gap: 10px; padding: 12px 22px; border: 0; border-radius: 999px;
+  background: #b3261e; color: #fff; font-family: var(--font); font-weight: 600; font-size: 1rem; line-height: 1; box-shadow: 0 6px 20px rgba(0,0,0,.28); cursor: pointer; animation: vs-in .18s ease-out; }
+.voice-stop i { width: 12px; height: 12px; border-radius: 2px; background: #fff; display: block; }
+.voice-stop:active { transform: translateX(-50%) scale(.96); }
+@keyframes vs-in { from { opacity: 0; transform: translate(-50%, 10px); } to { opacity: 1; transform: translateX(-50%); } }

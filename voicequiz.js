@@ -165,7 +165,7 @@ Object.assign(A, {
   voiceMode(el) {
     const nat = !Voice.natural();
     localStorage.setItem('voiceNatural', nat ? '1' : '0');
-    Voice._gemOff = false;
+    Voice._restUntil = 0; Voice._rest = {}; Voice._dead = {}; Voice._toldFallback = false;
     el.textContent = nat ? 'Natural voice' : 'Phone voice';
     toast(nat ? 'Natural voice — sounds human, a second or two to start.' : 'Phone voice — starts instantly. Needs the latest Android app; on the laptop it uses the browser voice.', 6000);
   },
