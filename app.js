@@ -51,6 +51,9 @@ const App = {
       const typing = document.activeElement && /TEXTAREA|INPUT|SELECT/.test(document.activeElement.tagName);
       if (h === '#/session' || typing || Views._edit || $('#modal').classList.contains('open')) return;
       if (h.includes('/notes') || h.includes('/settings')) return; // don't wipe Test results while you're in Settings
+      // Never redraw under a case, a drill, a mock exam or a voice quiz in progress: it closed the
+      // examination drawing half-way through (JVP has the most steps, so it was hit most).
+      if (document.body.classList.contains('station-open') || /^#\/(cases|drills|amc\/run|voice\/run)/.test(h) || (typeof LiveTalk !== 'undefined' && LiveTalk.on)) return;
       this.render(true);
     }, 600);
   },
@@ -209,21 +212,42 @@ const A = {
         `<button class="btn full" data-act="buildFromBook" data-id="${b.id}" data-sys="${code}"><span><b>${esc(b.short || b.name)}</b><br><small class="muted">${esc(b.name)}${b.fromLaptop ? ' · text from your laptop' : ''}</small></span></button>`).join('')}</div>`);
   },
 
+  // Building a subject takes a minute or more, so it gets a panel that stays: what it is doing,
+  // how far along, how long so far — and, if Gemini fails, the reason and a Try again button.
   async buildFromBook(el) {
     closeModal();
     const { id, sys } = el.dataset;
-    const say = t => toast(t, 4000);
-    say('Reading the contents pages…');
+    if (A._building) { toast('Already building — see the panel at the bottom.'); return; }
+    A._building = true;
+    const book = await Focus.book(id);
+    document.getElementById('build-panel')?.remove();
+    const panel = Object.assign(document.createElement('div'), { id: 'build-panel', className: 'build-panel' });
+    panel.innerHTML = `<div class="row between mid"><b>Building from ${esc(book?.short || book?.name || 'the book')}</b><span class="muted small" id="bp-time">0 s</span></div>
+      <div class="bp-bar"><i id="bp-fill"></i></div><p class="small" id="bp-msg">Looking for the contents page…</p><div id="bp-end"></div>`;
+    document.body.appendChild(panel);
+    const t0 = Date.now(), $p = q => panel.querySelector(q);
+    let frac = 0.02;
+    const clock = setInterval(() => { $p('#bp-time').textContent = Math.round((Date.now() - t0) / 1000) + ' s'; }, 1000);
+    let over = false;
+    const set = (msg, f) => { if (over) return; if (f != null) frac = Math.max(frac, f); $p('#bp-msg').textContent = msg; $p('#bp-fill').style.width = Math.round(frac * 100) + '%'; };
+    set('Looking for the contents page…', 0.02);
+    const end = (html, ok) => {
+      clearInterval(clock); A._building = false; Focus._say = null; over = true;
+      panel.classList.add(ok ? 'done' : 'failed');
+      $p('#bp-end').innerHTML = html + `<div class="row gap mt">${ok ? '' : `<button class="btn primary sm" data-act="buildFromBook" data-id="${esc(id)}" data-sys="${esc(sys || '')}">Try again</button>`}<button class="btn ghost sm" data-act="closeBuild">Close</button></div>`;
+    };
     try {
-      const { book, chapters, made, updated = 0, removed = 0 } = await Focus.fromBook(id, {
-        system: sys || '',
-        onProgress: (ch, n) => say(`${ch} — ${n} topics so far`)
-      });
+      const { chapters, made, updated = 0, removed = 0 } = await Focus.fromBook(id, { system: sys || '', onProgress: (msg, n, f) => set(typeof n === 'number' && n && !/^Reading|busy/.test(msg) ? `${msg} — ${n} topics so far` : msg, f) });
       if (sys) await Focus.assignSystem(id, sys);
-      toast(`"${book.short || book.name}": ${chapters} chapters — ${made.length} new topic${made.length === 1 ? '' : 's'}${updated ? `, ${updated} put in book order` : ''}${removed ? `, ${removed} empty duplicate${removed === 1 ? '' : 's'} removed` : ''}.`, 10000);
+      set('Done.', 1);
+      over = false; set('Done.', 1);
+      end(`<p class="small"><b>${chapters} chapters — ${made.length} new topic${made.length === 1 ? '' : 's'}</b>${updated ? `, ${updated} put in book order` : ''}${removed ? `, ${removed} empty duplicate${removed === 1 ? '' : 's'} removed` : ''}. Notes and questions for each topic are written from all your books.</p>`, true);
       App.render(true);
-    } catch (e) { toast(e.message || String(e), 9000); }
+    } catch (e) {
+      end(`<p class="small danger">${esc(e.message || String(e))}</p><p class="muted small">The parts already read are kept — Try again carries on from there.</p>`, false);
+    }
   },
+  closeBuild() { document.getElementById('build-panel')?.remove(); },
 
   /** Questions for the read topics that do not have enough yet. */
   async fillRead(el) {
@@ -312,6 +336,15 @@ const A = {
     openModal(`<form data-submit="mnemonicMake" data-id="${t.id}"><h3>Mnemonic</h3>
       <label>Which list in ${esc(t.name)}?<input name="list" placeholder="e.g. causes of clubbing, criteria for nephrotic syndrome" autofocus></label>
       <div class="row gap mt end"><button type="button" class="btn" data-act="closeModal">Cancel</button><button class="btn primary">Make it</button></div></form>`);
+  },
+  async getBookText(el) {
+    if (el.dataset.busy) return;
+    el.dataset.busy = '1'; el.disabled = true; el.innerHTML = '<span class="spin"></span>Downloading…';
+    try {
+      const n = await BookText.fetch(m => { if (m) el.textContent = m; });
+      toast(n ? `Downloaded ${n.toLocaleString()} pages of your books. Now tap Write sheet.` : (BookText.remote().some(b => b.complete) ? 'Book text is already here.' : 'Nothing to download yet — open the app on the laptop for a few minutes so it can send the text, then try again.'), 9000);
+    } catch (e) { toast(e.message || String(e), 8000); }
+    App.render(true);
   },
   async genTopic(el) {
     closeModal();
@@ -1189,19 +1222,23 @@ async function init() {
   Queue.listeners.add(() => { const q = $('#qstatus'); if (q) q.innerHTML = queueLine(); const nb = $('#nav-q'); if (nb) nb.hidden = !(Queue.running.local || Queue.running.ai); });
   await App.render();
   Queue.kick();
-  if (Sync.on()) { setInterval(() => PageRelay.serve(), 15000); setTimeout(() => PageRelay.serve(), 5000); }
+  // A phone or iPad in a pocket does nothing in the background except the lecture recording. Every
+  // timed job below used to keep running behind a locked screen (the battery warning).
+  const bg = fn => () => { if (document.hidden && handheld()) return; return fn(); };
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) Queue.kick(); });
+  if (Sync.on()) { setInterval(bg(() => PageRelay.serve()), 15000); setTimeout(() => PageRelay.serve(), 5000); }
   // Book text: the laptop shares it, phones/iPads download it (then Ask books works on them with the laptop off).
   const bt = () => BookText.share().then(() => BookText.fetch(m => { window._btMsg = m; })).catch(console.warn);
-  setTimeout(bt, 30000); setInterval(bt, 600000);
+  setTimeout(bt, 30000); setInterval(bg(bt), 600000);
   // Jobs that failed only because a retired Gemini model was picked: give them back once.
   setTimeout(async () => { let n = 0; for (const j of await DB.byIndex('queue', 'status', 'failed')) if (/no longer available to new users/i.test(j.error || '')) { j.status = 'pending'; j.tries = 0; delete j.error; await DB.put('queue', j); n++; } if (n) { Queue.kick(); toast(`Gave ${n} jobs another go (an old Gemini model had been picked)`, 6000); } }, 9000);
   setTimeout(() => Queue.reviveLibFails().then(n => n && toast(`Gave ${n} jobs another go (the page reader hadn't downloaded)`, 6000)).catch(console.warn), 8000);
-  setTimeout(() => Queue.autoRetry().catch(console.warn), 60000); setInterval(() => Queue.autoRetry().catch(console.warn), 2 * 3600000);
-  setTimeout(() => queueEmbeds().then(n => n && Queue.kick()).catch(console.warn), 30000); setInterval(() => queueEmbeds().then(n => n && Queue.kick()).catch(console.warn), 3600000);
-  setInterval(() => { if (localStorage.getItem('reviewOn') && (Date.now() - (window._rvT || 0)) > 3500e3) { window._rvT = Date.now(); queueReview().then(() => queueMasks()).then(() => queueVerify()).catch(console.warn); } }, 600000);
+  setTimeout(() => Queue.autoRetry().catch(console.warn), 60000); setInterval(bg(() => Queue.autoRetry().catch(console.warn)), 2 * 3600000);
+  setTimeout(() => queueEmbeds().then(n => n && Queue.kick()).catch(console.warn), 30000); setInterval(bg(() => queueEmbeds().then(n => n && Queue.kick()).catch(console.warn)), 3600000);
+  setInterval(bg(() => { if (localStorage.getItem('reviewOn') && (Date.now() - (window._rvT || 0)) > 3500e3) { window._rvT = Date.now(); queueReview().then(() => queueMasks()).then(() => queueVerify()).catch(console.warn); } }), 600000);
   // Disputed answers get a third opinion (on the device with the books — the laptop).
   const arb = () => BookText.ownBooks().then(b => b.length && queueArbit().then(n => n && Queue.kick())).catch(console.warn);
-  setTimeout(arb, 45000); setInterval(arb, 1800000);
+  setTimeout(arb, 45000); setInterval(bg(arb), 1800000);
   // Once a day, on the device that has the books, find notes with missing parts and rewrite them.
   const gapRun = async () => {
     try {
@@ -1213,13 +1250,13 @@ async function init() {
       if (n) Queue.kick();
     } catch (e) { console.warn('notes check', e); }
   };
-  setTimeout(gapRun, 120000); setInterval(gapRun, 3600000);
-  setInterval(() => fillMindmapFigs().catch(console.warn), 300000); setTimeout(() => fillMindmapFigs().catch(console.warn), 25000);
-  setTimeout(() => queueRefs().catch(console.warn), 20000); setInterval(() => queueRefs().catch(console.warn), 3600000);
+  setTimeout(gapRun, 120000); setInterval(bg(gapRun), 3600000);
+  setInterval(bg(() => fillMindmapFigs().catch(console.warn)), 300000); setTimeout(() => fillMindmapFigs().catch(console.warn), 25000);
+  setTimeout(() => queueRefs().catch(console.warn), 20000); setInterval(bg(() => queueRefs().catch(console.warn)), 3600000);
   // College lectures: pick up any recording still running, and refresh the night-before reminders.
   Lectures.init().catch(console.warn);
   setTimeout(() => Timetable.init().catch(console.warn), 4000);
-  if (Sync.on()) { Sync.run(); setInterval(() => Sync.run(), 120000); document.addEventListener('visibilitychange', () => { if (!document.hidden) Sync.run(); }); }
+  if (Sync.on()) { Sync.run(); setInterval(bg(() => Sync.run()), 120000); document.addEventListener('visibilitychange', () => { if (!document.hidden) Sync.run(); }); }
   else Sync.set('off');
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     // Pick up a new version by itself: check on every open, and reload once when the new one takes over.

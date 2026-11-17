@@ -171,6 +171,32 @@ const BODY = {
   }
 };
 
+// Names shown on the drawings, and where each sits so none runs off the edge or over another.
+const LM = {
+  legs: { shinR: { name: 'Shin (R)' }, shinL: { name: 'Shin (L)' },
+    medMalR: { name: 'Medial malleolus', a: 'middle', lx: 36, ly: -16 }, medMalL: { name: '' },
+    latMalR: { name: 'Lateral malleolus', a: 'middle', lx: 4, ly: 24 }, latMalL: { name: 'Lateral malleolus', a: 'middle', lx: -4, ly: 24 },
+    dorsumR: { name: 'Dorsum of foot', a: 'middle', lx: 0, ly: 26 }, dorsumL: { name: 'Dorsum of foot', a: 'middle', lx: 0, ly: 26 } },
+  neck: { thyroid: { name: 'Thyroid cartilage', a: 'middle', lx: 0, ly: -16 }, carR: { name: 'R carotid' }, carL: { name: 'L carotid' },
+    ejvR: { name: 'R ext. jugular' }, ejvL: { name: 'L ext. jugular' }, ijvR: { name: 'R int. jugular' }, ijvL: { name: 'L int. jugular' },
+    clavR: { name: 'R clavicle', ly: 10 }, notch: { name: 'Suprasternal notch' }, angle: { name: 'Sternal angle' } },
+  eye: { upperSclera: { name: 'Upper sclera' }, sideSclera: { name: 'Sclera (side)' }, cornea: { name: 'Cornea / iris' }, upperLid: { name: 'Upper eyelid' }, lowerConj: { name: 'Lower palpebral conjunctiva', a: 'middle', lx: 0, ly: 26 } },
+  mouth: { cheek: { name: 'Inside cheek' }, underTongue: { name: 'Under the tongue' }, lips: { name: 'Lips' }, lowerLip: { name: 'Lower lip' } },
+  hand: { radial: { name: 'Radial a.', a: 'middle', lx: 0, ly: 20 }, midWrist: { name: 'Flexor tendons', a: 'middle', lx: 0, ly: -9 }, ulnar: { name: 'Ulnar a.', a: 'middle', lx: 0, ly: 20 },
+    thenar: { name: 'Thenar eminence', a: 'middle', lx: 4, ly: 18 }, palm: { name: 'Palm creases' },
+    nail: { name: 'Nail beds', a: 'middle', lx: -15, ly: -38 }, nail1: { name: '' }, nail2: { name: '' }, nail4: { name: '' }, pulp: { name: 'Finger pulp' } },
+  chest: { rightApex: { name: 'R 5th space' }, ics4: { name: 'L 4th space' }, apexOk: { name: 'L 5th space, MCL' }, lse: { name: 'L sternal edge', a: 'middle', lx: 0, ly: 17 },
+    displaced: { name: 'L 6th space, AAL', a: 'end' }, angleC: { name: 'Sternal angle (2nd rib)' } },
+  abdomen: { murphy: { name: 'R costal margin' }, murphyL: { name: 'L costal margin' }, rhc: { name: 'R hypochondrium' }, lhc: { name: 'L hypochondrium' },
+    epi: { name: 'Epigastrium', a: 'middle', lx: 0, ly: 22 }, umb: { name: 'Umbilicus' }, flankR: { name: 'R flank' }, flankL: { name: 'L flank' }, rif: { name: 'R iliac fossa' }, lif: { name: 'L iliac fossa' } },
+  knee: { tendon: { name: 'Patellar tendon' }, patella: { name: 'Patella' }, quads: { name: 'Quadriceps' }, tuberosity: { name: 'Tibial tuberosity' } },
+  arm: { brachial: { name: 'Brachial a.' }, lateralFossa: { name: 'Lateral to biceps tendon' }, bicepsT: { name: 'Biceps tendon', a: 'middle', lx: 0, ly: -14 },
+    cuffOk: { name: '2–3 cm above elbow crease' }, cuffLow: { name: 'Elbow crease', a: 'middle', lx: 0, ly: 24 }, cuffHigh: { name: 'High on upper arm' } }
+};
+for (const [v, ms] of Object.entries(LM)) for (const [id, o] of Object.entries(ms)) if (BODY[v]?.marks[id]) Object.assign(BODY[v].marks[id], o);
+BODY.neck.anat = [{ x: 112, y: 64, t: 'SCM', a: 'start' }, { x: 188, y: 64, t: 'SCM', a: 'end' }];
+BODY.arm.anat = [];
+
 const POSITIONS = { supine: 'Lying flat', reclined: 'Reclining at 45°', sitting: 'Sitting up', legsHanging: 'Sitting, legs hanging free' };
 
 /**
@@ -188,8 +214,8 @@ const TECHNIQUES = [
       { ask: 'In a patient confined to bed, also check…', options: ['The sacrum', 'The forehead', 'The palms'], answer: 0, why: 'Fluid collects where the body is lowest: the sacrum in someone lying in bed.' }],
     teach: 'Medial malleolus or lower third of the shin, over bone; thumb pressure 10–15 s; then the sacrum if bedbound. Ask about tenderness first.' },
 
-  { id: 'jvp', group: 'General', name: 'Jugular venous pressure', finding: 'jvp',
-    pos: { ok: ['reclined'], why: 'At 45° the top of the column normally sits just above the clavicle, where it can be seen.' }, stand: 'right',
+  { id: 'jvp', group: 'General', name: 'Jugular venous pressure', finding: 'jvp', keyStep: 3,
+    pos: { key: true, ok: ['reclined'], why: 'At 45° the top of the column normally sits just above the clavicle, where it can be seen.' }, stand: 'right',
     taps: [{ view: 'neck', ask: 'Where do you look for the JVP? Touch it.', ok: ['ijvR'],
       wrong: { ijvL: 'Wrong side. The JVP is assessed on the RIGHT: the right internal jugular runs in a straight line through the SVC to the right atrium. The left can read falsely high.', ejvR: 'That is the external jugular. It can be kinked or obstructed — use the internal jugular, between the two heads of the sternocleidomastoid.', ejvL: 'External jugular, and the left side — use the RIGHT internal jugular.', carR: 'That is the carotid pulse, medial to the sternocleidomastoid higher up. The internal jugular is lower, between the two heads of the muscle.' } },
       { view: 'neck', ask: 'Measure the height of the column — from which point?', ok: ['angle'], wrong: { notch: 'Measure the vertical height from the STERNAL ANGLE, not the suprasternal notch.', clavR: 'Measure the vertical height from the sternal angle, not the clavicle.' } }],
@@ -329,15 +355,23 @@ const TechBook = {
   async all() {
     const own = (await DB.all('books')).filter(b => !String(b.role || '').startsWith('mcq') && b.role !== 'reader');
     const remote = (typeof BookText !== 'undefined' ? BookText.remote() : []).filter(r => !own.some(b => b.id === r.id) && !String(r.role || '').startsWith('mcq')).map(r => ({ ...r, remote: 1 }));
-    return [...own, ...remote];
+    // How much of each book's text is on this device. A book with no text here cannot give a case
+    // or a technique — that was the "no case found" with Harrison every time.
+    const all = [...own, ...remote];
+    for (const b of all) { try { b.pages = await DB.count('pages', 'bookId', b.id); } catch (e) { b.pages = 0; } }
+    // The same book twice (added here and sent from the laptop): keep the copy that has the text.
+    const norm = b => String(b.name || b.short || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const best = new Map();
+    for (const b of all) { const k = norm(b) || b.id, o = best.get(k); if (!o || (b.pages || 0) > (o.pages || 0)) best.set(k, b); }
+    return [...best.values()];
   },
   // A clinical-methods book, whatever type it was given in the Library: Boloor first.
   isClinical(b) { return b.role === 'practical' || CLIN_RE.test(`${b.name || ''} ${b.short || ''}`); },
   rank(b) { return /boloor|archith/i.test(`${b.name || ''} ${b.short || ''}`) ? 0 : this.isClinical(b) ? 1 : 2; },
   async books() {
     const pool = (await this.all()).sort((a, b) => this.rank(a) - this.rank(b));
-    const clin = pool.filter(b => this.isClinical(b));
-    return clin.length ? clin : pool.filter(b => b.role === 'ref');
+    const clin = pool.filter(b => this.isClinical(b) && b.pages >= 3);
+    return clin.length ? clin : pool.filter(b => b.role === 'ref' && b.pages >= 3);
   },
 
   /** The pages of one particular book that best match a topic. */
@@ -349,6 +383,29 @@ const TechBook = {
     for (const x of top) { if (out.length >= maxPages || (chars + Math.min(x.text.length, 9000) > maxChars && out.length)) break; out.push(x); chars += Math.min(x.text.length, 9000); }
     return out.sort((a, b) => a.p - b.p);
   },
+  /**
+   * Read every technique from the clinical book by itself, in the background, once — instead of
+   * waiting for a button. A technique learned earlier from some other book is read again from
+   * Boloor once Boloor is on the device.
+   */
+  async autoLearn(onStep) {
+    if (this._auto || !AI.key) return;
+    const books = await this.books();
+    if (!books.length) return;
+    const top = books[0], topName = top.short || top.name, isBoloor = this.rank(top) === 0;
+    this._auto = true;
+    try {
+      for (const t of TECHNIQUES) {
+        if (document.hidden) break;
+        const have = await this.get(t.id);
+        if (have && (have.found === false ? Date.now() - (have.at || 0) < 7 * 864e5 : true) && (!isBoloor || /boloor|archith/i.test(have.book || '') || have.found === false)) continue;
+        onStep?.(t.name);
+        try { await this.learn(t.id); } catch (e) { if (/quota|busy|key/i.test(e.message || '')) break; }
+        await sleep(1500);
+      }
+    } finally { this._auto = false; onStep?.(''); }
+  },
+
   async learn(id) {
     const t = TECH[id];
     const topic = { name: t.name, kw: TECH_TERMS[id] || [t.name.toLowerCase()] };
@@ -378,10 +435,24 @@ window.TechBook = TechBook;
 /** One technique, done on the drawing, step by step. `done(result)` is called at the end. */
 const Station = {
   t: null, st: null,
-  async open(id, { done, finding } = {}) {
+  // Quick (the default): only what an examiner actually catches — the spot, the side, the hold, the
+  // one position that matters, and one step from the book. Thorough asks everything.
+  quick() { return localStorage.getItem('drillFull') !== '1'; },
+  skip(stage) {
+    const s = this.st, t = this.t;
+    if (stage === 'pos') return !t.pos || (s.quick && !t.pos.key);
+    if (stage === 'stand') return !t.stand || s.quick;
+    if (stage === 'tap') return !t.taps?.length;
+    if (stage === 'steps') return !t.steps?.length || (s.quick && !!this.gapQuestion());
+    if (stage === 'gap') return !this.gapQuestion();
+    return false;
+  },
+  async open(id, { done, finding, quick } = {}) {
     this.t = TECH[id];
-    this.st = { stage: this.t.pos ? 'pos' : this.t.stand ? 'stand' : this.t.taps?.length ? 'tap' : 'steps', tap: 0, step: 0, checks: [], touches: [], done, finding };
     this.book = null;
+    const q = quick ?? this.quick();
+    this.st = { quick: q, stage: null, tap: 0, step: q ? (this.t.keyStep || 0) : 0, checks: [], touches: [], done, finding };
+    this.st.stage = ['pos', 'stand', 'tap', 'steps', 'result'].find(x => x === 'result' || !this.skip(x));
     this.paint();
     try {
       this.book = await TechBook.get(id);
@@ -408,9 +479,9 @@ const Station = {
     const s = this.st, t = this.t;
     const order = ['pos', 'stand', 'tap', 'steps', 'gap', 'result'];
     if (s.stage === 'tap' && s.tap < (t.taps?.length || 0) - 1) { s.tap++; return this.paint(); }
-    if (s.stage === 'steps' && s.step < (t.steps?.length || 0) - 1) { s.step++; return this.paint(); }
+    if (s.stage === 'steps' && !s.quick && s.step < (t.steps?.length || 0) - 1) { s.step++; return this.paint(); }
     let i = order.indexOf(s.stage) + 1;
-    while (order[i] === 'stand' && !t.stand || order[i] === 'tap' && !t.taps?.length || order[i] === 'steps' && !t.steps?.length || order[i] === 'gap' && !this.gapQuestion()) i++;
+    while (order[i] !== 'result' && this.skip(order[i])) i++;
     s.stage = order[i];
     if (s.stage === 'result') this.finish();
     this.paint();
@@ -431,9 +502,31 @@ const Station = {
     s.done?.(s);
   },
 
+  // Every spot you could touch is named on the drawing, so the question is which structure, not
+  // guessing what a line in a picture is meant to be.
+  labels(view) {
+    if (localStorage.getItem('drillLabels') === '0') return '';
+    const v = BODY[view];
+    const short = l => String(l).split(' — ')[0].replace(/\(patient's right\)/, '(R)').replace(/\(patient's left\)/, '(L)')
+      .replace(/^right /, 'R ').replace(/^left /, 'L ').replace(/, lower third/, '').replace(/ — .*/, '');
+    const anat = (v.anat || []).map(a => `<text class="anat" x="${a.x}" y="${a.y}" text-anchor="${a.a || 'middle'}">${esc(a.t)}</text>`).join('');
+    const seen = new Set();
+    const marks = Object.entries(v.marks).map(([id, m]) => {
+      const name = m.name || short(m.label);
+      const key = name + '@' + Math.round(m.x / 40) + Math.round(m.y / 40);
+      const dot = `<circle class="lm-dot" cx="${m.x}" cy="${m.y}" r="2.6"/>`;
+      if (m.name === '' || seen.has(key)) return dot;
+      seen.add(key);
+      const side = m.a || (m.x < 140 ? 'end' : m.x > 160 ? 'start' : 'start');
+      const dx = m.lx ?? (side === 'end' ? -6 : 6), dy = m.ly ?? 3;
+      return `${dot}<text class="lm" x="${m.x + dx}" y="${m.y + dy}" text-anchor="${side}">${esc(name)}</text>`;
+    }).join('');
+    return `<g class="lm-g" pointer-events="none">${anat}${marks}</g>`;
+  },
+
   svg(view, extra = '') {
     const v = BODY[view];
-    return `<svg class="body-svg" viewBox="0 0 300 300" data-view="${view}">${v.svg}${extra}
+    return `<svg class="body-svg" viewBox="0 0 300 300" data-view="${view}">${v.svg}${this.labels(view)}${extra}
       ${v.sides ? `<text class="side" x="8" y="14">Patient's R</text><text class="side" x="292" y="14" text-anchor="end">Patient's L</text>` : ''}</svg>`;
   },
 
@@ -477,7 +570,7 @@ const Station = {
         <ul class="st-checks">${s.checks.map(c => `<li class="${c.ok ? 'ok' : 'bad'}">${esc(c.msg)}</li>`).join('')}</ul>
         ${shown ? `<div class="st-minis">${shown}</div><p class="muted small center">Green: where it is done. Your touch: the dot.</p>` : ''}
         ${s.finding != null ? `<div class="callout mt"><b>Finding</b><p>${s.techniqueOk ? esc(s.finding || 'Normal.') : 'Not elicited — the technique was not right, so there is no reliable finding. The examiner noticed.'}</p></div>` : ''}
-        <p class="muted small mt">${esc(t.teach)}</p>
+        ${this.book?.found ? '' : `<p class="muted small mt">${esc(t.teach)}</p>`}
         ${this.book?.found ? `<details class="book-steps mt" open><summary><b>As ${esc(this.book.book || 'your book')} teaches it</b></summary>
           <ol>${this.book.steps.map(x => `<li>${esc(x.text)} <span class="muted small">${esc(x.cite || '')}</span></li>`).join('')}</ol>
           ${this.book.normal ? `<p class="small"><b>Normal:</b> ${esc(this.book.normal)}</p>` : ''}
@@ -569,6 +662,7 @@ Object.assign(A, {
     Station.check(ok, 'gap', ok ? `Right — the missing step was: ${g.steps[g.hide]}.` : `The missing step was: ${g.steps[g.hide]} ${g.cite || ''}. You chose: ${g.opts[+el.dataset.i]}.`);
     Station.next();
   },
+  drillMode() { localStorage.setItem('drillFull', Station.quick() ? '1' : '0'); toast(Station.quick() ? 'Quick: just the spot, the side, the hold and one key step.' : 'Thorough: every step is asked.', 5000); App.render(true); },
   stAgain() { Station.open(Station.t.id, { done: Station.st.done, finding: Station.st.finding }); },
   stClose() { const h = document.getElementById('station'); if (h) { h.innerHTML = ''; h.hidden = true; } document.body.classList.remove('station-open'); App.render(true); }
 });
@@ -589,13 +683,14 @@ Views.drills = async () => {
   TECHNIQUES.forEach(t => (groups[t.group] ||= []).push(t));
   const weak = TECHNIQUES.filter(t => log[t.id] && log[t.id].ok < log[t.id].n);
   return `<div class="page"><header class="page-head"><div><p class="eyebrow"><a class="link" href="#/practice">Practice</a></p><h1>Examination drills</h1></div>
-      <button class="btn primary" data-act="drillWeak" ${weak.length ? '' : 'disabled'}>Drill my mistakes${weak.length ? ` (${weak.length})` : ''}</button></header>
-    <p class="muted">Where to stand, how the patient lies, the exact spot and side, how long to press. The patient faces you — their right is on your left.</p>
+      <div class="row gap"><button class="btn ghost sm" data-act="drillMode">${Station.quick() ? 'Quick' : 'Thorough'}</button><button class="btn primary" data-act="drillWeak" ${weak.length ? '' : 'disabled'}>Drill my mistakes${weak.length ? ` (${weak.length})` : ''}</button></div></header>
+    <p class="muted">The exact spot and side, how long to press, and the key step from your book. The patient faces you — their right is on your left. Every spot is named on the drawing.</p>
     ${await (async () => {
       const learned = (await Promise.all(TECHNIQUES.map(t => TechBook.get(t.id)))).filter(r => r?.found).length;
       const books = await TechBook.books();
-      if (!books.length) return `<p class="muted small">Tip: set your clinical-methods book (e.g. Boloor) to the role "Practical" in the Library, and every drill will also follow its steps.</p>`;
-      return `<div class="card soft mt row between mid wrap gap"><span class="small">${learned} of ${TECHNIQUES.length} techniques follow <b>${esc(books[0].short || books[0].name)}</b> step by step.</span>
+      if (!books.length) return `<p class="muted small">Tip: add your clinical-methods book (e.g. Boloor) in the Library, and every drill will follow its steps.</p>`;
+      if (learned < TECHNIQUES.length) setTimeout(() => TechBook.autoLearn(n => { const el = document.getElementById('drill-learn'); if (el) el.textContent = n ? `Reading from ${books[0].short || books[0].name}: ${n}…` : ''; }).then(() => { if (location.hash.startsWith('#/drills')) App.render(true); }), 1500);
+      return `<div class="card soft mt row between mid wrap gap"><span class="small">${learned} of ${TECHNIQUES.length} techniques follow <b>${esc(books[0].short || books[0].name)}</b> step by step. <span class="muted" id="drill-learn"></span></span>
         ${learned < TECHNIQUES.length ? `<button class="btn sm" data-act="drillLearn">Read the rest from the book</button>` : `<button class="btn ghost sm" data-act="drillLearn" data-all="1">Read again</button>`}</div>`;
     })()}
     ${Object.entries(groups).map(([g, ts]) => `<section class="card flush mt"><div class="card-head pad"><h3>${esc(g)}</h3></div><div class="list">

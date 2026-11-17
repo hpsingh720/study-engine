@@ -1,4 +1,4 @@
-const APP_VERSION = 'v125';
+const APP_VERSION = 'v128';
 // A topic stops earning new questions at this many: beyond it the model repeats itself.
 const MCQ_CAP = 60;
 // Small helpers shared across the app.
@@ -15,9 +15,14 @@ const _tw = (() => {
 })();
 const sleep = ms => new Promise(r => (_tw && ms > 50) ? _tw(r, ms) : setTimeout(r, ms));
 // A tone too low for any speaker to play (8 Hz). Chrome treats the tab as "playing sound", so it keeps it running at full speed when minimised.
+// A phone or tablet (including the Android app). Background work is held back on these.
+const handheld = () => !!window.Capacitor?.isNativePlatform?.() || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
+
 const KeepAlive = {
   ctx: null,
-  wanted() { return localStorage.getItem('bgRun') !== '0'; },
+  // A silent sound that stops a laptop browser from freezing a background tab. On a phone it kept
+  // the audio hardware switched on for as long as any job ran — a large part of the battery drain.
+  wanted() { return localStorage.getItem('bgRun') !== '0' && !handheld(); },
   start() {
     if (!this.wanted()) return;
     try {

@@ -884,3 +884,35 @@ body.station-open { overflow: hidden; }
 .voice-stop i { width: 12px; height: 12px; border-radius: 2px; background: #fff; display: block; }
 .voice-stop:active { transform: translateX(-50%) scale(.96); }
 @keyframes vs-in { from { opacity: 0; transform: translate(-50%, 10px); } to { opacity: 1; transform: translateX(-50%); } }
+
+/* Live talk */
+.live-go { margin-top: 12px; }
+.live-bar { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 10px 12px; border-radius: 14px; background: rgba(46, 160, 67, .1); border: 1px solid rgba(46, 160, 67, .35); font-size: .92rem; }
+.live-dot { width: 10px; height: 10px; border-radius: 50%; background: #2ea043; flex: none; animation: live-pulse 1.4s ease-in-out infinite; }
+@keyframes live-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(46,160,67,.55); } 50% { box-shadow: 0 0 0 7px rgba(46,160,67,0); } }
+.btn.danger-b { color: #b3261e; border-color: rgba(179,38,30,.4); }
+
+/* Named landmarks on the examination drawings */
+.body-svg .lm-dot { fill: #1f3a7a; opacity: .75; }
+.body-svg .lm { font: 600 9.5px/1 system-ui, sans-serif; fill: #1b2a4a; paint-order: stroke; stroke: rgba(255,255,255,.85); stroke-width: 3px; }
+.body-svg .anat { font: italic 600 9px/1 system-ui, sans-serif; fill: #7a2f1f; paint-order: stroke; stroke: rgba(255,255,255,.8); stroke-width: 3px; }
+
+/* 15-minute case */
+.case-tools { margin-top: 10px; }
+.case-clock { font-variant-numeric: tabular-nums; font-weight: 600; }
+.hint-card { margin-top: 8px; padding: 10px 12px; border-radius: 12px; background: rgba(224, 134, 28, .12); border: 1px solid rgba(224, 134, 28, .35); font-size: .93rem; }
+.ddx { display: grid; gap: 10px; margin: 6px 0 8px; }
+.ddx-row { display: grid; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; }
+.ddx-row input:first-child { font-weight: 600; }
+@media (min-width: 720px) { .ddx-row { grid-template-columns: 1fr 1.3fr 1.3fr; } }
+.dx-check.ok { border-left: 4px solid #2ea043; } .dx-check.bad { border-left: 4px solid #d29922; }
+
+/* Building a subject from a book */
+.build-panel { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(76px + env(safe-area-inset-bottom)); width: min(460px, calc(100vw - 24px)); z-index: 8000;
+  background: var(--surface, #fff); border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px; box-shadow: 0 10px 30px rgba(0,0,0,.18); }
+.bp-bar { height: 8px; border-radius: 99px; background: rgba(127,127,127,.18); overflow: hidden; margin: 10px 0 6px; }
+.bp-bar i { display: block; height: 100%; width: 2%; background: var(--accent, #4f5bd5); border-radius: 99px; transition: width .4s ease; }
+.build-panel.done .bp-bar i { background: #2ea043; } .build-panel.failed .bp-bar i { background: #d29922; }
+#bp-msg { margin: 0; }
+
+.twin-line { margin: -4px 0 10px; }

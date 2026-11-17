@@ -6,8 +6,12 @@ Views.lectures = async () => {
   const list = await Lectures.all();
   const todays = await Timetable.todays();
   const suggestion = await Timetable.suggestNow();
-  const hasKey = !!Lectures.groqKey();
+  const hasKey = !!(Lectures.groqKey() || AI.key);
   const native = !!Lectures.native();
+  // A lecture can be left showing "Recording" when its last piece never arrived (the app was closed
+  // mid-class). Then this screen had no Start button at all, and the next class had nowhere to go.
+  let stuck = false;
+  if (active && native) { try { stuck = !(await Lectures.native().getState())?.recording; } catch (e) {} }
 
   const recorder = active
     ? `<div class="card rec-live">
@@ -22,11 +26,12 @@ Views.lectures = async () => {
            <button class="btn" data-act="lecSlidePick" data-id="${active.id}">Photos</button>
            <a class="btn ghost" href="#/lecture/${active.id}">Open</a>
          </div>
-         <button class="btn full danger mt" data-act="lecStop">Stop and make questions</button>
+         ${stuck ? `<p class="warn mt">The recorder is not running any more — this class ended without its last piece arriving. Finish it to make its questions and free the recorder for the next class.</p>` : ''}
+         <button class="btn full danger mt" data-act="lecStop">${stuck ? 'Finish this lecture' : 'Stop and make questions'}</button>
        </div>`
     : `<div class="card">
          <h2>Record a lecture</h2>
-         ${!hasKey ? `<p class="warn">Add a free Groq key in <a href="#/settings">Settings</a> first — that is what turns speech into text.</p>` : ''}
+         ${!hasKey ? `<p class="warn">Add your Gemini key (or a free Groq key) in <a href="#/settings">Settings</a> first — that is what turns speech into text.</p>` : ''}
          ${todays.length ? `<label>Which class?
            <select id="lec-pick" data-change="pickClass">
              ${todays.map(c => {

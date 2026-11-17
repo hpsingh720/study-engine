@@ -24,6 +24,7 @@ const Voice = {
   /** Stop whatever is being said or heard. */
   stop() {
     this._cancel = true;
+    if (typeof LiveTalk !== 'undefined' && LiveTalk.on) LiveTalk.hush();   // in live talk: quiet the patient, keep the line open
     try { this._src?.stop(); } catch (e) {}
     for (const x of this._srcs || []) { try { x.stop(); } catch (e) {} }
     this._srcs = []; this._metering = false;
@@ -63,7 +64,7 @@ const Voice = {
           console.warn('phone voice failed', e);
         }
       }
-      if (window.speechSynthesis) { await this._browser(text, lang); return; }
+      if (window.speechSynthesis) { await this._browser(text, lang, this.MALE.has(voice)); return; }
     } finally { this.speaking = false; this.level = 0; this._stopBtn(false); }
   },
 
@@ -251,12 +252,18 @@ const Voice = {
     this._metering = false; this.level = 0; this._src = null;
   },
 
-  _browser(text, lang) {
+  _browser(text, lang, male = false) {
     return new Promise(res => {
       const u = new SpeechSynthesisUtterance(text);
       u.lang = lang;
-      const v = speechSynthesis.getVoices().find(x => x.lang === lang) || speechSynthesis.getVoices().find(x => x.lang?.startsWith(lang.slice(0, 2)));
+      const all = speechSynthesis.getVoices(), norm = x => (x.lang || '').replace('_', '-');
+      const same = all.filter(x => norm(x) === lang), near = all.filter(x => norm(x).startsWith(lang.slice(0, 2)));
+      const pool = same.length ? same : near;
+      // A man's voice for a man where the device has one (names like "Rishi", "Male"); otherwise lower the pitch.
+      const manly = male && pool.find(x => /male|man\b|rishi|hemant|prabhat|madhur|ravi|arjun/i.test(x.name) && !/female/i.test(x.name));
+      const v = manly || pool[0];
       if (v) u.voice = v;
+      if (male && !manly) u.pitch = 0.7;
       // No sound levels from the browser voice, so the face moves on a gentle rhythm instead.
       const t = setInterval(() => { this.level = 0.25 + Math.random() * 0.5; }, 110);
       u.onend = u.onerror = () => { clearInterval(t); this.level = 0; res(); };

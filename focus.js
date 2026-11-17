@@ -180,6 +180,33 @@ const Focus = {
 
   _norm(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); },
 
+  /**
+   * Two names for the same subject: "Cervical screening and cervical cancer" (the AMC list) and
+   * "Carcinoma cervix" (the book's chapter). Word stems, with the usual synonyms, mostly shared —
+   * but never across a qualifier that makes it a different subject (type 1 / type 2, acute / chronic).
+   */
+  stems(name) {
+    const SYN = { carcinoma: 'cancer', carcinomas: 'cancer', ca: 'cancer', malignancy: 'cancer', malignancies: 'cancer', malignant: 'cancer', cancers: 'cancer',
+      neoplasm: 'tumor', neoplasms: 'tumor', tumour: 'tumor', tumours: 'tumor', tumors: 'tumor', growth: 'tumor' };
+    const STOP = new Set(['and', 'of', 'the', 'in', 'with', 'to', 'a', 'an', 'its', 'for', 'on', 'disease', 'diseases', 'disorder', 'disorders', 'management', 'approach', 'including', 'other', 'others', 'clinical', 'overview', 'introduction', 'basics']);
+    return [...new Set(this._norm(name).replace(/ae/g, 'e').replace(/oe/g, 'e').split(' ').filter(w => w && !STOP.has(w)).map(w => (SYN[w] || w).slice(0, 5)))];
+  },
+  similar(a, b) {
+    const A = this.stems(a), B = this.stems(b);
+    if (!A.length || !B.length) return false;
+    const QUAL = /^(\d+|i{1,3}|iv|acute|chron|type|prima|secon|terti|conge|acqui|upper|lower|left|right|neona|adult|child|benig|early|late)$/;
+    const qa = A.filter(w => QUAL.test(w)).sort().join(), qb = B.filter(w => QUAL.test(w)).sort().join();
+    if (qa !== qb) return false;
+    const inter = A.filter(x => B.includes(x)).length;
+    if (A.length === 1 && B.length === 1) return inter === 1;
+    return inter >= 2 && inter / Math.min(A.length, B.length) >= 0.67;
+  },
+  // The same subject under another name — an AMC-list topic and the book's chapter topic.
+  async twin(t) {
+    const all = await DB.live('topics');
+    return all.find(o => o.id !== t.id && (!o.system || !t.system || o.system === t.system) && !!o.bookId !== !!t.bookId && this.similar(o.name, t.name)) || null;
+  },
+
   /** An existing topic for this, if there already is one — exact name first, then close enough. */
   async existing(name) {
     const want = this._norm(name);
@@ -613,16 +640,23 @@ Rules:
    * which suits a question asked while studying, not a whole contents page — on the iPad it failed
    * every time with "all the AIs are busy". Main key first, then any other key you have added.
    */
+  // A busy Gemini is normal for a minute or two. Give up only after several tries, with the lighter
+  // model in between (it is busy less often), saying each time what is happening and how long.
   async _bigAI({ prompt, json = true, system }) {
     const cap = (pr, ms) => Promise.race([pr, new Promise((_, no) => setTimeout(() => no(new Error('timed out')), ms))]);
+    const waits = [0, 8, 20, 40];
     let last;
-    if (AI.key) {
-      try { return await cap(AI.call({ prompt, json, system }), 240000); } catch (e) { last = e; }
+    if (!AI.key && !Providers.active().length) throw new Error('Add your Gemini key in Settings first.');
+    for (let i = 0; i < waits.length; i++) {
+      for (let s = waits[i]; s > 0; s--) { this._say?.(`Gemini is busy — trying again in ${s} s (try ${i + 1} of ${waits.length})`); await sleep(1000); }
+      if (AI.key) {
+        try { return await cap(AI.call({ prompt, json, system, ...(i % 2 ? { model: AI.bulkModel } : {}) }), 240000); } catch (e) { last = e; }
+      }
+      for (const p of Providers.active().filter(p => !p.ocrOnly && !p.ocrApi)) {
+        try { return await cap(Providers.call(p, { prompt, json, system, maxTokens: 16000 }), 240000); } catch (e) { last = e; }
+      }
     }
-    for (const p of Providers.active().filter(p => !p.ocrOnly && !p.ocrApi)) {
-      try { return await cap(Providers.call(p, { prompt, json, system, maxTokens: 16000 }), 240000); } catch (e) { last = e; }
-    }
-    throw new Error(last ? `Could not read it: ${last.message || last}` : 'Add your Gemini key in Settings first.');
+    throw new Error(`Could not read it after ${waits.length} tries: ${last?.message || last}`);
   },
 
   /**
@@ -640,10 +674,15 @@ Rules:
     if (cur.length) groups.push(cur);
 
     const chapters = [];
+    // Parts already read are kept, so "Try again" after a failure carries on where it stopped.
+    const ck = 'tocParts-' + book.id, sig = groups.length + ':' + front.length;
+    let cache = {}; try { cache = JSON.parse(localStorage.getItem(ck) || '{}'); } catch (e) {}
+    if (cache.sig !== sig) cache = { sig, done: {} };
     for (let g = 0; g < groups.length; g++) {
-      onProgress?.(`Reading the contents (part ${g + 1} of ${groups.length})…`, 0);
+      const count = chapters.reduce((n, c) => n + 1 + (c.topics?.length || 0), 0);
+      onProgress?.(`Reading the contents — part ${g + 1} of ${groups.length}${count ? ` · ${chapters.length} chapters, ${count - chapters.length} topics found so far` : ''}`, 0, 0.05 + 0.8 * g / groups.length);
       const prev = chapters[chapters.length - 1];
-      const out = await this._bigAI({
+      const out = cache.done[g] || await this._bigAI({
         json: true,
         system: typeof SYSTEM_TUTOR !== 'undefined' ? SYSTEM_TUTOR : undefined,
         prompt: `Below ${groups.length > 1 ? `is part ${g + 1} of ${groups.length} of` : 'are'} the contents pages of "${book.name}", scanned and read by OCR.
@@ -662,6 +701,8 @@ ${prev ? `- The previous pages ended inside chapter ${prev.no || ''} "${prev.nam
 PAGES:
 ${groups[g].join('\n\n')}`
       });
+      cache.done[g] = out;
+      try { localStorage.setItem(ck, JSON.stringify(cache)); } catch (e) {}
       for (const c of (Array.isArray(out?.chapters) ? out.chapters : [])) {
         const key = this.chapterKey(c?.name);
         if (!key) continue;
@@ -675,6 +716,7 @@ ${groups[g].join('\n\n')}`
         } else chapters.push({ ...c, name: String(c.name || '').replace(/^\s*[0-9]+\s*[.:)\-–]?\s+/, ''), topics: Array.isArray(c.topics) ? c.topics.slice() : [] });
       }
     }
+    try { localStorage.removeItem(ck); } catch (e) {}
     return { chapters };
   },
 
@@ -692,6 +734,7 @@ ${groups[g].join('\n\n')}`
     const book = await this.book(bookId);
     if (!book) throw new Error('Book not found');
     const sys = book.system || system;
+    this._say = m => onProgress?.(m, 0);
 
     const pages = [];
     await DB.each('pages', 'bookId', bookId, pg => { if (pg.text) pages.push(pg.p); });
@@ -763,7 +806,7 @@ ${groups[g].join('\n\n')}`
     const all = await DB.live('topics');
     const mine = new Map(all.filter(t => t.bookId === bookId).map(t => [this._norm(t.name), t]));
     const others = new Map(all.filter(t => t.bookId !== bookId).map(t => [this._norm(t.name), t]));
-    const made = [], kept = [], seenHere = new Set();
+    const made = [], kept = [], seenHere = new Set(), claimed = new Set();
     let order = 0;
     const place = (fields) => {
       const key = this._norm(fields.name);
@@ -789,6 +832,17 @@ ${groups[g].join('\n\n')}`
         kept.push(other);
         return;
       }
+      // The same subject under another name (the AMC list's "Cervical screening and cervical
+      // cancer" for the book's "Carcinoma cervix"): that topic joins this chapter, with its notes and
+      // questions, instead of a second copy being made beside it.
+      const near = [...others.values()].find(o => !o.bookId && !claimed.has(o.id) && (!o.system || o.system === sys) && this.similar(o.name, fields.name));
+      if (near) {
+        claimed.add(near.id);
+        Object.assign(near, { bookId, bookName: fields.name, chapter: fields.chapter, parentName: fields.chapter, chapterNo: fields.chapterNo, part: fields.part || '', order: fields.order, system: sys || near.system });
+        if (!near.bookPage && fields.bookPage) near.bookPage = fields.bookPage;
+        kept.push(near);
+        return;
+      }
       made.push(this._topic(fields));
     };
 
@@ -796,7 +850,7 @@ ${groups[g].join('\n\n')}`
       const ch = chapters[i];
       const chapterNo = ch.no || i + 1;
       order = 1000 + (i + 1) * 1000;        // chapters stay together and in the book's order
-      onProgress?.(ch.name, made.length + kept.length);
+      onProgress?.(`Making topics: ${ch.name}`, made.length + kept.length, 0.85 + 0.15 * i / chapters.length);
 
       // The chapter's own pages, so the subtopics are the headings this book actually prints.
       // The contents already lists what is in the chapter. Reading the chapter to rediscover it

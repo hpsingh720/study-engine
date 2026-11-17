@@ -40,7 +40,7 @@ const Lectures = {
       if (live) throw new Error('A lecture is already recording.');
       await this.finish(open.id);
     }
-    if (!this.groqKey()) throw new Error('Add your Groq key in Settings first — that is what turns speech into text.');
+    if (!this.groqKey() && !AI.key) throw new Error('Add your Gemini or Groq key in Settings first — that is what turns speech into text.');
 
     const l = {
       id: 'lec-' + uid(),
@@ -70,7 +70,12 @@ const Lectures = {
     const l = await this.current();
     if (!l) return null;
     const n = this.native();
-    if (n) await n.stop();
+    if (n) {
+      // Recorder already gone (the class ended with the app closed): close the lecture now.
+      let st = null; try { st = await n.getState(); } catch (e) {}
+      if (st && !st.recording) { try { await this._chain; } catch (e) {} await this.finish(l.id); return l; }
+      await n.stop();
+    }
     else await this._browserStop();
     // Normally the recorder's final chunk closes the lecture. If that signal never comes, the
     // lecture would sit on "recording" for ever — so once everything already sent has been
@@ -108,19 +113,25 @@ const Lectures = {
     const m = /chunk_(\d{10,})_\d+\./.exec(path || '');
     if (!m) return null;
     const at = +m[1];
-    const near = (await this.all()).filter(x => x.started && x.started <= at + 90000 && x.started >= at - 6 * 3600e3);
-    near.sort((a, b) => b.started - a.started);
+    // The file's time is when its recording began, so its lecture began then too. "The latest
+    // lecture before it" is not enough: a recording started from the tile, with no lecture made for
+    // it yet, was poured into the class before it — the 9–10 class vanished into the 8–9 one.
+    const near = (await this.all()).filter(x => x.started && Math.abs(x.started - at) < 120000);
+    near.sort((a, b) => Math.abs(a.started - at) - Math.abs(b.started - at));
     return near[0] || null;
   },
 
   async _onChunk({ path, blob, last, index, lecture }) {
+    // The same piece can be offered twice (live event and the catch-up pass). Do it once.
+    this._seen ||= new Set();
+    if (path && this._seen.has(path)) return;
     const l = lecture || (path && await this._ownerOf(path)) || await this.current();
 
     // No lecture to attach this to — the tile recorded with no page open. Park it on disk for the
     // recovery pass instead of discarding it; audio thrown away here is a lecture lost for good.
     if (!l) {
-      if (path) await this._park({ path, index: index || 0, last: !!last });
-      return;
+      if (path) { await this._park({ path, index: index || 0, last: !!last }); this._recoverSoon(); }
+      return 'parked';
     }
 
     try {
@@ -150,14 +161,57 @@ const Lectures = {
       await this.save(fresh);
       this._paint();
     } finally {
-      if (path) { try { await this.native().deleteChunk({ path }); } catch (e) {} }
+      if (path) { this._seen.add(path); try { await this.native().deleteChunk({ path }); } catch (e) {} }
     }
 
     if (last) await this.finish(l.id);
   },
 
-  /** Groq's Whisper endpoint. Free tier: 7,200 audio-seconds an hour, so a live lecture fits easily. */
+  /**
+   * Speech to text. Gemini first: it listens to the Hindi and Punjabi stretches and writes them out
+   * in English, where Whisper either guessed English that was never said or wrote Urdu letters.
+   * Whisper (Groq) stays as the back-up, and for anyone who picks it in Settings.
+   */
   async transcribe(blob, lecture) {
+    const engine = localStorage.getItem('lectureEngine') || 'gemini';
+    if (engine !== 'whisper' && AI.key) {
+      try { return await this.transcribeGemini(blob, lecture); }
+      catch (e) {
+        console.warn('Gemini could not transcribe this part; using Whisper', e);
+        if (!this.groqKey()) throw e;
+      }
+    }
+    return this.transcribeWhisper(blob, lecture);
+  },
+
+  async transcribeGemini(blob, lecture) {
+    const url = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => no(r.error); r.readAsDataURL(blob); });
+    // Android records Opus in an Ogg box; Gemini wants to be told it is Ogg audio.
+    const mime = /ogg|opus/.test(blob.type) ? 'audio/ogg' : /mp4|m4a|aac/.test(blob.type) ? 'audio/aac' : (blob.type || 'audio/ogg').split(';')[0];
+    const data = url.split(',')[1];
+    const about = [lecture.topic, lecture.subject].filter(Boolean).join(', ');
+    const tail = (lecture.transcript || '').slice(-400);
+    const prompt = `This is about ${Math.round(this.CHUNK_SECONDS / 60)} minutes of a medical college lecture in India${about ? ` on ${about}` : ''}. The teacher speaks English mixed with Hindi and Punjabi.
+
+Write down everything the teacher teaches, in English:
+- English sentences as they were said.
+- Hindi and Punjabi sentences translated into plain English, keeping the medical meaning exact.
+- Medical terms, drug names, doses, eponyms, signs and abbreviations spelled correctly.
+- Wherever the teacher stresses that something is important, will be asked, must be remembered or comes in the exam (in any language), put [IMPORTANT] in front of that sentence.
+- Leave out chit-chat, attendance and noise. Do not add anything that was not said.
+- If there is no teaching in it at all, reply with nothing.
+${tail ? `
+The transcript so far ended with: "${tail}"` : ''}
+
+Reply with the transcript text only.`;
+    const out = await AI.call({ prompt, images: [`data:${mime};base64,${data}`], json: false, temperature: 0.1 });
+    let text = String(out || '').replace(/^```\w*\n?|```$/g, '').trim();
+    if (/^(nothing|no teaching|\(no speech\)|\[no speech\]|empty)\.?$/i.test(text)) text = '';
+    return { text, raw: text, dropped: 0, engine: 'gemini' };
+  },
+
+  /** Groq's Whisper endpoint. Free tier: 7,200 audio-seconds an hour, so a live lecture fits easily. */
+  async transcribeWhisper(blob, lecture) {
     const p = Providers.get('groq');
     if (!p?.key) throw new Error('No Groq key');
 
@@ -190,7 +244,7 @@ const Lectures = {
     if (res.status === 429) {
       const wait = +(res.headers.get('retry-after') || 30);
       await sleep(Math.min(wait, 120) * 1000);
-      return this.transcribe(blob, lecture);
+      return this.transcribeWhisper(blob, lecture);
     }
     if (!res.ok) throw new Error('Transcription failed (' + res.status + '): ' + (await res.text()).slice(0, 200));
     const d = await res.json();
@@ -1039,7 +1093,7 @@ On the parts:
    * reconstruct it is in the chunks themselves: the numbering restarts at 1 for each recording, and
    * the filename carries the start time.
    */
-  async recoverSessions(live) {
+  async recoverSessions(liveNow) {
     const n = this.native();
     if (!n?.drainPending) return;
 
@@ -1049,7 +1103,7 @@ On the parts:
     try { drained = (await n.drainPending())?.chunks || []; } catch (e) { drained = []; }
     for (const c of drained) if (c?.path) await this._park({ path: c.path, index: c.index || 0, last: !!c.last });
 
-    const queue = (await DB.meta('pendingChunks')) || [];
+    const queue = ((await DB.meta('pendingChunks')) || []).filter(c => !this._inflight?.has(c.path));
     if (!queue.length) return;
 
     // Split the queue into recordings. The service numbers chunks from 1 each time it starts.
@@ -1061,11 +1115,14 @@ On the parts:
 
     for (const chunks of sessions) {
       let l = null;
+      // Only the pieces of the recording that is running now belong to it; older stray pieces get their own lecture.
+      const began = this._startedFrom(chunks);
+      const live = liveNow && (!began || Math.abs((liveNow.started || 0) - began) < 120000) ? liveNow : null;
 
       if (live) {
         l = live;                       // still recording: these chunks belong to it
       } else {
-        const started = this._startedFrom(chunks) || Date.now();
+        const started = began || Date.now();
         // Don't build a second lecture for a recording an earlier pass already recovered.
         l = (await this.all()).find(x => Math.abs(x.started - started) < 90000) || null;
         if (!l) {
@@ -1099,6 +1156,23 @@ On the parts:
     }
   },
 
+  // A chunk arrived with no lecture to go to: make the lecture for it now, while the app is open,
+  // rather than leaving it on disk until the next time the app is started.
+  _recoverSoon() {
+    clearTimeout(this._rs);
+    this._rs = setTimeout(() => this.catchUp().catch(console.warn), 2500);
+  },
+  async catchUp() {
+    if (this._catching) return;
+    this._catching = true;
+    try {
+      let live = null;
+      try { live = await this.adoptNative(); } catch (e) { console.warn('could not adopt the running recording', e); }
+      try { await this.recoverSessions(live); } catch (e) { console.warn('could not recover tile recordings', e); }
+      this._paint();
+    } finally { this._catching = false; }
+  },
+
   /** Wire up the native events once, at boot. Survives page reloads mid-lecture. */
   async init() {
     const n = this.native();
@@ -1107,16 +1181,25 @@ On the parts:
     // Listeners first. A chunk can finish while the rest of this is still running, and until this
     // is wired up every one of them goes into the native backlog instead of into the lecture.
     try {
-      n.addListener('chunk', d => this.onChunk({ path: d.path, index: d.index, last: d.last }));
+      // Written down before it is worked on: if the app is closed half-way through a class, the
+      // pieces not yet transcribed are picked up next time instead of being lost.
+      n.addListener('chunk', async d => {
+        const c = { path: d.path, index: d.index || 0, last: !!d.last };
+        (this._inflight ||= new Set()).add(c.path);
+        if (c.path) await this._park(c);
+        const r = await this.onChunk(c);
+        this._inflight.delete(c.path);
+        if (c.path && r !== 'parked') await this._forget(c);
+      });
+      // The tile started or stopped the recorder: make (or close) the lecture straight away.
+      n.addListener('state', d => { if (d?.recording) this.catchUp().catch(console.warn); else this._paint(); });
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) this.catchUp().catch(console.warn); });
       n.addListener('recorderError', async d => {
         const l = await this.current();
         if (l) { l.error = d.message; await this.save(l); this._paint(); }
       });
     } catch (e) { console.warn('could not listen for recorder events', e); }
 
-    // Each step on its own: a failure in one must not stop the others.
-    let live = null;
-    try { live = await this.adoptNative(); } catch (e) { console.warn('could not adopt the running recording', e); }
-    try { await this.recoverSessions(live); } catch (e) { console.warn('could not recover tile recordings', e); }
+    await this.catchUp();
   }
 };

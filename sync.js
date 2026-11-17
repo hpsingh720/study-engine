@@ -245,7 +245,10 @@ const BookText = {
       if (!idx.books.length) return 0;
       const have = this.remote();
       for (const b of idx.books) {
-        if (own.some(o => o.id === b.id || (o.size && o.size === b.size))) continue;   // this device already has that book itself
+        // This device has the book itself — but only skip it if its own copy has been read (has text).
+        // A copy added here and never read left the phone with no text and the laptop's never came.
+        const mine = own.find(o => o.id === b.id || (o.size && o.size === b.size));
+        if (mine && (await DB.count('pages', 'bookId', mine.id)) >= 20) continue;
         const old = have.find(x => x.id === b.id);
         if (old && old.ver === b.ver && old.complete) continue;
         for (let k = 0; k < b.chunks; k += 5) {

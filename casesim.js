@@ -31,7 +31,7 @@ const CaseSim = {
 
   // ---- the book every case is built from ----
   // Every textbook on this device, Boloor (and other clinical-methods books) at the top.
-  async books() { return typeof TechBook !== 'undefined' ? (await TechBook.all()).sort((a, b) => TechBook.rank(a) - TechBook.rank(b)) : []; },
+  async books() { return typeof TechBook !== 'undefined' ? (await TechBook.all()).sort((a, b) => ((b.pages >= 3) - (a.pages >= 3)) || TechBook.rank(a) - TechBook.rank(b)) : []; },
   pickedBook(books) { const id = localStorage.getItem('caseBook'); return books.find(b => b.id === id) ? id : (books[0]?.id || 'none'); },
 
   /**
@@ -89,8 +89,10 @@ ${excerptBlock(pages)}` }).catch(() => null);
     const book = bookId && bookId !== 'none' ? (await this.books()).find(b => b.id === bookId) : null;
     let pages = [], proforma = Promise.resolve([]);
     if (book) {
+      const name = book.short || book.name;
+      if ((book.pages || 0) < 3) throw new Error(`${name}'s text is not on this device yet, so no case can be made from it. On the laptop, open the app and leave it open a few minutes — it sends the text. Then on this phone tap "Ask books" once to download it. Or pick another book.`);
       pages = await this.bookPages(book, topic);
-      if (!pages.length) throw new Error(topic ? `"${topic}" is not in ${book.short || book.name}. Leave the condition empty for a case the book covers, or pick "No book".` : `Could not find a case in ${book.short || book.name} — is it fully read into the app on this device?`);
+      if (!pages.length) throw new Error(topic ? `Could not find "${topic}" in ${name} (${book.pages} pages on this device). Check the spelling, try a shorter name (e.g. "nephrotic" instead of "nephrotic syndrome in children"), or leave it empty for any case from the book.` : `Could not find a disease section in ${name} to build a case from. Type a condition instead.`);
       proforma = this.proforma(book).catch(() => []);
     }
     const fromBook = book ? `
@@ -130,11 +132,11 @@ RULES
   },
 
   // ---- the patient ----
-  async reply(question) {
-    const c = this.c, k = c.case, p = k.patient;
-    c.chat.push({ who: 'you', text: question, at: Date.now() });
-    const langRule = { hi: 'Reply in Hindi, in Devanagari script, the way a patient speaks — simple everyday words.', pa: 'Reply in Punjabi, in Gurmukhi script, the way a patient from Punjab speaks.', en: 'Reply in simple Indian English.', mix: 'Reply in Hinglish written in Latin letters, the way patients mix Hindi and English.' }[c.lang] || 'Reply in simple Indian English.';
-    const system = `You are ${p.name}, ${p.age}, ${p.sex}, ${p.occupation} from ${p.place}${p.informant && !/self/i.test(p.informant) ? ` — actually you are the ${p.informant} of the patient, answering for them` : ''}. A medical student is taking your history in a hospital ward. Personality: ${p.personality}.
+  // Who the patient is and how they talk — shared by typed/spoken turns and live talk.
+  persona(c = this.c) {
+    const k = c.case, p = k.patient;
+    const home = { hi: 'Hindi', pa: 'Punjabi', en: 'simple Indian English', mix: 'Hinglish' }[c.lang] || 'simple Indian English';
+    return `You are ${p.name}, ${p.age}, ${p.sex}, ${p.occupation} from ${p.place}${p.informant && !/self/i.test(p.informant) ? ` — actually you are the ${p.informant} of the patient, answering for them` : ''}. A medical student is taking your history in a hospital ward. Personality: ${p.personality}.
 WHAT YOU KNOW (your own experience, in your own words): ${JSON.stringify(k.facts)}
 RULES — stay in character always:
 - Answer ONLY what was asked. Never volunteer other symptoms; a student must ask.
@@ -142,7 +144,14 @@ RULES — stay in character always:
 - If asked something not listed, give a natural answer that fits and stays consistent (usually "no" for symptoms not in your story).
 - Short: one to three sentences, like real speech. Show feeling where natural (worry, pain, embarrassment).
 - If the student is rude or uses jargon, be confused like a real patient.
-- ${langRule}
+- LANGUAGE: answer in the language the student is using right now — Punjabi, Hindi or English — the way a real patient from Punjab would. If they switch, you switch. Before they say anything, use ${home}. The student's Punjabi may reach you written in Urdu (Shahmukhi) letters or Latin letters: it is still Punjabi — understand it.`;
+  },
+
+  async reply(question) {
+    const c = this.c;
+    c.chat.push({ who: 'you', text: question, at: Date.now() });
+    const system = `${this.persona(c)}
+- WRITING: Punjabi always in Gurmukhi script (ਗੁਰਮੁਖੀ), never Urdu/Shahmukhi letters. Hindi in Devanagari. Hinglish in Latin letters. English in English.
 Return JSON: {"reply":"","mood":"calm|anxious|pain|tired|confused"}`;
     const convo = c.chat.slice(-24).map(m => `${m.who === 'you' ? 'Student' : 'You'}: ${m.text}`).join('\n');
     let out;
@@ -155,10 +164,26 @@ Return JSON: {"reply":"","mood":"calm|anxious|pain|tired|confused"}`;
     return text;
   },
 
+  // The voice follows the script of what is being said, not the language picked at the start.
+  langOf(text, c = this.c) {
+    if (/[\u0A00-\u0A7F]/.test(text)) return 'pa-IN';
+    if (/[\u0900-\u097F]/.test(text)) return 'hi-IN';
+    if (/[\u0600-\u06FF]/.test(text)) return 'ur-IN';
+    return /[a-z]/i.test(text) ? 'en-IN' : this.langCode(c);
+  },
+
+  // What Whisper should expect to hear, written in the right letters — so Punjabi comes out in
+  // Gurmukhi rather than Urdu.
+  hearing(c = this.c) {
+    if (c.lang === 'pa') return { language: 'pa', prompt: 'ਡਾਕਟਰ ਮਰੀਜ਼ ਤੋਂ ਪੁੱਛ ਰਿਹਾ ਹੈ: ਤੁਹਾਨੂੰ ਕੀ ਤਕਲੀਫ਼ ਹੈ? ਕਿੰਨੇ ਦਿਨਾਂ ਤੋਂ? ਬੁਖ਼ਾਰ, ਖੰਘ, ਸਾਹ ਚੜ੍ਹਨਾ, ਪੇਟ ਦਰਦ, ਪਿਸ਼ਾਬ?' };
+    if (c.lang === 'hi') return { language: 'hi', prompt: 'डॉक्टर मरीज़ से पूछ रहा है: आपको क्या तकलीफ़ है? कितने दिनों से? बुखार, खांसी, सांस फूलना, पेट दर्द?' };
+    return { language: '', prompt: 'A doctor taking a history from a patient in a ward, in English, Hindi or Punjabi.' };
+  },
+
   async speakPatient(text) {
     const c = this.c, p = c.case.patient;
     const style = { anxious: 'sounding worried', pain: 'a little strained, without moaning', tired: 'sounding tired', confused: 'sounding unsure' }[c.mood] || '';
-    await Voice.say(text, { lang: this.langCode(c), voice: this.voiceFor(p), style });
+    await Voice.say(text, { lang: this.langOf(text, c), voice: this.voiceFor(p), style });
   },
 
   // ---- examination outside the technique list ----
@@ -207,11 +232,12 @@ ${techLog}
 Other examination: ${c.exams.filter(e => e.kind === 'other').map(e => e.what).join('; ') || 'none'}
 Tests ordered: ${c.tests.map(t => t.test).join(', ') || 'none'}
 
-CASE SHEET WRITTEN:
-${Object.entries(c.sheet).filter(([, v]) => v?.trim()).map(([h, v]) => `## ${h}\n${v}`).join('\n').slice(0, 12000) || '(not written)'}
-
-PRESENTATION AS SPOKEN:
-${c.presentation || '(not presented aloud)'}
+DIAGNOSIS GIVEN:
+Summary: ${c.dx?.summary || '—'}
+Provisional: ${c.dx?.provisional || '(none)'}
+Differentials: ${(c.dx?.ddx || []).filter(x => x?.name).map(x => `${x.name} (for: ${x.for || '—'}; against: ${x.against || '—'})`).join(' | ') || '(none)'}
+${Object.values(c.sheet || {}).some(v => v?.trim()) ? `Case sheet notes:\n${Object.entries(c.sheet).filter(([, v]) => v?.trim()).map(([h, v]) => `## ${h}\n${v}`).join('\n').slice(0, 6000)}` : ''}
+${c.presentation ? `Presented aloud: ${c.presentation}` : ''}
 
 Return JSON:
 {"score":0,"verdict":"one line, as an examiner would say it",
@@ -219,11 +245,84 @@ Return JSON:
 "examination":{"good":[""],"missed":["examinations not done"],"technique":["technique errors seen, said plainly"]},
 "presentation":{"good":[""],"improve":[""]},
 "diagnosis":{"correct":true,"comment":""},
-"viva":["5 questions to ask now, starting from the student's own diagnosis and findings"]}
+"viva":["4 questions to ask now, starting from the student's own diagnosis and findings — short, one line each"]}
 score is out of 10.` });
     c.report = out;
-    c.vivaQs = (out?.viva || []).slice(0, 5);
+    c.vivaQs = (out?.viva || []).slice(0, 4);
     c.stage = 'viva';
+    this.save();
+    return out;
+  },
+
+  // Who takes the viva — the same examiner for the whole case.
+  examiner(c = this.c) {
+    const list = [{ name: 'Dr. Gurpreet Singh Sandhu', sex: 'male', voice: 'Puck' }, { name: 'Dr. Anita Sharma', sex: 'female', voice: 'Kore' },
+      { name: 'Dr. R. K. Gupta', sex: 'male', voice: 'Charon' }, { name: 'Dr. Harjeet Kaur Gill', sex: 'female', voice: 'Aoede' }];
+    const h = [...String(c?.id || 'x')].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) >>> 0, 3);
+    return { ...list[h % list.length], age: 56, role: 'examiner' };
+  },
+
+  // A nudge for the next step, worked out on the phone at once — no waiting for the AI.
+  hint() {
+    const c = this.c, k = c.case;
+    c.hintN = (c.hintN || 0) + 1;
+    const words = t => String(t).toLowerCase().split(/[^a-z\u0900-\u0a7f]+/).filter(w => w.length > 3 && !/^(what|when|with|from|that|this|have|does|your|about|history|patient|there|their|which|ever|since|after|before|asked|ask)$/.test(w));
+    const pick = arr => arr.length ? arr[(c.hintN - 1) % arr.length] : null;
+    if (c.stage === 'history') {
+      // Word stems (first four letters), so "puffy" counts for "puffiness".
+      const said = new Set(words(c.chat.filter(m => m.who === 'you').map(m => m.text).join(' ')).map(w => w.slice(0, 4)));
+      const left = (k.keyHistory || []).map(x => String(x).replace(/\s*\[[^\]]*\]\s*$/, '')).filter(x => !words(x).some(w => said.has(w.slice(0, 4))));
+      const x = pick(left);
+      return x ? `Ask about: ${x}` : 'You have covered the key history. Move on to the examination.';
+    }
+    if (c.stage === 'exam') {
+      const done = new Set(c.exams.filter(e => e.kind === 'tech').map(e => e.id));
+      const quiet = /^(absent|normal|not (raised|present|applicable|seen|felt|palpable|elicited)|nil|none|no |within normal)/i;
+      const want = TECHNIQUES.filter(t => !done.has(t.id) && k.exam?.[t.finding] && !quiet.test(String(k.exam[t.finding]).trim()));
+      const x = pick(want);
+      if (x) return `Examine: ${x.name}.`;
+      if (!c.exams.some(e => e.what === 'Vitals')) return 'Take the vitals.';
+      const sys = k.exam?.other || {};
+      const area = Object.keys(sys).find(a => sys[a] && !c.exams.some(e => e.kind === 'other' && e.what.toLowerCase().includes(a.split('-')[0])));
+      return area ? `Do the ${area} of the system involved — type what you do in "Anything else".` : 'Examination is enough. Order tests.';
+    }
+    if (c.stage === 'tests') {
+      const ordered = c.tests.map(t => t.test.toLowerCase());
+      const x = pick(Object.keys(k.tests || {}).filter(n => !ordered.some(o => n.toLowerCase().includes(o) || o.includes(n.toLowerCase()))));
+      return x ? `Order: ${x}.` : 'You have the key tests. Go to Diagnosis.';
+    }
+    if (c.stage === 'dx') {
+      const pos = (k.keyHistory || []).slice(0, 3).map(x => String(x).replace(/\s*\[[^\]]*\]\s*$/, ''));
+      return `Put together: ${pos.join('; ')}. Which one condition explains all of it? Then list 2–3 that look similar.`;
+    }
+    if (c.stage === 'viva') return 'Start your answer with a definition or classification, then causes, then what you would do — examiners like that order.';
+    return '';
+  },
+
+  // The student's diagnosis board, checked: are they thinking along the right lines?
+  async interpret() {
+    const c = this.c, k = c.case, d = c.dx || {};
+    const board = (d.ddx || []).filter(x => x?.name?.trim()).map(x => `- ${x.name} | for: ${x.for || '—'} | against / to rule out: ${x.against || '—'}`).join('\n') || '(none)';
+    const out = await AI.call({ system: SYSTEM_TUTOR, temperature: 0.2, model: AI.bulkModel, prompt: `An MBBS final-year student has just finished a ${c.kind} case and committed to a diagnosis. Check their thinking — briefly, like a good senior at the bedside.
+
+THE CASE: ${JSON.stringify({ diagnosis: k.diagnosis, differentials: k.differentials, keyHistory: k.keyHistory, exam: k.exam, tests: k.tests })}
+${c.excerpt ? `\nFrom the book (${c.book.name}) — agree with it and cite its page:\n${c.excerpt.slice(0, 9000)}\n` : ''}
+THE STUDENT:
+One-line summary: ${d.summary || '—'}
+Provisional diagnosis: ${d.provisional || '—'}
+Differentials:
+${board}
+Findings they found: ${c.exams.map(e => `${e.kind === 'tech' ? TECH[e.id]?.name : e.what}: ${e.finding}`).join('; ').slice(0, 2500) || 'none'}
+Tests they saw: ${c.tests.map(t => t.result).join('; ').slice(0, 1500) || 'none'}
+
+Return JSON:
+{"correct":true,"verdict":"one line — right, nearly, or wrong, and why",
+"answer":"the diagnosis in full, as an examiner would want it written (with type, cause and complications if any)",
+"clues":["the 3-5 findings that point to it"],
+"ddx":[{"name":"their differential","ok":true,"comment":"is the for/against right? the one thing that rules it in or out"}],
+"missed":["an important differential they did not list"],
+"tip":"one line to think better next time"}` });
+    c.dxCheck = out;
     this.save();
     return out;
   },
@@ -261,8 +360,9 @@ function patientFace(p, mood) {
   const h = [...String(p?.name || 'x')].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) >>> 0, 7);
   const tones = [['#d2a27c', '#b5845f'], ['#c08d66', '#a2714d'], ['#a8774f', '#8a5f3c'], ['#dcb08c', '#bf9068']];
   const [skin, shade] = tones[h % tones.length];
-  const hair = old ? '#bdbab5' : '#231913';
-  const cloth = ['#3d5a80', '#6b4f7a', '#2f6b5e', '#8a4b3a', '#4f5d75'][h % 5];
+  const hair = old || p?.role === 'examiner' ? '#9e9a94' : '#231913';
+  const examiner = p?.role === 'examiner';
+  const cloth = examiner ? '#f3f3ef' : ['#3d5a80', '#6b4f7a', '#2f6b5e', '#8a4b3a', '#4f5d75'][h % 5];
   const dupatta = ['#c2556f', '#d08b3a', '#5e8fb5', '#8a6fb0', '#c76b4a'][(h >>> 3) % 5];
   // Turban colours seen in a Punjab ward: navy, maroon, kesri, white, olive, pink, sky blue. Never
   // black — a black dome on the head read as a cap. Older men more often wear white or navy.
@@ -271,7 +371,7 @@ function patientFace(p, mood) {
   const light = /f1eee6|e0861c|4f86c6/.test(turban);
   const fold = light ? 'rgba(90,60,30,.22)' : 'rgba(0,0,0,.28)', shine = light ? 'rgba(255,255,255,.55)' : 'rgba(255,255,255,.16)';
   const fifty = turban === '#e0861c' ? '#1f3a7a' : turban === '#f1eee6' ? '#7d1f33' : '#e0861c';   // the thin under-strip at the forehead
-  const covered = female && (old || age > 45);              // older women here usually keep the dupatta over the head
+  const covered = female && !examiner && (old || age > 45);              // older women here usually keep the dupatta over the head
   const beard = sikh && !female && age > 17, moustache = !female && age > 22 && !beard;
   const eyeY = child ? 104 : 100, eyeS = child ? 1.18 : 1;
   const squint = mood === 'pain', heavy = mood === 'tired';
@@ -293,7 +393,7 @@ function patientFace(p, mood) {
   // shoulders and clothes
   parts.push(`<path d="M14 232 Q18 184 68 172 L132 172 Q182 184 186 232 Z" fill="${cloth}"/>`);
   if (!female) parts.push(`<path d="M88 172 L100 198 L112 172" fill="none" stroke="rgba(0,0,0,.25)" stroke-width="3"/><circle cx="100" cy="206" r="2" fill="rgba(255,255,255,.5)"/><circle cx="100" cy="218" r="2" fill="rgba(255,255,255,.5)"/>`);
-  else parts.push(`<path d="M30 190 Q100 222 176 184 L184 206 Q100 244 26 210 Z" fill="${dupatta}" opacity=".92"/>`);
+  else if (!examiner) parts.push(`<path d="M30 190 Q100 222 176 184 L184 206 Q100 244 26 210 Z" fill="${dupatta}" opacity=".92"/>`);
   parts.push(`<path d="M86 138 L86 176 Q100 186 114 176 L114 138 Z" fill="${shade}"/>`);
   if (!covered && !(sikh && !female)) parts.push(`<ellipse cx="59" cy="104" rx="7" ry="12" fill="${skin}"/><ellipse cx="141" cy="104" rx="7" ry="12" fill="${skin}"/>`);
   if (female && !covered) parts.push(`<circle cx="59" cy="117" r="2.6" fill="#d8b04a"/><circle cx="141" cy="117" r="2.6" fill="#d8b04a"/>`);
@@ -329,6 +429,12 @@ function patientFace(p, mood) {
   parts.push(`<path d="${corners}" stroke="#8f4a44" stroke-width="2.6" fill="none" stroke-linecap="round"/>`);
   parts.push(`<ellipse id="mouth" cx="100" cy="138" rx="9" ry="0.5" fill="#5a2424"/>`);
   if (beard || moustache) parts.push(`<path d="M83 132 Q92 126 100 129 Q108 126 117 132 Q108 137 100 134 Q92 137 83 132 Z" fill="${hair}"/>`);
+  // The examiner: white coat over a shirt, stethoscope round the neck, reading glasses.
+  if (examiner) parts.push(`<path d="M80 172 L100 232 L120 172 Z" fill="#cdd7e4"/>${female ? '' : '<path d="M97 180 L103 180 L105 216 L100 224 L95 216 Z" fill="#7d1f33"/>'}
+      <path d="M68 172 L96 232 M132 172 L104 232" stroke="#d2d2cc" stroke-width="3"/>
+      <path d="M78 174 Q66 214 92 222 M122 174 Q134 214 108 222" fill="none" stroke="#2b2b2b" stroke-width="3"/><circle cx="100" cy="224" r="6" fill="#8a8a8a" stroke="#444" stroke-width="2"/>
+      <g fill="rgba(220,235,255,.18)" stroke="#2a2a2a" stroke-width="2.4"><rect x="68" y="${eyeY - 10}" width="28" height="20" rx="7"/><rect x="104" y="${eyeY - 10}" width="28" height="20" rx="7"/></g>
+      <path d="M96 ${eyeY - 2} Q100 ${eyeY - 5} 104 ${eyeY - 2} M68 ${eyeY - 4} L60 ${eyeY - 7} M132 ${eyeY - 4} L140 ${eyeY - 7}" fill="none" stroke="#2a2a2a" stroke-width="2.2"/>`);
   return `<svg class="face" viewBox="0 0 200 232" aria-hidden="true">${parts.join('')}</svg>`;
 }
 
@@ -358,14 +464,14 @@ Views.cases = async (sub) => {
       <a class="btn ghost" href="#/drills">Examination drills</a></header>
     ${c && c.stage !== 'report' ? `<section class="card due"><div class="row between mid"><div><b>Case in progress</b><br><span class="muted small">${esc(c.case.patient.name)}, ${esc(String(c.case.patient.age))}</span></div><a class="btn primary" href="#/cases/run">Continue</a></div></section>` : ''}
     <form class="card mt" data-submit="caseStart">
-      <p class="muted">A patient who talks. Take the history by voice, examine with your hands on the drawing, order tests, write the case sheet, present it, then face the viva.</p>
+      <p class="muted">A patient who talks. Take the history by voice, examine on the drawing, order tests, give your diagnosis and differentials, then face the viva. About 15 minutes.</p>
       <div class="grid2">
         <label>Subject<select name="subject">${Object.entries(SUBJECTS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
         <label>Case<select name="kind"><option value="long">Long case</option><option value="short">Short case</option></select></label>
         <label>Patient speaks<select name="lang">${Object.entries(LANGS).map(([k, v]) => `<option value="${k}" ${k === 'mix' ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
         <label>Difficulty<select name="difficulty"><option>usual exam case</option><option>straightforward</option><option>tricky</option></select></label>
       </div>
-      <label>From the book<select name="book">${books.map(b => `<option value="${esc(b.id)}" ${pick === b.id ? 'selected' : ''}>${esc(b.short || b.name)}${b.remote && !b.complete ? ' (text still coming from the laptop)' : ''}</option>`).join('')}<option value="none" ${pick === 'none' ? 'selected' : ''}>No book — any condition</option></select></label>
+      <label>From the book<select name="book">${books.map(b => `<option value="${esc(b.id)}" ${pick === b.id ? 'selected' : ''}>${esc(b.short || b.name)}${(b.pages || 0) < 3 ? ' — text not on this device' : b.remote && !b.complete ? ' (text still coming from the laptop)' : ''}</option>`).join('')}<option value="none" ${pick === 'none' ? 'selected' : ''}>No book — any condition</option></select></label>
       ${books.length && TechBook.rank(books[0]) ? `<p class="muted small">Boloor isn't on this device yet. Read it into the Library on the laptop; its text then comes across to the phone and iPad by itself.</p>` : ''}
       <label>Condition (optional)<input name="topic" placeholder="Leave empty for a case the book covers — or e.g. nephrotic syndrome"></label>
       ${CaseSim._lastErr && !CaseSim._creating ? `<p class="form-err danger small">${esc(CaseSim._lastErr)}</p>` : ''}
@@ -377,19 +483,34 @@ Views.cases = async (sub) => {
 
 function caseRun(c) {
   const k = c.case, p = k.patient;
-  const stages = [['history', 'History'], ['exam', 'Examination'], ['tests', 'Tests'], ['sheet', 'Case sheet'], ['present', 'Present'], ['viva', 'Viva']];
+  // Five steps, about 15 minutes: the long case-sheet and the spoken presentation are folded into
+  // one short Diagnosis step (the presentation is still there, optional, inside it).
+  if (c.stage === 'sheet' || c.stage === 'present') c.stage = 'dx';
+  const stages = [['history', 'History'], ['exam', 'Exam'], ['tests', 'Tests'], ['dx', 'Diagnosis'], ['viva', 'Viva']];
   const stageBar = `<nav class="tabs case-tabs">${stages.map(([s, l]) => `<button class="tab ${c.stage === s ? 'on' : ''}" data-act="caseStage" data-s="${s}">${l}</button>`).join('')}</nav>`;
   // In a child's case the mother (or father) is the one answering — so it is her face you talk to.
   const inf = p.informant && !/self/i.test(p.informant) ? p.informant : '';
   const speaker = inf ? { name: p.name, sex: /father|papa|pita/i.test(inf) ? 'male' : 'female', age: 32 } : p;
-  const face = `<div class="case-face">${patientFace(speaker, c.mood)}<div><b>${esc(p.name)}</b><br><span class="muted small">${esc(String(p.age))} · ${esc(p.sex)} · ${esc(p.occupation || '')}${p.informant && !/self/i.test(p.informant) ? ` · history from ${esc(p.informant)}` : ''}</span></div></div>`;
+  const ex = CaseSim.examiner(c);
+  // The viva is taken by the examiner — their face, not the patient's.
+  const face = c.stage === 'viva'
+    ? `<div class="case-face">${patientFace(ex, 'calm')}<div><b>${esc(ex.name)}</b><br><span class="muted small">Examiner · ${c.kind === 'short' ? 'short' : 'long'} case viva</span></div></div>`
+    : `<div class="case-face">${patientFace(speaker, c.mood)}<div><b>${esc(p.name)}</b><br><span class="muted small">${esc(String(p.age))} · ${esc(p.sex)} · ${esc(p.occupation || '')}${p.informant && !/self/i.test(p.informant) ? ` · history from ${esc(p.informant)}` : ''}</span></div></div>`;
+  const tools = `<div class="row between mid case-tools"><span class="case-clock" id="case-clock">${caseClock(c)}</span><button class="btn ghost sm" data-act="caseHint">Hint</button></div>
+    ${c.lastHint && c.lastHint.stage === c.stage ? `<div class="hint-card">${esc(c.lastHint.text)}</div>` : ''}`;
   let body = '';
   if (c.stage === 'history') {
-    body = `<div class="chat" id="case-chat">${c.chat.map(m => `<div class="msg ${m.who}">${esc(m.text)}</div>`).join('') || '<p class="muted small center">Greet the patient and start. Tap the microphone and speak, or type.</p>'}</div>
-      <div class="chat-in"><button class="btn primary mic" data-act="caseTalk" aria-label="Speak">Speak</button>
-        <form data-submit="caseAsk" class="row gap grow"><input name="q" placeholder="Or type your question" autocomplete="off"><button class="btn">Ask</button></form></div>
+    const live = typeof LiveTalk !== 'undefined' && LiveTalk.on;
+    body = `<div class="chat" id="case-chat">${c.chat.map(m => `<div class="msg ${m.who}">${esc(m.text)}</div>`).join('') || '<p class="muted small center">Greet the patient and start. Tap Talk live and just talk — or Speak one question at a time, or type.</p>'}</div>
+      ${live ? `<div class="live-bar"><span class="live-dot"></span><span id="live-state" class="grow">Live — just talk. Talk over the patient to cut in.</span>
+          <button class="btn sm" data-act="caseLiveMute">${LiveTalk.muted ? 'Unmute' : 'Mute'}</button><button class="btn sm danger-b" data-act="caseLiveEnd">End talk</button></div>`
+        : `<button class="btn primary full lg live-go" data-act="caseLive">Talk live</button>`}
+      <div class="chat-in">${live ? '' : '<button class="btn mic" data-act="caseTalk" aria-label="Speak">Speak</button>'}
+        <form data-submit="caseAsk" class="row gap grow"><input name="q" placeholder="${live ? 'Or type — it goes down the live line' : 'Or type your question'}" autocomplete="off"><button class="btn">Ask</button></form></div>
       <div class="vq-meter"><i id="vq-lvl"></i></div>`;
   } else if (c.stage === 'exam') {
+    // The examination steps come from the clinical book (Boloor): read them now if not yet done.
+    setTimeout(() => TechBook.autoLearn().catch(() => {}), 2000);
     const done = new Map(c.exams.filter(e => e.kind === 'tech').map(e => [e.id, e]));
     const groups = {}; TECHNIQUES.forEach(t => (groups[t.group] ||= []).push(t));
     body = `<p class="muted small">Do it the way you would at the bedside. A finding only comes if the technique is right.</p>
@@ -401,15 +522,30 @@ function caseRun(c) {
   } else if (c.stage === 'tests') {
     body = `<form data-submit="caseOrder" class="row gap"><input name="q" placeholder="Order a test — e.g. urine routine, serum albumin, chest X-ray" class="grow"><button class="btn primary">Order</button></form>
       <div class="list mt">${c.tests.map(t => `<div class="pad">${esc(t.result)}</div>`).join('') || '<p class="muted small pad">Nothing ordered yet. Order what you would justify to the examiner.</p>'}</div>`;
-  } else if (c.stage === 'sheet') {
-    body = `<p class="muted small">Write it as you would in the exam. Saved as you type.</p>
-      ${CaseSim.format(c).map(h => `<label class="sheet-h">${esc(h)}<textarea rows="3" data-input="caseSheet" data-h="${esc(h)}">${esc(c.sheet[h] || '')}</textarea></label>`).join('')}`;
-  } else if (c.stage === 'present') {
-    body = `<p>Present the case to the examiner, out loud, as you would at the bedside. Up to five minutes; stop when you are done.</p>
-      <button class="btn primary full lg" data-act="casePresent">Start presenting</button>
-      <div class="vq-meter mt"><i id="vq-lvl"></i></div>
-      ${c.presentation ? `<div class="card soft mt"><p class="eyebrow">What the examiner heard</p><p class="small">${esc(c.presentation)}</p></div>` : ''}
-      <button class="btn full mt" data-act="caseMark">${c.presentation ? 'Hand over to the examiner' : 'Skip — use my written case sheet'}</button>`;
+  } else if (c.stage === 'dx') {
+    const d = c.dx ||= { summary: '', provisional: '', ddx: [{}, {}, {}] };
+    const chk = c.dxCheck;
+    body = `<p class="muted small">Two or three minutes. What is it, what else could it be, and what rules each one in or out?</p>
+      <label>Provisional diagnosis<input data-input="caseDx" data-k="provisional" value="${esc(d.provisional || '')}" placeholder="e.g. Nephrotic syndrome, likely minimal change disease" autocomplete="off"></label>
+      <label>One-line summary <span class="muted small">(optional)</span><input data-input="caseDx" data-k="summary" value="${esc(d.summary || '')}" placeholder="e.g. 6-year-old boy, 2 weeks of facial puffiness and frothy urine" autocomplete="off"></label>
+      <p class="eyebrow mt">Differentials</p>
+      <div class="ddx">${d.ddx.map((x, i) => `<div class="ddx-row">
+        <input data-input="caseDdx" data-i="${i}" data-f="name" value="${esc(x.name || '')}" placeholder="Differential ${i + 1}" autocomplete="off">
+        <input data-input="caseDdx" data-i="${i}" data-f="for" value="${esc(x.for || '')}" placeholder="For it — what fits" autocomplete="off">
+        <input data-input="caseDdx" data-i="${i}" data-f="against" value="${esc(x.against || '')}" placeholder="Against it / how to rule out" autocomplete="off"></div>`).join('')}</div>
+      ${d.ddx.length < 5 ? '<button class="btn ghost sm" data-act="caseDdxAdd">+ Another differential</button>' : ''}
+      <button class="btn primary full mt" data-act="caseInterpret">${chk ? 'Check again' : 'Check my thinking'}</button>
+      ${chk ? `<div class="card soft mt dx-check ${chk.correct ? 'ok' : 'bad'}">
+        <p><b>${chk.correct ? 'Right track.' : 'Not quite.'}</b> ${esc(chk.verdict || '')}</p>
+        <p class="small"><b>Diagnosis:</b> ${esc(chk.answer || c.case.diagnosis)}</p>
+        ${chk.clues?.length ? `<p class="eyebrow mt">The clues</p><ul class="small">${chk.clues.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+        ${chk.ddx?.length ? `<p class="eyebrow mt">Your differentials</p><ul class="small">${chk.ddx.map(x => `<li class="${x.ok ? 'ok-t' : 'warn-t'}"><b>${esc(x.name)}</b> — ${esc(x.comment || '')}</li>`).join('')}</ul>` : ''}
+        ${chk.missed?.length ? `<p class="small"><b>Also think of:</b> ${esc(chk.missed.join(', '))}</p>` : ''}
+        ${chk.tip ? `<p class="small muted">${esc(chk.tip)}</p>` : ''}</div>` : ''}
+      <button class="btn full mt ${chk ? 'primary' : ''}" data-act="caseMark">Go to the viva</button>
+      <details class="mt"><summary class="small muted">Present aloud (optional)</summary>
+        <button class="btn full mt" data-act="casePresent">Start presenting</button><div class="vq-meter mt"><i id="vq-lvl"></i></div>
+        ${c.presentation ? `<p class="small mt">${esc(c.presentation)}</p>` : ''}</details>`;
   } else if (c.stage === 'viva') {
     const asked = c.viva.length, q = c.vivaQs?.[asked];
     body = `${c.viva.map(v => `<div class="viva-item"><p><b>Examiner:</b> ${esc(v.q)}</p><p><b>You:</b> ${esc(v.answer || '—')}</p><p class="${v.verdict === 'good' ? 'ok-t' : v.verdict === 'partial' ? 'warn-t' : 'danger'}">${esc(v.say || '')}</p>${v.verdict !== 'good' ? `<p class="muted small">Better: ${esc(v.ideal || '')}</p>` : ''}</div>`).join('')}
@@ -422,8 +558,18 @@ function caseRun(c) {
   return `<div class="page case-page">
     <header class="page-head"><div><p class="eyebrow"><a class="link" href="#/cases">Clinical cases</a> · ${esc(SUBJECTS[c.subject])} · ${c.kind === 'short' ? 'short' : 'long'} case</p></div>
       <div class="row gap"><button class="btn ghost sm" data-act="voiceMode">${Voice.natural() ? 'Natural voice' : 'Phone voice'}</button><button class="btn ghost sm" data-act="caseQuit">End case</button></div></header>
-    ${face}${stageBar}<section class="card mt case-body">${body}</section></div>`;
+    ${face}${stageBar}${tools}<section class="card mt case-body">${body}</section></div>`;
 }
+
+// Time on this case, against a 15-minute target.
+function caseClock(c) {
+  const s = Math.max(0, Math.round((Date.now() - (c.started || Date.now())) / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} <span class="muted">/ 15:00</span>`;
+}
+setInterval(() => {
+  const el = document.getElementById('case-clock');
+  if (el && CaseSim.c && !document.hidden) el.innerHTML = caseClock(CaseSim.c);
+}, 1000);
 
 function caseReport(c) {
   const r = c.report || {}, k = c.case;
@@ -434,7 +580,8 @@ function caseReport(c) {
       <p class="small">Diagnosis: <b>${esc(k.diagnosis)}</b> · ${r.diagnosis?.correct ? 'you got it' : 'you missed it'}${r.diagnosis?.comment ? ' — ' + esc(r.diagnosis.comment) : ''} · Viva ${vg}/${c.viva.length}</p></section>
     <section class="card mt"><h3>History</h3>${list('Done well', r.history?.good)}${list('Not asked', r.history?.missed, 'bad-list')}</section>
     <section class="card mt"><h3>Examination</h3>${list('Technique errors', r.examination?.technique, 'bad-list')}${list('Not examined', r.examination?.missed, 'bad-list')}${list('Done well', r.examination?.good)}</section>
-    <section class="card mt"><h3>Presentation</h3>${list('Good', r.presentation?.good)}${list('Improve', r.presentation?.improve)}</section>
+    ${c.dx?.provisional ? `<section class="card mt"><h3>Your diagnosis</h3><p class="small">${esc(c.dx.provisional)}${c.dxCheck?.verdict ? ' — ' + esc(c.dxCheck.verdict) : ''}</p>${list('Your differentials', (c.dx.ddx || []).filter(x => x?.name).map(x => x.name))}</section>` : ''}
+    ${c.presentation ? `<section class="card mt"><h3>Presentation</h3>${list('Good', r.presentation?.good)}${list('Improve', r.presentation?.improve)}</section>` : ''}
     <section class="card mt"><h3>The case</h3><p class="small">${esc(k.diagnosis)} · differentials: ${esc((k.differentials || []).join(', '))}${c.book ? ` · from ${esc(c.book.name)} ${esc(k.source || '')}` : ''}</p>
       ${list('What the examiner expected you to ask', k.keyHistory)}
       <p class="eyebrow mt">Tests</p><p class="small">${esc(Object.entries(k.tests || {}).map(([a, b]) => `${a}: ${b}`).join(' · '))}</p></section>
@@ -442,19 +589,43 @@ function caseReport(c) {
 }
 
 Object.assign(A, {
-  async caseStage(el) { CaseSim.c.stage = el.dataset.s; CaseSim.save(); Voice.stop(); App.render(); },
+  async caseLive(el) {
+    if (el.dataset.busy) return;
+    el.dataset.busy = '1'; el.disabled = true; el.innerHTML = '<span class="spin"></span>Connecting';
+    const c = CaseSim.c, p = c.case.patient;
+    const earlier = c.chat.slice(-30).map(m => `${m.who === 'you' ? 'Student' : 'You'}: ${m.text}`).join('\n');
+    const system = `${CaseSim.persona(c)}
+- You are speaking out loud at the bedside. Talk like a real person: natural, unhurried, never read lists. Do not say you are an AI.
+- If the student greets you, greet them back and wait for their questions.${earlier ? `\nWHAT HAS BEEN SAID SO FAR (carry on from here, do not repeat yourself):\n${earlier}` : ''}`;
+    try {
+      await LiveTalk.start({
+        system, voice: CaseSim.voiceFor(p),
+        onYou: (t, done) => liveBubble('you', t, done),
+        onThem: (t, done) => liveBubble('patient', t, done),
+        onLevel: v => { const b = document.getElementById('vq-lvl'); if (b) b.style.width = Math.round(v * 100) + '%'; },
+        onState: (s, why) => { if (s === 'ended' || s === 'error') { if (why) toast(why, 9000); if (location.hash.startsWith('#/cases/run')) App.render(true); } }
+      });
+      App.render(true);
+    } catch (e) {
+      toast(e.message || String(e), 9000);
+      el.innerHTML = 'Talk live'; el.disabled = false; delete el.dataset.busy;
+    }
+  },
+  caseLiveMute(el) { const m = LiveTalk.mute(); el.textContent = m ? 'Unmute' : 'Mute'; const st = document.getElementById('live-state'); if (st) st.textContent = m ? 'Muted — the patient cannot hear you.' : 'Live — just talk. Talk over the patient to cut in.'; },
+  caseLiveEnd() { LiveTalk.stop(); App.render(true); },
+  async caseStage(el) { CaseSim.c.stage = el.dataset.s; CaseSim.save(); LiveTalk.stop(); Voice.stop(); App.render(); },
   async caseTalk(el) {
     if (el.dataset.busy) return;
     el.dataset.busy = '1'; el.disabled = true; el.innerHTML = '<span class="spin"></span>Listening';
     try {
-      const q = await Voice.listen({ prompt: 'A doctor taking a history from a patient in a ward, in English, Hindi or Punjabi.', onLevel: v => { const b = document.getElementById('vq-lvl'); if (b) b.style.width = Math.round(v * 100) + '%'; } });
+      const q = await Voice.listen({ ...CaseSim.hearing(), onLevel: v => { const b = document.getElementById('vq-lvl'); if (b) b.style.width = Math.round(v * 100) + '%'; } });
       if (q) await caseAskPatient(q);
     } catch (e) { toast(e.message || String(e), 8000); }
     finally { el.innerHTML = 'Speak'; el.disabled = false; delete el.dataset.busy; }
   },
   caseTech(el) {
     const id = el.dataset.id, f = CaseSim.c.case.exam?.[TECH[id].finding];
-    openStation(id, { finding: f || 'Normal.', done: s => {
+    openStation(id, { quick: true, finding: f || 'Normal.', done: s => {
       CaseSim.c.exams.push({ kind: 'tech', id, passed: s.passed, techniqueOk: s.techniqueOk, misses: s.checks.filter(x => !x.ok).map(x => x.msg), finding: s.techniqueOk ? (f || 'Normal') : 'not elicited (technique)', at: Date.now() });
       CaseSim.save();
     } });
@@ -473,15 +644,26 @@ Object.assign(A, {
       App.render(true);
     } catch (e) { toast(e.message || String(e), 8000); el.disabled = false; delete el.dataset.busy; }
   },
+  caseHint() { const c = CaseSim.c; c.lastHint = { stage: c.stage, text: CaseSim.hint() }; CaseSim.save(); App.render(true); },
+  caseDdxAdd() { const d = CaseSim.c.dx; d.ddx.push({}); CaseSim.save(); App.render(true); },
+  async caseInterpret(el) {
+    const d = CaseSim.c.dx || {};
+    if (!(d.provisional || '').trim()) { toast('Write your provisional diagnosis first.'); return; }
+    if (el.dataset.busy) return;
+    el.dataset.busy = '1'; el.disabled = true; el.innerHTML = '<span class="spin"></span>Checking your thinking';
+    try { await CaseSim.interpret(); App.render(true); }
+    catch (e) { toast(e.message || String(e), 9000); el.disabled = false; delete el.dataset.busy; el.textContent = 'Check my thinking'; }
+  },
   async caseMark(el) {
     if (el.dataset.busy) return;
+    if (!(CaseSim.c.dx?.provisional || '').trim() && !confirm('No provisional diagnosis written. Go to the viva anyway?')) return;
     el.dataset.busy = '1'; el.disabled = true; el.innerHTML = '<span class="spin"></span>The examiner is reading your case';
     try {
       await CaseSim.examine();
       App.render();
       const q = CaseSim.c.vivaQs?.[0];
-      if (q) Voice.say(q, { voice: 'Puck', lang: 'en-IN' });
-    } catch (e) { toast(e.message || String(e), 9000); el.disabled = false; delete el.dataset.busy; el.textContent = 'Hand over to the examiner'; }
+      if (q) Voice.say(q, { voice: CaseSim.examiner().voice, lang: 'en-IN' });
+    } catch (e) { toast(e.message || String(e), 9000); el.disabled = false; delete el.dataset.busy; el.textContent = 'Go to the viva'; }
   },
   async caseVivaTalk(el) {
     if (el.dataset.busy) return;
@@ -501,6 +683,24 @@ Object.assign(A, {
   }
 });
 
+// Live talk: words appear as they are said; a finished turn goes into the case record.
+function liveBubble(who, text, done) {
+  const c = CaseSim.c; if (!c) return;
+  const chat = document.getElementById('case-chat');
+  const id = 'live-' + who;
+  let el = document.getElementById(id);
+  if (chat) {
+    chat.querySelector('p.muted.center')?.remove();
+    if (!el) { el = document.createElement('div'); el.className = 'msg ' + who; el.id = id; chat.appendChild(el); }
+    el.textContent = text;
+    chat.scrollTop = chat.scrollHeight;
+  }
+  if (done) {
+    if (el) el.removeAttribute('id');
+    if (text) { c.chat.push({ who, text, at: Date.now(), live: 1 }); CaseSim.save(); }
+  }
+}
+
 async function caseAskPatient(q) {
   const chat = document.getElementById('case-chat');
   if (chat) { chat.insertAdjacentHTML('beforeend', `<div class="msg you">${esc(q)}</div><div class="msg patient typing">…</div>`); chat.scrollTop = chat.scrollHeight; }
@@ -517,9 +717,10 @@ async function caseVivaAnswer(a) {
   if (!q) return;
   const g = await CaseSim.gradeViva(q, a);
   App.render();
-  await Voice.say(g?.say || '', { voice: 'Puck' });
+  const ex = CaseSim.examiner(c);
+  await Voice.say(g?.say || '', { voice: ex.voice });
   const next = c.vivaQs?.[c.viva.length];
-  if (next) await Voice.say(next, { voice: 'Puck' });
+  if (next) await Voice.say(next, { voice: ex.voice });
 }
 
 Object.assign(F, {
@@ -554,7 +755,11 @@ Object.assign(F, {
       if (btn) { btn.disabled = false; delete btn.dataset.busy; btn.textContent = 'Try again'; }
     } finally { clearInterval(clock); CaseSim._creating = 0; }
   },
-  async caseAsk(form) { const q = form.q.value.trim(); if (!q) return; form.q.value = ''; await caseAskPatient(q); },
+  async caseAsk(form) {
+    const q = form.q.value.trim(); if (!q) return; form.q.value = '';
+    if (LiveTalk.on) { liveBubble('you', q, true); LiveTalk.sendText(q); return; }
+    await caseAskPatient(q);
+  },
   async caseExamOther(form) {
     const q = form.q.value.trim(); if (!q) return;
     const b = form.querySelector('button'); b.disabled = true; b.innerHTML = '<span class="spin"></span>';
@@ -571,8 +776,10 @@ Object.assign(F, {
 });
 
 Object.assign(I, {
-  caseSheet(el) { CaseSim.c.sheet[el.dataset.h] = el.value; clearTimeout(I._cs); I._cs = setTimeout(() => CaseSim.save(), 400); }
+  caseSheet(el) { CaseSim.c.sheet[el.dataset.h] = el.value; clearTimeout(I._cs); I._cs = setTimeout(() => CaseSim.save(), 400); },
+  caseDx(el) { (CaseSim.c.dx ||= { ddx: [{}, {}, {}] })[el.dataset.k] = el.value; clearTimeout(I._cs); I._cs = setTimeout(() => CaseSim.save(), 400); },
+  caseDdx(el) { const d = CaseSim.c.dx ||= { ddx: [{}, {}, {}] }; (d.ddx[+el.dataset.i] ||= {})[el.dataset.f] = el.value; clearTimeout(I._cs); I._cs = setTimeout(() => CaseSim.save(), 400); }
 });
 
 ROUTES.push([/^#\/cases(?:\/(\w+))?$/, m => Views.cases(m[1])]);
-window.addEventListener('hashchange', () => { if (!location.hash.startsWith('#/cases')) Voice.stop(); });
+window.addEventListener('hashchange', () => { if (!location.hash.startsWith('#/cases/run')) LiveTalk.stop(); if (!location.hash.startsWith('#/cases')) Voice.stop(); });

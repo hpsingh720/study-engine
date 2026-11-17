@@ -3,7 +3,8 @@ const SYS_LIST = SEED.systems.map(s => ({ code: s.code, name: s.name }));
 const sysName = c => SYS_LIST.find(s => s.code === c)?.name || c || '—';
 const TYPE_LABEL = { AMC: 'AMC', MBBS: 'MBBS', IMG: 'Image' };
 
-async function hasBooks() { return (await DB.count('books')) > 0; }
+// Books to write from on this device: its own, or the text the laptop has sent (iPad, phone).
+async function hasBooks() { return (await DB.count('books')) > 0 || (typeof BookText !== 'undefined' && BookText.remote().some(b => b.complete)); }
 
 async function loadStats() {
   const att = await DB.live('attempts');
@@ -397,7 +398,11 @@ Views.topic = async (id, tab) => {
   if (SECTIONS[tab]) tab = 'sheet';
   if (!TOPIC_TABS.some(([k]) => k === tab) && tab !== 'ask') tab = 'mindmap';
   localStorage.setItem('lastTab', tab);
-  const [sheet, books, mcqs, st, queue] = await Promise.all([DB.get('sheets', id), hasBooks(), DB.byIndex('mcqs', 'topicId', id), loadStats(), DB.all('queue')]);
+  let [sheet, books, mcqs, st, queue] = await Promise.all([DB.get('sheets', id), hasBooks(), DB.byIndex('mcqs', 'topicId', id), loadStats(), DB.all('queue')]);
+  // The same subject in the book's chapter list (or the AMC list) — one subject, one set of notes.
+  const twin = await Focus.twin(t).catch(() => null);
+  let borrowed = false;
+  if (!sheet && twin) { const ts = await DB.get('sheets', twin.id); if (ts) { sheet = ts; borrowed = true; } }
   const live = mcqs.filter(m => !m.deleted && !m.flagged && !m.merged);
   const inQueue = queue.filter(j => j.payload?.topicId === id && j.status !== 'done');
   let body = '';
@@ -419,6 +424,7 @@ Views.topic = async (id, tab) => {
                : `<button class="btn primary" data-act="doneTopic" data-id="${id}">I've finished this topic → test me</button>`}
       <button class="btn icon" data-act="topicMenu" data-id="${id}" aria-label="More">⋯</button>
     </div></header>
+  ${twin ? `<p class="muted small twin-line">${borrowed ? `Notes shown from the same subject ${twin.bookId ? 'in your book' : 'in the AMC list'}` : `Same subject ${twin.bookId ? 'in your book' : 'in the AMC list'}`}: <a class="link" href="#/topic/${twin.id}">${esc(twin.chapter ? twin.chapter + ' › ' : '')}${esc(twin.name)}</a></p>` : ''}
   <nav class="tabs" role="tablist">${TOPIC_TABS.map(([k, l]) => `<a class="tab ${k === tab ? 'on' : ''} ${k === 'compare' ? 'tab-amc' : ''}" href="#/topic/${id}/${k}">${l}${k === 'mcqs' ? ` <small>${live.length}</small>` : ''}</a>`).join('')}</nav>
   <div class="tab-body">${body}</div></div>`;
 };
@@ -444,7 +450,8 @@ function noSheet(t, books, inQueue) {
   if (inQueue.length) return jobStatusBox(inQueue);
   return books
     ? empty('No sheet yet', 'Generate it from your uploaded books. It takes about a minute.', `<button class="btn primary" data-act="genTopic" data-id="${t.id}">Generate sheet & MCQs</button>`)
-    : empty('No sheet yet', 'Your books live on your laptop. Generate this topic there and it will sync here.', '');
+    : empty('No sheet yet', 'The text of your books is not on this device yet. Download it once (the laptop must have been opened recently — after that it can stay at home), then write the sheet here.',
+      `<div class="row gap center wrap"><button class="btn primary" data-act="getBookText">Download book text</button><button class="btn" data-act="genTopic" data-id="${t.id}">Write it anyway (without the books)</button></div>`);
 }
 
 function colBooks(sheet, c) {
