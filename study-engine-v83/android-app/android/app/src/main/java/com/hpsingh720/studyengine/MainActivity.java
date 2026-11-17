@@ -32,6 +32,18 @@ public class MainActivity extends BridgeActivity {
                 runOnUiThread(() -> handleWebPermission(request));
             }
         });
+
+        // The phone's Back goes back one screen inside the app, like a browser, instead of closing
+        // it. On the first screen it sends the app to the background (a running lecture keeps going).
+        getOnBackPressedDispatcher().addCallback(this, new androidx.activity.OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                Bridge b = getBridge();
+                WebView wv = b != null ? b.getWebView() : null;
+                if (wv != null && wv.canGoBack()) wv.goBack();
+                else moveTaskToBack(true);
+            }
+        });
     }
 
     private void handleWebPermission(PermissionRequest request) {
