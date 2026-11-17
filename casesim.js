@@ -52,7 +52,20 @@ const CaseSim = {
   // ---- the book every case is built from ----
   // Every textbook on this device, Boloor (and other clinical-methods books) at the top.
   async books() { return typeof TechBook !== 'undefined' ? (await TechBook.all()).sort((a, b) => ((b.pages >= 3) - (a.pages >= 3)) || TechBook.rank(a) - TechBook.rank(b)) : []; },
-  pickedBook(books) { const id = localStorage.getItem('caseBook'); return books.find(b => b.id === id) ? id : (books[0]?.id || 'none'); },
+  // The book for a subject: Ghai for a child, Williams/Dutta for OBG, Bailey/SRB for surgery, and the
+  // clinical book (Boloor) for medicine — unless you picked another one for that subject before.
+  bookFor(subject, books) {
+    const has = b => (b.pages || 0) >= 3;
+    let id = ''; try { id = localStorage.getItem('caseBook-' + subject) || ''; } catch (e) {}
+    if (books.some(b => b.id === id && has(b))) return id;
+    const RE = { paeds: /ghai|p(a)?ediatric|nelson|parthasarathy/i, obg: /williams|dutta|obstet|gyn|shaw|obg/i, surgery: /bailey|srb|s\.?\s*das|surg|manipal manual/i };
+    const hit = RE[subject] && books.find(b => has(b) && RE[subject].test(`${b.name} ${b.short || ''}`));
+    if (hit) return hit.id;
+    if (subject === 'medicine' || !RE[subject]) { const c = books.find(b => has(b) && TechBook.rank(b) === 0); if (c) return c.id; }
+    return books.find(has)?.id || 'none';
+  },
+  pickedBook(books, subject = 'medicine') { return this.bookFor(subject, books); },
+  form() { try { return JSON.parse(localStorage.getItem('caseForm') || '{}'); } catch (e) { return {}; } },
 
   /**
    * The book's pages for this case. With a condition named, its pages; without, a condition the
@@ -122,6 +135,8 @@ ${excerptBlock(pages)}
 ` : '';
     const prompt = `${fromBook}Create a realistic ${kind === 'short' ? 'SHORT case' : 'LONG case'} for an Indian MBBS final-year clinical exam in ${SUBJECTS[subject]}${topic ? `, on or around: ${topic}` : ' — pick a condition commonly kept for MBBS finals'}. Difficulty: ${difficulty}.
 The patient is a real-feeling Indian patient (rural or urban Punjab/North India unless the condition suggests otherwise). For a child, the history is given by the mother. For obstetrics, a pregnant woman with full obstetric details.
+SUBJECT RULE — must hold: ${subject === 'paeds' ? 'Paediatrics: the patient is a CHILD (newborn to 12 years), and the informant is the mother (or father). If the pages describe adults, use the childhood form of the condition.' : subject === 'obg' ? 'Obstetrics & Gynaecology: the patient is a woman with a pregnancy or a gynaecological problem.' : subject === 'surgery' ? 'Surgery: a surgical condition.' : 'Medicine: an adult or adolescent medical condition.'}
+LANGUAGE: the patient (or mother) speaks ${LANGS[lang] || 'Punjabi'}; the "opening" line is in that language${lang === 'pa' ? ', in Gurmukhi script' : lang === 'hi' ? ', in Devanagari' : ''}.
 
 Return JSON:
 {"diagnosis":"","differentials":[""],
@@ -139,8 +154,14 @@ RULES
 - viva: 8 questions an Indian examiner asks on this case, with model answers (short).
 - Everything internally consistent.${book ? '\n- "source": the page range used, e.g. "[' + (book.short || 'Book') + ' p.212-214]". Add it to the JSON.' : ''}`;
     const tok = (this._tok = uid());
-    const out = await caseAI({ prompt, system: SYSTEM_TUTOR, temperature: book ? 0.5 : 0.8, ...(quick ? { model: AI.bulkModel } : {}) });
+    let out = await caseAI({ prompt, system: SYSTEM_TUTOR, temperature: book ? 0.5 : 0.8, ...(quick ? { model: AI.bulkModel } : {}) });
     if (tok !== this._tok) return this.c;   // a slower earlier attempt finishing late: the newer patient stays
+    // A child's case must be a child — an adult came back once (a 42-year-old in a Paediatrics case).
+    const years = a => { const t = String(a || '').toLowerCase(), n = parseFloat(t); return isNaN(n) ? NaN : /month|mo\b|week|day/.test(t) ? n / 12 : n; };
+    if (subject === 'paeds' && out?.patient && !(years(out.patient.age) < 16)) {
+      out = await caseAI({ prompt: prompt + `\n\nYOUR LAST ANSWER MADE AN ADULT (${out.patient.age}). This is PAEDIATRICS: make the patient a child under 12, history from the mother.`, system: SYSTEM_TUTOR, temperature: 0.4, model: AI.bulkModel });
+      if (tok !== this._tok) return this.c;
+    }
     if (!out?.patient || !out?.facts) throw new Error('The AI reply was incomplete — try again.');
     this.c = { id: 'case-' + uid(), subject, topic, lang, kind, difficulty, started: Date.now(), stage: 'history', case: out, chat: [], exams: [], tests: [], sheet: {}, presentation: '', viva: [], report: null, mood: out.patient.mood || 'calm',
       book: book ? { id: book.id, name: book.short || book.name } : null,
@@ -476,7 +497,8 @@ function animateFace() {
 
 Views.cases = async (sub) => {
   const c = CaseSim.load();
-  const books = await CaseSim.books(), pick = CaseSim.pickedBook(books);
+  const books = await CaseSim.books(), fm = CaseSim.form(), subj = fm.subject || 'medicine', pick = CaseSim.pickedBook(books, subj);
+  const sel = (k, v, d) => (fm[k] || d) === v ? 'selected' : '';
   if (sub === 'run' && c && c.stage !== 'report') return caseRun(c);
   if (sub === 'report' && c) return caseReport(c);
   let hist = []; try { hist = JSON.parse(localStorage.getItem('caseHistory') || '[]'); } catch (e) {}
@@ -486,13 +508,12 @@ Views.cases = async (sub) => {
     <form class="card mt" data-submit="caseStart">
       <p class="muted">A patient who talks. Take the history by voice, examine on the drawing, order tests, give your diagnosis and differentials, then face the viva. About 15 minutes.</p>
       <div class="grid2">
-        <label>Subject<select name="subject">${Object.entries(SUBJECTS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
-        <label>Case<select name="kind"><option value="long">Long case</option><option value="short">Short case</option></select></label>
-        <label>Patient speaks<select name="lang">${Object.entries(LANGS).map(([k, v]) => `<option value="${k}" ${k === 'mix' ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
-        <label>Difficulty<select name="difficulty"><option>usual exam case</option><option>straightforward</option><option>tricky</option></select></label>
+        <label>Subject<select name="subject" data-change="caseForm">${Object.entries(SUBJECTS).map(([k, v]) => `<option value="${k}" ${sel('subject', k, 'medicine')}>${v}</option>`).join('')}</select></label>
+        <label>Case<select name="kind" data-change="caseForm"><option value="long" ${sel('kind', 'long', 'long')}>Long case</option><option value="short" ${sel('kind', 'short', 'long')}>Short case</option></select></label>
+        <label>Patient speaks<select name="lang" data-change="caseForm">${Object.entries(LANGS).map(([k, v]) => `<option value="${k}" ${sel('lang', k, 'pa')}>${v}</option>`).join('')}</select></label>
+        <label>Difficulty<select name="difficulty" data-change="caseForm">${['usual exam case', 'straightforward', 'tricky'].map(v => `<option ${sel('difficulty', v, 'usual exam case')}>${v}</option>`).join('')}</select></label>
       </div>
-      <label>From the book<select name="book">${books.map(b => `<option value="${esc(b.id)}" ${pick === b.id ? 'selected' : ''}>${esc(b.short || b.name)}${(b.pages || 0) < 3 ? ' — text not on this device' : b.remote && !b.complete ? ' (text still coming from the laptop)' : ''}</option>`).join('')}<option value="none" ${pick === 'none' ? 'selected' : ''}>No book — any condition</option></select></label>
-      ${books.length && TechBook.rank(books[0]) ? await TechBook.picker() : ''}
+      <label>From the book<select name="book" data-change="caseForm">${books.map(b => `<option value="${esc(b.id)}" ${pick === b.id ? 'selected' : ''}>${esc(b.short || b.name)}${(b.pages || 0) < 3 ? ' — text not on this device' : b.remote && !b.complete ? ' (text still coming from the laptop)' : ''}</option>`).join('')}<option value="none" ${pick === 'none' ? 'selected' : ''}>No book — any condition</option></select></label>
       <label>Condition (optional)<input name="topic" placeholder="Leave empty for a case the book covers — or e.g. nephrotic syndrome"></label>
       ${CaseSim._lastErr && !CaseSim._creating ? `<p class="form-err danger small">${esc(CaseSim._lastErr)}</p>` : ''}
       <button class="btn primary full lg mt" type="submit" ${CaseSim._creating ? 'disabled data-busy="1"' : ''}>${CaseSim._creating ? '<span class="spin"></span>The patient is being admitted…' : 'Meet the patient'}</button>
@@ -746,7 +767,7 @@ async function caseVivaAnswer(a) {
 Object.assign(F, {
   async caseStart(form) {
     const d = Object.fromEntries(new FormData(form));
-    try { localStorage.setItem('caseBook', d.book || 'none'); } catch (e) {}
+    try { localStorage.setItem('caseBook-' + d.subject, d.book || 'none'); localStorage.setItem('caseForm', JSON.stringify({ subject: d.subject, kind: d.kind, lang: d.lang, difficulty: d.difficulty })); } catch (e) {}
     const btn = form.querySelector('button[type=submit]');
     if (btn?.dataset.busy || CaseSim._creating) return;
     const cur = CaseSim.load();
@@ -795,6 +816,21 @@ Object.assign(F, {
     App.render(true);
   },
   async caseVivaType(form) { const a = form.q.value.trim(); form.q.value = ''; const b = form.querySelector('button'); b.disabled = true; await caseVivaAnswer(a); }
+});
+
+Object.assign(C, {
+  async caseForm(el) {
+    const f = el.form; if (!f) return;
+    const d = Object.fromEntries(new FormData(f));
+    try {
+      localStorage.setItem('caseForm', JSON.stringify({ subject: d.subject, kind: d.kind, lang: d.lang, difficulty: d.difficulty }));
+      if (el.name === 'book') localStorage.setItem('caseBook-' + d.subject, el.value);
+    } catch (e) {}
+    if (el.name === 'subject') {
+      const id = CaseSim.bookFor(d.subject, await CaseSim.books());
+      if ([...f.book.options].some(o => o.value === id)) f.book.value = id;
+    }
+  }
 });
 
 Object.assign(I, {

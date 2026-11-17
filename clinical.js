@@ -380,9 +380,8 @@ const TechBook = {
       ${cur ? '' : '<option value="" selected>— pick it —</option>'}${all.map(b => `<option value="${esc(b.id)}" ${cur && cur.id === b.id ? 'selected' : ''}>${esc(b.short || b.name)} · ${b.pages} pages</option>`).join('')}</select></label>`;
   },
   async books() {
-    const pool = (await this.all()).sort((a, b) => this.rank(a) - this.rank(b));
-    const clin = pool.filter(b => this.isClinical(b) && b.pages >= 3);
-    return clin.length ? clin : pool.filter(b => b.role === 'ref' && b.pages >= 3);
+    // Your clinical book (Boloor) only. No other book is mixed in; without it the app's own steps are used.
+    return (await this.all()).filter(b => this.rank(b) === 0 && b.pages >= 3);
   },
 
   /** The pages of one particular book that best match a topic. */
@@ -455,7 +454,8 @@ const Station = {
     if (stage === 'pos') return !t.pos || (s.quick && !t.pos.key);
     if (stage === 'stand') return !t.stand || s.quick;
     if (stage === 'tap') return !t.taps?.length;
-    if (stage === 'steps') return !t.steps?.length || (s.quick && !!this.gapQuestion());
+    // With Boloor on the device, its steps replace the app's own list in both modes.
+    if (stage === 'steps') return !t.steps?.length || !!this.gapQuestion();
     if (stage === 'gap') return !this.gapQuestion();
     return false;
   },
@@ -480,8 +480,12 @@ const Station = {
     if (!b?.found || (b.steps || []).length < 4) return null;
     if (this.st.gap) return this.st.gap;
     const steps = b.steps.map(x => x.text);
-    const prefer = steps.map((x, i) => i).filter(i => /torch|light|scale|ruler|tape|warm|consent|expos|position|explain|wash|hammer|stethoscope|cuff|minute|second/i.test(steps[i]));
-    const hide = (prefer.length ? prefer : steps.map((x, i) => i))[Math.floor(Math.random() * (prefer.length || steps.length))];
+    const used = new Set(this.st.gapPrev || []);
+    const free = steps.map((x, i) => i).filter(i => !used.has(i));
+    const prefer = free.filter(i => /torch|light|scale|ruler|tape|warm|consent|expos|position|explain|wash|hammer|stethoscope|cuff|minute|second/i.test(steps[i]));
+    const pool = prefer.length ? prefer : free;
+    if (!pool.length) return null;
+    const hide = pool[Math.floor(Math.random() * pool.length)];
     const others = TECHNIQUES.filter(t => t.id !== this.t.id).flatMap(t => (t.steps || []).map(q => q.options[q.answer])).filter(x => x && x !== steps[hide]);
     const opts = shuffle([steps[hide], ...shuffle(others).slice(0, 3)]);
     return (this.st.gap = { steps, hide, opts, answer: opts.indexOf(steps[hide]), cite: b.steps[hide].cite });
@@ -492,6 +496,11 @@ const Station = {
     const order = ['pos', 'stand', 'tap', 'steps', 'gap', 'result'];
     if (s.stage === 'tap' && s.tap < (t.taps?.length || 0) - 1) { s.tap++; return this.paint(); }
     if (s.stage === 'steps' && !s.quick && s.step < (t.steps?.length || 0) - 1) { s.step++; return this.paint(); }
+    // Thorough: three different steps from Boloor, one at a time.
+    if (s.stage === 'gap' && !s.quick && s.gap && (s.gapPrev || []).length < 2) {
+      s.gapPrev = [...(s.gapPrev || []), s.gap.hide]; s.gap = null;
+      if (this.gapQuestion()) return this.paint();
+    }
     let i = order.indexOf(s.stage) + 1;
     while (order[i] !== 'result' && this.skip(order[i])) i++;
     s.stage = order[i];

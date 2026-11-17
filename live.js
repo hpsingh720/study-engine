@@ -22,11 +22,14 @@ const LiveTalk = {
       inputAudioTranscription: {},
       outputAudioTranscription: {}
     };
-    // Answer after 0.6 s of quiet — quick, but not so quick it cuts in while you think.
-    const vad = { automaticActivityDetection: { silenceDurationMs: 600, prefixPaddingMs: 200 } };
+    // Answer after 0.7 s of quiet. Start listening only to clear speech — a cough, a fan or the ward
+    // behind you no longer counts as you starting to talk (that was cutting the patient off).
+    const vad = { automaticActivityDetection: { silenceDurationMs: 700, prefixPaddingMs: 300, startOfSpeechSensitivity: 'START_SENSITIVITY_LOW', endOfSpeechSensitivity: 'END_SENSITIVITY_LOW' } };
+    const vadPlain = { automaticActivityDetection: { silenceDurationMs: 700, prefixPaddingMs: 300 } };
     const out = [];
     if (/^gemini-3/.test(model)) out.push({ name: 'fast', setup: { ...common, realtimeInputConfig: vad, generationConfig: { responseModalities: ['AUDIO'], speechConfig: speech, thinkingConfig: { thinkingLevel: 'MINIMAL' } } } });
     out.push({ name: 'standard', setup: { ...common, realtimeInputConfig: vad, generationConfig: { responseModalities: ['AUDIO'], speechConfig: speech } } });
+    out.push({ name: 'plain', setup: { ...common, realtimeInputConfig: vadPlain, generationConfig: { responseModalities: ['AUDIO'], speechConfig: speech } } });
     out.push({ name: 'flat', setup: { ...common, responseModalities: ['AUDIO'], speechConfig: speech } });
     return out;
   },
@@ -183,7 +186,17 @@ const LiveTalk = {
         return;
       }
       quietSent = false;
+      // While the patient is talking, only a real voice gets through — steady louder sound for about
+      // a quarter of a second. Anything less is sent as silence, so background noise and the
+      // patient's own voice coming back from the speaker cannot cut them off.
+      const rms = Math.sqrt(sum / input.length);
+      let pass = true;
+      if (this._srcs?.size) {
+        this._loud = rms > (this.gate || 0.05) ? (this._loud || 0) + input.length / ctx.sampleRate : 0;
+        pass = this._loud >= 0.25;
+      } else this._loud = 0;
       const n = Math.floor(input.length / ratio), out = new Int16Array(n);
+      if (!pass) { pending.push(out); pendingLen += n; if (pendingLen >= 1600) { const all = new Int16Array(pendingLen); pending = []; pendingLen = 0; this._send({ realtimeInput: { audio: { data: this._b64(new Uint8Array(all.buffer)), mimeType: 'audio/pcm;rate=16000' } } }); } return; }
       for (let i = 0; i < n; i++) {
         // Average the samples that fold into each 16 kHz sample.
         const a = Math.floor(i * ratio), b = Math.min(input.length, Math.floor((i + 1) * ratio));

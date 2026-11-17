@@ -31,8 +31,14 @@ const App = {
     for (const [re, fn] of ROUTES) {
       const m = h.match(re);
       if (!m) continue;
-      try { $('#main').innerHTML = await fn(m); }
-      catch (e) { console.error(e); $('#main').innerHTML = empty('Something went wrong', esc(e.message), '<a class="btn" href="#/">Home</a>'); }
+      // A slow page finishing after you have already moved on must not paint over the new one
+      // (that is how you were thrown back to the examination page mid-case).
+      const tok = (this._rt = (this._rt || 0) + 1);
+      let html;
+      try { html = await fn(m); }
+      catch (e) { console.error(e); html = empty('Something went wrong', esc(e.message), '<a class="btn" href="#/">Home</a>'); }
+      if (tok !== this._rt) return;
+      $('#main').innerHTML = html;
       const base = '#/' + (h.split('/')[1] || '');
       $$('.navlink').forEach(a => a.classList.toggle('on', a.getAttribute('href') === base || (base === '#/system' && a.getAttribute('href') === '#/systems') || (base === '#/topic' && a.getAttribute('href') === '#/systems') || ((base === '#/session' || base === '#/result') && a.getAttribute('href') === '#/practice')));
       this.after();
