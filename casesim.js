@@ -14,6 +14,26 @@ const CASE_FORMATS = {
 const SUBJECTS = { medicine: 'Medicine', surgery: 'Surgery', paeds: 'Paediatrics', obg: 'Obstetrics & Gynaecology' };
 const LANGS = { hi: 'Hindi', pa: 'Punjabi', en: 'English', mix: 'Hinglish (mixed)' };
 
+// Gemini's 503 ("overloaded") is common and passes in seconds. Every AI step of a case rides it out:
+// the lighter model at once, then your other keys (Groq, Mistral), then again after a short wait —
+// instead of failing on the first refusal.
+async function caseAI(o) {
+  const busy = e => /busy|overload|503|500|502|504|429|quota|rate|unavailable|timed out|network|empty ai reply/i.test(String(e?.message || e));
+  const waits = [0, 4, 10, 20];
+  let last;
+  for (let i = 0; i < waits.length; i++) {
+    for (let s = waits[i]; s > 0; s--) { caseAI.say?.(`Gemini is busy — trying again in ${s} s (${i + 1} of ${waits.length})`); await sleep(1000); }
+    for (const t of (o.model && o.model !== AI.bulkModel ? [o, { ...o, model: AI.bulkModel }] : o.model ? [o, { ...o, model: undefined }] : [o, { ...o, model: AI.bulkModel }])) {
+      if (!AI.key) break;
+      try { return await AI.call(t); } catch (e) { last = e; if (!busy(e)) throw e; }
+    }
+    for (const p of Providers.active().filter(p => !p.ocrOnly && !p.ocrApi)) {
+      try { return await Providers.call(p, { prompt: o.prompt, json: o.json !== false, system: o.system, temperature: o.temperature ?? 0.4, maxTokens: 8000 }); } catch (e) { last = e; }
+    }
+  }
+  throw new Error(`Gemini is overloaded right now and did not answer after ${waits.length} tries (${String(last?.message || last).slice(0, 80)}). Wait a minute and tap again${Providers.active().length ? '' : ' — or add a free Groq or Mistral key in Settings so they can stand in'}.`);
+}
+
 const CaseSim = {
   c: null,
   // The case in memory is the live one; storage is only read when the app opens. Re-reading it on
@@ -70,7 +90,7 @@ const CaseSim = {
     if (have) return have.headings || [];
     const pages = await TechBook.pagesFor(book, { name: 'case sheet proforma', kw: ['case sheet', 'proforma', 'history taking', 'chief complaints', 'presenting complaints', 'general physical examination', 'systemic examination', 'provisional diagnosis'] }, 4, 14000);
     if (!pages.length) return [];
-    const out = await AI.call({ temperature: 0.1, prompt: `These are pages from "${book.name}". If they show how this book sets out a clinical case sheet (proforma) for a long case, list its section headings in order, exactly as the book writes them. Otherwise return {"found":false}.
+    const out = await caseAI({ temperature: 0.1, prompt: `These are pages from "${book.name}". If they show how this book sets out a clinical case sheet (proforma) for a long case, list its section headings in order, exactly as the book writes them. Otherwise return {"found":false}.
 JSON {"found":true,"headings":[""]}
 
 ${excerptBlock(pages)}` }).catch(() => null);
@@ -119,7 +139,7 @@ RULES
 - viva: 8 questions an Indian examiner asks on this case, with model answers (short).
 - Everything internally consistent.${book ? '\n- "source": the page range used, e.g. "[' + (book.short || 'Book') + ' p.212-214]". Add it to the JSON.' : ''}`;
     const tok = (this._tok = uid());
-    const out = await AI.call({ prompt, system: SYSTEM_TUTOR, temperature: book ? 0.5 : 0.8, ...(quick ? { model: AI.bulkModel } : {}) });
+    const out = await caseAI({ prompt, system: SYSTEM_TUTOR, temperature: book ? 0.5 : 0.8, ...(quick ? { model: AI.bulkModel } : {}) });
     if (tok !== this._tok) return this.c;   // a slower earlier attempt finishing late: the newer patient stays
     if (!out?.patient || !out?.facts) throw new Error('The AI reply was incomplete — try again.');
     this.c = { id: 'case-' + uid(), subject, topic, lang, kind, difficulty, started: Date.now(), stage: 'history', case: out, chat: [], exams: [], tests: [], sheet: {}, presentation: '', viva: [], report: null, mood: out.patient.mood || 'calm',
@@ -155,8 +175,8 @@ RULES — stay in character always:
 Return JSON: {"reply":"","mood":"calm|anxious|pain|tired|confused"}`;
     const convo = c.chat.slice(-24).map(m => `${m.who === 'you' ? 'Student' : 'You'}: ${m.text}`).join('\n');
     let out;
-    try { out = await AI.call({ prompt: convo + '\nYou:', system, temperature: 0.7, model: AI.bulkModel }); }
-    catch (e) { out = await AI.call({ prompt: convo + '\nYou:', system, temperature: 0.7 }); }
+    try { out = await caseAI({ prompt: convo + '\nYou:', system, temperature: 0.7, model: AI.bulkModel }); }
+    catch (e) { out = await caseAI({ prompt: convo + '\nYou:', system, temperature: 0.7 }); }
     const text = String(out?.reply || '').trim() || '…';
     c.mood = out?.mood || c.mood;
     c.chat.push({ who: 'patient', text, at: Date.now() });
@@ -189,9 +209,9 @@ Return JSON: {"reply":"","mood":"calm|anxious|pain|tired|confused"}`;
   // ---- examination outside the technique list ----
   async examOther(request) {
     const k = this.c.case;
-    const out = await AI.call({ prompt: `Case findings: ${JSON.stringify(k.exam)}. Diagnosis: ${k.diagnosis}.
+    const out = await caseAI({ prompt: `Case findings: ${JSON.stringify(k.exam)}. Diagnosis: ${k.diagnosis}.
 A student says: "${request}". Report ONLY what they would find doing exactly that, in one or two lines as an examiner would say it. If what they describe is vague ("examine the heart"), ask what exactly they do (inspect / palpate / percuss / auscultate, and where). Never state the diagnosis.
-Return JSON: {"finding":""}`, temperature: 0.3, model: AI.bulkModel }).catch(() => AI.call({ prompt: `Findings: ${JSON.stringify(k.exam)}. Student: "${request}". One-line finding. JSON {"finding":""}` }));
+Return JSON: {"finding":""}`, temperature: 0.3, model: AI.bulkModel }).catch(() => caseAI({ prompt: `Findings: ${JSON.stringify(k.exam)}. Student: "${request}". One-line finding. JSON {"finding":""}` }));
     const f = String(out?.finding || '').trim();
     this.c.exams.push({ kind: 'other', what: request, finding: f, at: Date.now() });
     this.save();
@@ -203,7 +223,7 @@ Return JSON: {"finding":""}`, temperature: 0.3, model: AI.bulkModel }).catch(() 
     const have = Object.entries(k.tests || {}).find(([n]) => n.toLowerCase().includes(test.toLowerCase()) || test.toLowerCase().includes(n.toLowerCase()));
     let result = have ? `${have[0]}: ${have[1]}` : '';
     if (!result) {
-      const out = await AI.call({ prompt: `Patient with ${k.diagnosis}. Known results: ${JSON.stringify(k.tests)}. The student orders: "${test}". Give a realistic result consistent with the case, one line with units. JSON {"result":""}`, temperature: 0.3, model: AI.bulkModel }).catch(() => ({ result: 'Result not available.' }));
+      const out = await caseAI({ prompt: `Patient with ${k.diagnosis}. Known results: ${JSON.stringify(k.tests)}. The student orders: "${test}". Give a realistic result consistent with the case, one line with units. JSON {"result":""}`, temperature: 0.3, model: AI.bulkModel }).catch(() => ({ result: 'Result not available.' }));
       // Honest about it: a result the book's case did not include is made up to fit.
       result = `${test}: ${out?.result || 'not available'}${this.c.book && out?.result ? ` (not in ${this.c.book.name}'s case — made up to fit)` : ''}`;
     }
@@ -216,7 +236,7 @@ Return JSON: {"finding":""}`, temperature: 0.3, model: AI.bulkModel }).catch(() 
   async examine() {
     const c = this.c, k = c.case;
     const techLog = c.exams.filter(e => e.kind === 'tech').map(e => `${TECH[e.id]?.name}: ${e.passed ? 'done correctly' : 'MISTAKES — ' + e.misses.join(' | ')}`).join('\n') || 'none';
-    const out = await AI.call({ system: SYSTEM_TUTOR, temperature: 0.3, prompt: `You are a strict but fair Indian MBBS final-exam examiner. Mark this ${c.kind} case.
+    const out = await caseAI({ system: SYSTEM_TUTOR, temperature: 0.3, prompt: `You are a strict but fair Indian MBBS final-exam examiner. Mark this ${c.kind} case.
 
 THE CASE (hidden from the student): ${JSON.stringify({ diagnosis: k.diagnosis, differentials: k.differentials, keyHistory: k.keyHistory, exam: k.exam, tests: k.tests })}
 ${c.excerpt ? `
@@ -303,7 +323,7 @@ score is out of 10.` });
   async interpret() {
     const c = this.c, k = c.case, d = c.dx || {};
     const board = (d.ddx || []).filter(x => x?.name?.trim()).map(x => `- ${x.name} | for: ${x.for || '—'} | against / to rule out: ${x.against || '—'}`).join('\n') || '(none)';
-    const out = await AI.call({ system: SYSTEM_TUTOR, temperature: 0.2, model: AI.bulkModel, prompt: `An MBBS final-year student has just finished a ${c.kind} case and committed to a diagnosis. Check their thinking — briefly, like a good senior at the bedside.
+    const out = await caseAI({ system: SYSTEM_TUTOR, temperature: 0.2, model: AI.bulkModel, prompt: `An MBBS final-year student has just finished a ${c.kind} case and committed to a diagnosis. Check their thinking — briefly, like a good senior at the bedside.
 
 THE CASE: ${JSON.stringify({ diagnosis: k.diagnosis, differentials: k.differentials, keyHistory: k.keyHistory, exam: k.exam, tests: k.tests })}
 ${c.excerpt ? `\nFrom the book (${c.book.name}) — agree with it and cite its page:\n${c.excerpt.slice(0, 9000)}\n` : ''}
@@ -331,8 +351,8 @@ Return JSON:
     const k = this.c.case;
     const model = (k.viva || []).map(v => `Q: ${v.q}\nA: ${v.a}`).join('\n');
     const c = this.c;
-    const out = await AI.call({ temperature: 0.3, model: AI.bulkModel, prompt: `Examiner's viva on ${k.diagnosis}. Reference answers:\n${model}\n${c.excerpt ? `\nThe book (${c.book.name}) — the answer must agree with it; quote its page in "ideal":\n${c.excerpt.slice(0, 12000)}\n` : ''}\nQuestion: ${q}\nStudent's answer (spoken, transcribed): ${answer || '(no answer)'}\nReturn JSON: {"verdict":"good|partial|wrong","say":"what you say back, one short sentence, like an examiner","ideal":"the answer they should have given, 1-2 lines"}` })
-      .catch(() => AI.call({ prompt: `Q: ${q}\nAnswer: ${answer}\nJSON {"verdict":"partial","say":"","ideal":""}` }));
+    const out = await caseAI({ temperature: 0.3, model: AI.bulkModel, prompt: `Examiner's viva on ${k.diagnosis}. Reference answers:\n${model}\n${c.excerpt ? `\nThe book (${c.book.name}) — the answer must agree with it; quote its page in "ideal":\n${c.excerpt.slice(0, 12000)}\n` : ''}\nQuestion: ${q}\nStudent's answer (spoken, transcribed): ${answer || '(no answer)'}\nReturn JSON: {"verdict":"good|partial|wrong","say":"what you say back, one short sentence, like an examiner","ideal":"the answer they should have given, 1-2 lines"}` })
+      .catch(() => caseAI({ prompt: `Q: ${q}\nAnswer: ${answer}\nJSON {"verdict":"partial","say":"","ideal":""}` }));
     this.c.viva.push({ q, answer, ...out });
     this.save();
     return out;
@@ -472,7 +492,7 @@ Views.cases = async (sub) => {
         <label>Difficulty<select name="difficulty"><option>usual exam case</option><option>straightforward</option><option>tricky</option></select></label>
       </div>
       <label>From the book<select name="book">${books.map(b => `<option value="${esc(b.id)}" ${pick === b.id ? 'selected' : ''}>${esc(b.short || b.name)}${(b.pages || 0) < 3 ? ' — text not on this device' : b.remote && !b.complete ? ' (text still coming from the laptop)' : ''}</option>`).join('')}<option value="none" ${pick === 'none' ? 'selected' : ''}>No book — any condition</option></select></label>
-      ${books.length && TechBook.rank(books[0]) ? `<p class="muted small">Boloor isn't on this device yet. Read it into the Library on the laptop; its text then comes across to the phone and iPad by itself.</p>` : ''}
+      ${books.length && TechBook.rank(books[0]) ? await TechBook.picker() : ''}
       <label>Condition (optional)<input name="topic" placeholder="Leave empty for a case the book covers — or e.g. nephrotic syndrome"></label>
       ${CaseSim._lastErr && !CaseSim._creating ? `<p class="form-err danger small">${esc(CaseSim._lastErr)}</p>` : ''}
       <button class="btn primary full lg mt" type="submit" ${CaseSim._creating ? 'disabled data-busy="1"' : ''}>${CaseSim._creating ? '<span class="spin"></span>The patient is being admitted…' : 'Meet the patient'}</button>
@@ -735,14 +755,16 @@ Object.assign(F, {
     const err = form.querySelector('.form-err') || form.insertAdjacentElement('beforeend', Object.assign(document.createElement('p'), { className: 'form-err danger small' }));
     err.textContent = ''; CaseSim._lastErr = '';
     const t0 = Date.now();
-    const tick = () => { if (btn) btn.innerHTML = `<span class="spin"></span>The patient is being admitted… ${Math.round((Date.now() - t0) / 1000)} s`; };
+    let note = '';
+    caseAI.say = m => { note = m; tick(); };
+    const tick = () => { if (btn) btn.innerHTML = `<span class="spin"></span>${note ? esc(note) : 'The patient is being admitted…'} · ${Math.round((Date.now() - t0) / 1000)} s`; };
     if (btn) { btn.dataset.busy = '1'; btn.disabled = true; }
     tick(); const clock = setInterval(tick, 1000);
     try {
       // The full model writes the richest case, but on a busy day it can take minutes. After 90
       // seconds, hand the same job to the lighter model rather than keep you waiting.
       const limit = (pr, ms) => Promise.race([pr, new Promise((_, no) => setTimeout(() => no(new Error('slow')), ms))]);
-      try { await limit(CaseSim.create(d), 90000); }
+      try { await limit(CaseSim.create(d), 150000); }
       catch (e) {
         if (e.message !== 'slow') throw e;
         await limit(CaseSim.create({ ...d, quick: 1 }), 90000).catch(e2 => { throw e2.message === 'slow' ? new Error('Gemini is very slow right now — it did not answer within three minutes. Try again in a little while.') : e2; });
@@ -753,7 +775,7 @@ Object.assign(F, {
       // Kept on screen, not a toast that disappears while you are looking away.
       err.textContent = CaseSim._lastErr = 'Could not admit the patient: ' + (e.message || String(e));
       if (btn) { btn.disabled = false; delete btn.dataset.busy; btn.textContent = 'Try again'; }
-    } finally { clearInterval(clock); CaseSim._creating = 0; }
+    } finally { clearInterval(clock); CaseSim._creating = 0; caseAI.say = null; }
   },
   async caseAsk(form) {
     const q = form.q.value.trim(); if (!q) return; form.q.value = '';

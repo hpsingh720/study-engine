@@ -366,8 +366,19 @@ const TechBook = {
     return [...best.values()];
   },
   // A clinical-methods book, whatever type it was given in the Library: Boloor first.
-  isClinical(b) { return b.role === 'practical' || CLIN_RE.test(`${b.name || ''} ${b.short || ''}`); },
-  rank(b) { return /boloor|archith/i.test(`${b.name || ''} ${b.short || ''}`) ? 0 : this.isClinical(b) ? 1 : 2; },
+  // The book you have said is your clinical book wins, whatever its file is called. Going by the
+  // name alone missed Boloor whenever the file was not named after him.
+  chosen() { try { return localStorage.getItem('clinBook') || ''; } catch (e) { return ''; } },
+  isClinical(b) { return b.id === this.chosen() || b.role === 'practical' || CLIN_RE.test(`${b.name || ''} ${b.short || ''}`); },
+  rank(b) { return b.id === this.chosen() || /boloor|archith/i.test(`${b.name || ''} ${b.short || ''}`) ? 0 : this.isClinical(b) ? 1 : 2; },
+  // A picker for it, shown wherever the clinical book is used.
+  async picker() {
+    const all = (await this.all()).filter(b => b.pages >= 3).sort((a, b) => this.rank(a) - this.rank(b));
+    if (!all.length) return `<p class="muted small">No book text on this device yet. Add your clinical book (e.g. Boloor) in the Library, or download the laptop's book text.</p>`;
+    const cur = all.find(b => this.rank(b) === 0);
+    return `<label class="small">Your clinical book (examination steps and cases come from it)<select data-change="pickClinBook">
+      ${cur ? '' : '<option value="" selected>— pick it —</option>'}${all.map(b => `<option value="${esc(b.id)}" ${cur && cur.id === b.id ? 'selected' : ''}>${esc(b.short || b.name)} · ${b.pages} pages</option>`).join('')}</select></label>`;
+  },
   async books() {
     const pool = (await this.all()).sort((a, b) => this.rank(a) - this.rank(b));
     const clin = pool.filter(b => this.isClinical(b) && b.pages >= 3);
@@ -398,7 +409,8 @@ const TechBook = {
       for (const t of TECHNIQUES) {
         if (document.hidden) break;
         const have = await this.get(t.id);
-        if (have && (have.found === false ? Date.now() - (have.at || 0) < 7 * 864e5 : true) && (!isBoloor || /boloor|archith/i.test(have.book || '') || have.found === false)) continue;
+        // Read again only when it came from a different book than your clinical book.
+        if (have && (have.found === false ? Date.now() - (have.at || 0) < 7 * 864e5 : true) && (!isBoloor || have.book === topName || have.found === false)) continue;
         onStep?.(t.name);
         try { await this.learn(t.id); } catch (e) { if (/quota|busy|key/i.test(e.message || '')) break; }
         await sleep(1500);
@@ -640,6 +652,14 @@ const Station = {
 };
 window.Station = Station; window.TECHNIQUES = TECHNIQUES; window.TECH = TECH; window.BODY = BODY;
 
+Object.assign(C, {
+  pickClinBook(el) {
+    try { localStorage.setItem('clinBook', el.value); localStorage.setItem('caseBook', el.value); } catch (e) {}
+    toast('Got it — examination steps and cases will now come from this book.', 6000);
+    App.render(true);
+  }
+});
+
 Object.assign(A, {
   stPos(el) {
     const t = Station.t, v = el.dataset.v;
@@ -688,9 +708,9 @@ Views.drills = async () => {
     ${await (async () => {
       const learned = (await Promise.all(TECHNIQUES.map(t => TechBook.get(t.id)))).filter(r => r?.found).length;
       const books = await TechBook.books();
-      if (!books.length) return `<p class="muted small">Tip: add your clinical-methods book (e.g. Boloor) in the Library, and every drill will follow its steps.</p>`;
+      if (!books.length || TechBook.rank(books[0])) return `<div class="card soft mt">${await TechBook.picker()}</div>`;
       if (learned < TECHNIQUES.length) setTimeout(() => TechBook.autoLearn(n => { const el = document.getElementById('drill-learn'); if (el) el.textContent = n ? `Reading from ${books[0].short || books[0].name}: ${n}…` : ''; }).then(() => { if (location.hash.startsWith('#/drills')) App.render(true); }), 1500);
-      return `<div class="card soft mt row between mid wrap gap"><span class="small">${learned} of ${TECHNIQUES.length} techniques follow <b>${esc(books[0].short || books[0].name)}</b> step by step. <span class="muted" id="drill-learn"></span></span>
+      return `<div class="card soft mt">${await TechBook.picker()}</div><div class="card soft mt row between mid wrap gap"><span class="small">${learned} of ${TECHNIQUES.length} techniques follow <b>${esc(books[0].short || books[0].name)}</b> step by step. <span class="muted" id="drill-learn"></span></span>
         ${learned < TECHNIQUES.length ? `<button class="btn sm" data-act="drillLearn">Read the rest from the book</button>` : `<button class="btn ghost sm" data-act="drillLearn" data-all="1">Read again</button>`}</div>`;
     })()}
     ${Object.entries(groups).map(([g, ts]) => `<section class="card flush mt"><div class="card-head pad"><h3>${esc(g)}</h3></div><div class="list">
