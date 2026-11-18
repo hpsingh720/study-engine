@@ -245,6 +245,8 @@ const A = {
     try {
       const { chapters, made, updated = 0, removed = 0 } = await Focus.fromBook(id, { system: sys || '', onProgress: (msg, n, f) => set(typeof n === 'number' && n && !/^Reading|busy/.test(msg) ? `${msg} — ${n} topics so far` : msg, f) });
       if (sys) await Focus.assignSystem(id, sys);
+      // Pair the new topics with the AMC list (checked by the AI), in the background.
+      setTimeout(() => Focus.linkAll().catch(console.warn), 3000);
       set('Done.', 1);
       over = false; set('Done.', 1);
       end(`<p class="small"><b>${chapters} chapters — ${made.length} new topic${made.length === 1 ? '' : 's'}</b>${updated ? `, ${updated} put in book order` : ''}${removed ? `, ${removed} empty duplicate${removed === 1 ? '' : 's'} removed` : ''}. Notes and questions for each topic are written from all your books.</p>`, true);
@@ -316,15 +318,17 @@ const A = {
     t.done = 1; t.doneAt = Date.now(); await DB.put('topics', t);
     const sysTopics = (await DB.live('topics')).filter(x => x.system === t.system);
     if (sysTopics.every(x => x.done)) { setTimeout(() => toast(`🎉 All ${sysTopics.length} ${sysName(t.system)} topics done — take the System test (Practice page) after these questions.`, 9000), 1500); queueTwins(t.system).then(n => n && Queue.kick()).catch(() => {}); }
-    const has = (await DB.byIndex('mcqs', 'topicId', t.id)).some(m => !m.deleted && !m.flagged);
+    const tw1 = await Focus.twin(t).catch(() => null);
+    const has = (await Promise.all([t.id, tw1?.id].filter(Boolean).map(id => DB.byIndex('mcqs', 'topicId', id)))).flat().some(m => !m.deleted && !m.flagged);
     sessionStorage.setItem('leftTab', 'compare'); sessionStorage.setItem('pane', 'q');
-    if (has) await Practice.start({ kind: 'topic', title: t.name, mode: 'tutor', topicId: t.id, topicIds: [t.id], count: 60 });
+    if (has) await Practice.start({ kind: 'topic', title: t.name, mode: 'tutor', topicId: t.id, topicIds: tw1 ? [t.id, tw1.id] : [t.id], count: 60 });
     else { toast('Marked done. No questions for this topic yet.'); App.render(true); }
   },
   async testTopic(el) {
     const t = await DB.get('topics', el.dataset.id);
     sessionStorage.setItem('leftTab', 'compare'); sessionStorage.setItem('pane', 'q');
-    await Practice.start({ kind: 'topic', title: t.name, mode: 'tutor', topicId: t.id, topicIds: [t.id], count: 60, weightMistakes: true });
+    const tw2 = await Focus.twin(t).catch(() => null);
+    await Practice.start({ kind: 'topic', title: t.name, mode: 'tutor', topicId: t.id, topicIds: tw2 ? [t.id, tw2.id] : [t.id], count: 60, weightMistakes: true });
   },
   async undoneTopic(el) { const t = await DB.get('topics', el.dataset.id); t.done = 0; t.doneAt = null; await DB.put('topics', t); App.render(true); },
   async topicMenu(el) {
@@ -434,7 +438,26 @@ const A = {
   async practiseTopic(el) {
     const t = await DB.get('topics', el.dataset.id);
     sessionStorage.setItem('leftTab', 'compare');
-    await Practice.start({ kind: 'topic', title: t.name + (el.dataset.bank && el.dataset.bank !== 'all' ? ' · ' + (BANK_LABEL[el.dataset.bank] || 'Real questions') : ''), mode: 'tutor', topicId: t.id, topicIds: [t.id], type: el.dataset.type, bank: el.dataset.bank || 'all', count: 60, weightMistakes: true });
+    const tw = await Focus.twin(t).catch(() => null);
+    await Practice.start({ kind: 'topic', title: t.name + (el.dataset.bank && el.dataset.bank !== 'all' ? ' · ' + (BANK_LABEL[el.dataset.bank] || 'Real questions') : ''), mode: 'tutor', topicId: t.id, topicIds: tw ? [t.id, tw.id] : [t.id], type: el.dataset.type, bank: el.dataset.bank || 'all', count: 60, weightMistakes: true });
+  },
+  async practiseBankExtra(el) {
+    const ids = window._bankExtra?.[el.dataset.id] || [];
+    const t = await DB.get('topics', el.dataset.id);
+    if (!ids.length) return toast('Nothing to practise.');
+    await Practice.start({ kind: 'topic', title: `${t.name} · from your banks`, mode: 'tutor', topicId: t.id, ids: shuffle(ids).slice(0, 60) });
+  },
+  async bringBankExtra(el) {
+    const ids = window._bankExtra?.[el.dataset.id] || [];
+    const t = await DB.get('topics', el.dataset.id);
+    for (const id of ids) { const m = await DB.get('mcqs', id); if (m) { m.topicId = t.id; m.system = t.system || m.system; m.edited = Date.now(); await DB.put('mcqs', m); } }
+    toast(`${ids.length} questions moved to ${t.name}.`);
+    App.render(true);
+  },
+  async unlinkTwin(el) {
+    await Focus.unlink(el.dataset.a, el.dataset.b);
+    toast('Unlinked. Those two will not be joined again.');
+    App.render(true);
   },
   async moreMcqs(el) { await Queue.add('mcqgen', { topicId: el.dataset.id }, 0); toast('Writing more questions…'); App.render(true); },
 
@@ -1257,6 +1280,8 @@ async function init() {
     } catch (e) { console.warn('notes check', e); }
   };
   setTimeout(gapRun, 120000); setInterval(bg(gapRun), 3600000);
+  // Book topics ↔ AMC list, checked by the AI once per subject (again only when topics change).
+  setTimeout(bg(() => Focus.linkAll().then(n => n && App.softRefresh()).catch(console.warn)), 90000);
   setInterval(bg(() => fillMindmapFigs().catch(console.warn)), 300000); setTimeout(() => fillMindmapFigs().catch(console.warn), 25000);
   setTimeout(() => queueRefs().catch(console.warn), 20000); setInterval(bg(() => queueRefs().catch(console.warn)), 3600000);
   // College lectures: pick up any recording still running, and refresh the night-before reminders.

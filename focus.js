@@ -189,22 +189,117 @@ const Focus = {
     const SYN = { carcinoma: 'cancer', carcinomas: 'cancer', ca: 'cancer', malignancy: 'cancer', malignancies: 'cancer', malignant: 'cancer', cancers: 'cancer',
       neoplasm: 'tumor', neoplasms: 'tumor', tumour: 'tumor', tumours: 'tumor', tumors: 'tumor', growth: 'tumor' };
     const STOP = new Set(['and', 'of', 'the', 'in', 'with', 'to', 'a', 'an', 'its', 'for', 'on', 'disease', 'diseases', 'disorder', 'disorders', 'management', 'approach', 'including', 'other', 'others', 'clinical', 'overview', 'introduction', 'basics']);
-    return [...new Set(this._norm(name).replace(/ae/g, 'e').replace(/oe/g, 'e').split(' ').filter(w => w && !STOP.has(w)).map(w => (SYN[w] || w).slice(0, 5)))];
+    // "Pre-malignant" and "pre-cancerous" are not cancer: CIN is not carcinoma cervix.
+    const n = this._norm(name).replace(/\bpre ?(malignan\w*|cancer\w*|neoplas\w*)/g, 'precancer').replace(/ae/g, 'e').replace(/oe/g, 'e');
+    return [...new Set(n.split(' ').filter(w => w && !STOP.has(w)).map(w => (SYN[w] || w).slice(0, w === 'precancer' ? 9 : 5)))];
   },
-  similar(a, b) {
+  similar(a, b) { return this.likeness(a, b) > 0; },
+  // 0 = different subjects; otherwise how closely the names agree (higher is closer).
+  likeness(a, b) {
     const A = this.stems(a), B = this.stems(b);
-    if (!A.length || !B.length) return false;
+    if (!A.length || !B.length) return 0;
     const QUAL = /^(\d+|i{1,3}|iv|acute|chron|type|prima|secon|terti|conge|acqui|upper|lower|left|right|neona|adult|child|benig|early|late)$/;
     const qa = A.filter(w => QUAL.test(w)).sort().join(), qb = B.filter(w => QUAL.test(w)).sort().join();
-    if (qa !== qb) return false;
+    if (qa !== qb) return 0;
+    // Cancer on one side only (carcinoma vs pre-cancer, carcinoma vs screening alone) is a different subject.
+    if (A.includes('cance') !== B.includes('cance')) return 0;
     const inter = A.filter(x => B.includes(x)).length;
-    if (A.length === 1 && B.length === 1) return inter === 1;
-    return inter >= 2 && inter / Math.min(A.length, B.length) >= 0.67;
+    if (A.length === 1 && B.length === 1) return inter === 1 ? 1 : 0;
+    const cover = inter / Math.min(A.length, B.length);
+    if (inter < 2 || cover < 0.67) return 0;
+    return cover + inter / Math.max(A.length, B.length);
   },
   // The same subject under another name — an AMC-list topic and the book's chapter topic.
+  // The closest one, not the first one that is close enough. A link the AI has checked (twinId)
+  // comes first; a pair you marked "not the same" is never shown again.
   async twin(t) {
     const all = await DB.live('topics');
-    return all.find(o => o.id !== t.id && (!o.system || !t.system || o.system === t.system) && !!o.bookId !== !!t.bookId && this.similar(o.name, t.name)) || null;
+    if (t.twinId) { const o = all.find(x => x.id === t.twinId); if (o) return o; }
+    if (t.twinChecked) return null;    // checked by the AI: nothing in the other list is the same subject
+    let best = null, top = 0;
+    for (const o of all) {
+      if (o.id === t.id || (o.system && t.system && o.system !== t.system) || !!o.bookId === !!t.bookId) continue;
+      if ((t.notTwin || []).includes(o.id) || (o.notTwin || []).includes(t.id) || (o.twinChecked && !o.twinId) || (o.twinId && o.twinId !== t.id)) continue;
+      const k = this.likeness(o.name, t.name);
+      if (k > top) { top = k; best = o; }
+    }
+    return best;
+  },
+
+  /**
+   * Match the book's topics to the AMC list for one subject, checked by the AI — so the pairing does
+   * not depend on word rules (which got CIN and carcinoma cervix wrong). Runs by itself once per
+   * subject after a build, and again whenever new topics appear. Nothing to upload when it improves.
+   */
+  async linkTwins(system, { force = false } = {}) {
+    if (!AI.key) return 0;
+    const all = (await DB.live('topics')).filter(t => t.system === system);
+    const amc = all.filter(t => !t.bookId), book = all.filter(t => t.bookId);
+    if (!amc.length || !book.length) return 0;
+    const sig = amc.length + ':' + book.length;
+    const key = 'twins-' + system;
+    if (!force && localStorage.getItem(key) === sig) return 0;
+    const out = await this._bigAI({ system: 'You match medical syllabus topics. Be strict: same subject only.', prompt: `Two topic lists for the same subject. List A is the AMC exam syllabus; list B is a textbook's chapters and topics.
+Pair each A topic with the ONE B topic that covers the SAME subject (not a broader chapter, not a related but different condition). Examples: "Cervical screening and cervical cancer" = "Carcinoma cervix"; "Cervical intraepithelial neoplasia" ≠ "Carcinoma cervix"; "Type 1 diabetes" ≠ "Type 2 diabetes". If none is the same, leave it out.
+
+A:
+${amc.map(t => `${t.id} | ${t.name}`).join('\n')}
+
+B:
+${book.map(t => `${t.id} | ${t.chapter ? t.chapter + ' › ' : ''}${t.name}`).join('\n')}
+
+Return JSON: {"pairs":[{"a":"<A id>","b":"<B id>"}]}` });
+    const ids = new Set(all.map(t => t.id)), used = new Set();
+    const pairs = (out?.pairs || []).filter(x => ids.has(x.a) && ids.has(x.b) && !used.has(x.a) && !used.has(x.b) && used.add(x.a) && used.add(x.b));
+    const by = Object.fromEntries(all.map(t => [t.id, t]));
+    for (const t of all) {
+      if ((t.notTwin || []).length && pairs.some(x => (x.a === t.id && t.notTwin.includes(x.b)) || (x.b === t.id && t.notTwin.includes(x.a)))) continue;
+      const pr = pairs.find(x => x.a === t.id || x.b === t.id);
+      const tw = pr ? (pr.a === t.id ? pr.b : pr.a) : null;
+      if (t.twinId !== tw || !t.twinChecked) { t.twinId = tw; t.twinChecked = 1; await DB.put('topics', t); }
+    }
+    localStorage.setItem(key, sig);
+    return pairs.length;
+  },
+  async linkAll() {
+    const sys = [...new Set((await DB.live('topics')).filter(t => t.bookId).map(t => t.system).filter(Boolean))];
+    let n = 0;
+    for (const s of sys) { if (document.hidden) break; try { n += await this.linkTwins(s); } catch (e) { console.warn('twin links', s, e); } }
+    return n;
+  },
+  // "Not the same subject": undo a link and never offer it again.
+  async unlink(a, b) {
+    for (const [x, y] of [[a, b], [b, a]]) {
+      const t = await DB.get('topics', x); if (!t) continue;
+      t.notTwin = [...new Set([...(t.notTwin || []), y])];
+      if (t.twinId === y) t.twinId = null;
+      await DB.put('topics', t);
+    }
+  },
+
+  /**
+   * Bank questions (AMEDEX, PYQ, UWorld, MBBS bank) about this subject that were filed under some
+   * other topic when the bank was imported — before this topic existed. Found by the topic's own
+   * terms; a question stays where it is if it fits its present topic better.
+   */
+  async bankFor(t, twin) {
+    const mine = new Set([t.id, twin?.id].filter(Boolean));
+    const terms = [...topicTerms(t), ...(twin ? topicTerms(twin) : [])];
+    if (!terms.length) return [];
+    const topics = Object.fromEntries((await DB.live('topics')).map(x => [x.id, x]));
+    const tcache = new Map();
+    const fit = (text, ts) => { let sc = 0; for (const x of ts) { x.re.lastIndex = 0; if (x.re.test(text)) sc += x.w; } return sc; };
+    const out = [];
+    await DB.each('mcqs', null, null, m => {
+      if (m.deleted || m.flagged || mine.has(m.topicId) || qBank(m) === 'AI') return;
+      const text = String(m.stem || '').toLowerCase();   // the question itself — options are too often generic
+      const sc = fit(text, terms);
+      if (sc < 3.2) return;
+      const cur = topics[m.topicId];
+      if (cur) { let ct = tcache.get(cur.id); if (!ct) tcache.set(cur.id, ct = topicTerms(cur)); if (fit(text, ct) > sc) return; }
+      out.push(m);
+    });
+    return out;
   },
 
   /** An existing topic for this, if there already is one — exact name first, then close enough. */
@@ -835,7 +930,8 @@ ${groups[g].join('\n\n')}`
       // The same subject under another name (the AMC list's "Cervical screening and cervical
       // cancer" for the book's "Carcinoma cervix"): that topic joins this chapter, with its notes and
       // questions, instead of a second copy being made beside it.
-      const near = [...others.values()].find(o => !o.bookId && !claimed.has(o.id) && (!o.system || o.system === sys) && this.similar(o.name, fields.name));
+      const near = [...others.values()].filter(o => !o.bookId && !claimed.has(o.id) && (!o.system || o.system === sys))
+        .map(o => [o, this.likeness(o.name, fields.name)]).filter(x => x[1] > 0).sort((a, b) => b[1] - a[1])[0]?.[0];
       if (near) {
         claimed.add(near.id);
         Object.assign(near, { bookId, bookName: fields.name, chapter: fields.chapter, parentName: fields.chapter, chapterNo: fields.chapterNo, part: fields.part || '', order: fields.order, system: sys || near.system });

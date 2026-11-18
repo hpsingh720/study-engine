@@ -403,6 +403,8 @@ Views.topic = async (id, tab) => {
   const twin = await Focus.twin(t).catch(() => null);
   let borrowed = false;
   if (!sheet && twin) { const ts = await DB.get('sheets', twin.id); if (ts) { sheet = ts; borrowed = true; } }
+  // Its questions too: one subject, one question bank, whichever of the two you open.
+  if (twin) { const seen = new Set(mcqs.map(m => m.id)); mcqs = mcqs.concat((await DB.byIndex('mcqs', 'topicId', twin.id)).filter(m => !seen.has(m.id))); }
   const live = mcqs.filter(m => !m.deleted && !m.flagged && !m.merged);
   const inQueue = queue.filter(j => j.payload?.topicId === id && j.status !== 'done');
   let body = '';
@@ -414,7 +416,12 @@ Views.topic = async (id, tab) => {
   } else if (tab === 'mindmap') body = (await lectureSlides(id))
     || empty('Mind map on request', 'A one-page colourful map of this topic — causes, features, investigations, management — plus step-by-step flowcharts and the figure pages in your books. Made only for topics you ask for.', `<button class="btn primary" data-act="genMindmap" data-id="${id}">Make mind map</button>`);
   else if (tab === 'compare') body = compareTab(t, sheet, books, inQueue);
-  else if (tab === 'mcqs') body = mcqTab(t, live, mcqs, st, books, inQueue);
+  else if (tab === 'mcqs') {
+    let extra = [];
+    try { extra = await Focus.bankFor(t, twin); } catch (e) { console.warn(e); }
+    (window._bankExtra ||= {})[t.id] = extra.map(m => m.id);
+    body = mcqTab(t, live, mcqs, st, books, inQueue, extra);
+  }
   else if (tab === 'notes') body = await notesTab(t);
   else if (tab === 'ask') body = await askTab(t);
   return `<div class="page topic-page">
@@ -424,7 +431,7 @@ Views.topic = async (id, tab) => {
                : `<button class="btn primary" data-act="doneTopic" data-id="${id}">I've finished this topic → test me</button>`}
       <button class="btn icon" data-act="topicMenu" data-id="${id}" aria-label="More">⋯</button>
     </div></header>
-  ${twin ? `<p class="muted small twin-line">${borrowed ? `Notes shown from the same subject ${twin.bookId ? 'in your book' : 'in the AMC list'}` : `Same subject ${twin.bookId ? 'in your book' : 'in the AMC list'}`}: <a class="link" href="#/topic/${twin.id}">${esc(twin.chapter ? twin.chapter + ' › ' : '')}${esc(twin.name)}</a></p>` : ''}
+  ${twin ? `<p class="muted small twin-line"><button class="link small" data-act="unlinkTwin" data-a="${t.id}" data-b="${twin.id}" style="float:right">Not the same?</button>${borrowed ? `Notes shown from the same subject ${twin.bookId ? 'in your book' : 'in the AMC list'}` : `Same subject ${twin.bookId ? 'in your book' : 'in the AMC list'}`}: <a class="link" href="#/topic/${twin.id}">${esc(twin.chapter ? twin.chapter + ' › ' : '')}${esc(twin.name)}</a></p>` : ''}
   <nav class="tabs" role="tablist">${TOPIC_TABS.map(([k, l]) => `<a class="tab ${k === tab ? 'on' : ''} ${k === 'compare' ? 'tab-amc' : ''}" href="#/topic/${id}/${k}">${l}${k === 'mcqs' ? ` <small>${live.length}</small>` : ''}</a>`).join('')}</nav>
   <div class="tab-body">${body}</div></div>`;
 };
@@ -490,7 +497,7 @@ function compareTab(t, sheet, books, inQueue) {
   return `<div class="row between mb"><h2 class="h2">AMC · Murtagh</h2><span class="muted small">Read this once after your own notes.</span></div>${comparisonHTML(sheet)}${au ? `<h3 class="mt">What Murtagh &amp; Australian sources say</h3>${au}` : ''}`;
 }
 
-function mcqTab(t, live, all, st, books, inQueue) {
+function mcqTab(t, live, all, st, books, inQueue, extra = []) {
   const n = k => live.filter(m => m.type === k).length;
   const ok = live.filter(m => !qBroken(m)), broken = live.length - ok.length;
   const nb = k => ok.filter(m => qBank(m) === k).length;
@@ -506,7 +513,12 @@ function mcqTab(t, live, all, st, books, inQueue) {
         <button class="btn primary" data-act="practiseTopic" data-id="${t.id}" data-type="ALL" data-bank="real" ${nb('AMEDEX') + nb('PYQ') ? '' : 'disabled'}>Real questions (AMEDEX + PYQ)</button>
         ${bankBtns}
         <button class="btn ghost" data-act="practiseTopic" data-id="${t.id}" data-type="ALL" data-bank="all" ${ok.length ? '' : 'disabled'}>All mixed</button>
-      </div></div>
+      </div>
+      ${extra.length ? (() => { const c = k => extra.filter(m => qBank(m) === k).length; const parts = ['AMEDEX', 'PYQ', 'UWORLD', 'MBBS', 'SPOT'].filter(c).map(k => `${c(k)} ${BANK_LABEL[k]}`).join(' · ');
+        return `<div class="callout mt"><b>${extra.length} more in your banks on this subject</b> <span class="muted small">(${parts}) — filed under other topics when the bank was read in, before this topic existed.</span>
+        <div class="row gap wrap mt"><button class="btn primary sm" data-act="practiseBankExtra" data-id="${t.id}">Practise them</button><button class="btn sm" data-act="bringBankExtra" data-id="${t.id}">Move them to this topic</button></div></div>`; })()
+        : (nb('AMEDEX') + nb('PYQ') ? '' : `<p class="muted small mt">No AMEDEX or PYQ question in your banks matches this subject's terms. If you expected some, the bank may not be read in yet (Library).</p>`)}
+      </div>
     <div class="card"><h3>${ok.length ? 'More questions' : 'No questions yet'}</h3>
       ${t.srcUsed?.books?.length
         ? `<p class="muted small">Written from <b>${t.srcUsed.books.map(b => `${esc(b.book)} pp.${b.from}–${b.to}`).join(', ')}</b>.</p>`
