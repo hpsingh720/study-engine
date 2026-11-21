@@ -239,3 +239,110 @@ async function startSystemTest(system, count = 40) {
   const full = done.size === topics.length;
   await Practice.start({ kind: 'systest', title: `${sysName(system)} — ${full ? 'full system' : done.size + '/' + topics.length + ' topics'} test`, ids, count: ids.length });
 }
+
+// ---------- Answer check before you see a question ----------
+// AI-written and lecture questions are checked by a second, careful pass: is the key right by the
+// guideline the stem names, and does the explanation agree with the key? Wrong keys are corrected,
+// hopeless questions are taken out. (A lecture said "every 3 years" — Indian/US practice — and the
+// question called it the Australian programme, keyed "every 2 years", explained "3 or 5 years".)
+const GUIDE_NOTES = `Current guideline anchors (use them when the stem names the country):
+- Australia, National Cervical Screening Program (since Dec 2017): HPV-based Cervical Screening Test every 5 years, ages 25–74 (exit test 70–74); self-collection allowed; HPV 16/18 → colposcopy; under-25s not screened; after total hysterectomy for benign disease with no prior high-grade lesion → no further screening; subtotal hysterectomy (cervix kept) → continue usual screening.
+- India (MoHFW / FOGSI): VIA every 5 years from 30; Pap every 3 years or HPV every 5 years where available.
+- USA (USPSTF/ACOG): cytology every 3 years 21–29; 30–65 cytology every 3 years, HPV primary every 5 years, or co-testing every 5 years; stop at 65 after adequate negative screening.`;
+
+async function factCheck(qs, { force = false } = {}) {
+  const L = i => String.fromCharCode(65 + i);
+  const todo = qs.filter(m => m && !m.deleted && (force || !m.checked) && (m.options || []).length >= 3);
+  let fixed = 0, dropped = 0, ok = 0;
+  const notes = [];
+  for (let i = 0; i < todo.length; i += 8) {
+    const batch = todo.slice(i, i + 8);
+    const prompt = `You are a senior examiner checking exam questions before students see them.
+For EACH question:
+1. Work out the correct answer yourself, by CURRENT guidelines. If the stem names a country, programme or college (e.g. "Australian National Cervical Screening Program", "RANZCOG", "according to Indian guidelines"), the answer MUST follow THAT country's current guideline. Otherwise use Australian practice for AMC-style questions and standard Indian textbooks for MBBS-style ones.
+2. Compare with the key. Check that the explanation agrees with the key and with the stem's country.
+3. A stem that names a country while the facts belong to another country's guideline is mislabelled: correct the stem (or the answer) so the whole question is true.
+
+${GUIDE_NOTES}
+
+Return JSON {"results":[{"id":"","ok":true,"answer":"A-E","stem":"","explanation":"","drop":false,"why":"max 20 words"}]}
+- ok:true only when the key is right AND the explanation agrees.
+- Key wrong or explanation contradicts it: ok:false, "answer" = the right letter, "explanation" = a corrected one (first line "Answer: <option text>", then why, then one short line per wrong option). Fill "stem" only if the stem itself must change.
+- No option is right, or two are equally right: drop:true.
+
+${batch.map(m => `[${m.id}]\n${m.stem}\n${m.options.map((o, j) => `${L(j)}) ${o}`).join('\n')}\nKey: ${letters(correctSet(m))}\nExplanation: ${String(m.expl || '').slice(0, 700)}`).join('\n\n')}`;
+    let out;
+    try { out = await AI.call({ prompt, json: true, temperature: 0.1, system: typeof SYSTEM_TUTOR !== 'undefined' ? SYSTEM_TUTOR : undefined }); }
+    catch (e) { console.warn('answer check', e); if (/quota|busy|key/i.test(e.message || '')) throw e; continue; }
+    const res = Array.isArray(out?.results) ? out.results : [];
+    for (const [k, m] of batch.entries()) {
+      const r = res.find(x => String(x?.id || '').replace(/[\[\]\s"']/g, '') === m.id) || (res.length === batch.length ? res[k] : null);
+      if (!r) continue;
+      m.checked = Date.now();
+      if (r.drop) { m.flagged = 1; m.flagWhy = 'Taken out by the answer check: ' + String(r.why || ''); dropped++; notes.push({ id: m.id, kind: 'dropped', why: r.why }); }
+      else if (r.ok === false) {
+        const a = String(r.answer || '').trim().toUpperCase().charCodeAt(0) - 65;
+        const before = letters(correctSet(m));
+        if (a >= 0 && a < m.options.length) { m.ans = a; delete m.multi; }
+        if (r.stem && String(r.stem).trim().length > 20) m.stem = String(r.stem).trim();
+        if (r.explanation) m.expl = asText(r.explanation);
+        m.corrected = { from: before, why: String(r.why || '').slice(0, 160), at: Date.now() };
+        m.verified = 1; delete m.disputed;
+        fixed++; notes.push({ id: m.id, kind: 'fixed', from: before, to: letters(correctSet(m)), why: r.why });
+      } else { m.verified = 1; ok++; }
+      if (m.created && m.id) await DB.put('mcqs', m).catch(() => {});
+    }
+  }
+  return { fixed, dropped, ok, notes };
+}
+
+JOB_LABEL.factcheck = 'Checking answer keys';
+async function queueFactCheck(prio = 6.5) {
+  const queued = new Set((await DB.all('queue')).filter(j => j.kind === 'factcheck' && j.status !== 'done').flatMap(j => j.payload.ids));
+  const all = (await DB.live('mcqs')).filter(m => !m.checked && !m.flagged && !m.merged && !queued.has(m.id) && (qBank(m) === 'AI' || /^lecture/.test(m.src || '')));
+  for (let i = 0; i < all.length; i += 8) await Queue.add('factcheck', { ids: all.slice(i, i + 8).map(m => m.id) }, prio);
+  return all.length;
+}
+Handlers.factcheck = async function (job) {
+  const qs = (await Promise.all(job.payload.ids.map(id => DB.get('mcqs', id)))).filter(Boolean);
+  await factCheck(qs);
+};
+
+// ---------- Picture questions from the books' own figures ----------
+// The AI-written sets had no pictures at all: the only image questions came from banks that had
+// them. Now each topic you study gets up to three questions built on the real photographs, slides
+// and scans printed in your books (colposcopy, cytology, X-rays…), cut out without their captions.
+// Needs the PDF itself, so it runs on the laptop; the questions sync to the phone and iPad.
+JOB_LABEL.figmcq = 'Picture questions from your books';
+async function queueFigMcqs(limit = 6) {
+  if (!(await DB.all('files')).length) return 0;
+  const mcqs = await DB.live('mcqs');
+  const by = {}; for (const m of mcqs) (by[m.topicId] ||= []).push(m);
+  const queued = new Set((await DB.all('queue')).filter(j => j.kind === 'figmcq' && j.status !== 'done').map(j => j.payload.topicId));
+  const topics = (await DB.live('topics')).filter(t => !t.figTried && !queued.has(t.id) && (by[t.id] || []).length >= 5 && !(by[t.id] || []).some(m => m.type === 'IMG'));
+  for (const t of topics.slice(0, limit)) await Queue.add('figmcq', { topicId: t.id }, 7);
+  return Math.min(limit, topics.length);
+}
+Handlers.figmcq = async function (job) {
+  const t = await DB.get('topics', job.payload.topicId); if (!t) return;
+  const figs = (await bookFigures(t).catch(() => [])).filter(f => String(f.img || '').startsWith('fig-')).slice(0, 3);
+  let made = 0;
+  for (const f of figs) {
+    const page = await DB.get('media', f.img); if (!page?.data) continue;
+    const out = await AI.call({ images: [page.data], json: true, temperature: 0.3, system: typeof SYSTEM_TUTOR !== 'undefined' ? SYSTEM_TUTOR : undefined, prompt: `This is a page from ${f.book} (p.${f.p}). It has a figure captioned: "${f.cap}". Topic: ${t.name}.
+Is the figure a real clinical PICTURE — a clinical photograph, colposcopy view, cytology or histology slide, radiograph, CT/MRI/USG image, ECG, specimen, or instrument? Tables, flowcharts, drawn diagrams of text and graphs do NOT count.
+If it is: give "box_2d" [ymin,xmin,ymax,xmax] (0–1000) around the picture ONLY — leave out the caption, labels that give the answer away, and the page text — and write 1–2 exam questions that need the picture ("the appearance shown", "the finding in this image"): EXACTLY 4 options, one right answer, "explanation" starting "Answer: <option text>", "master" one line.
+Return JSON {"usable":true,"box_2d":[0,0,0,0],"mcqs":[{"stem":"","options":["","","",""],"answer":0,"explanation":"","master":""}]} or {"usable":false}` });
+    if (!out?.usable || !Array.isArray(out.box_2d)) continue;
+    const img = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = page.data; });
+    const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight; c.getContext('2d').drawImage(img, 0, 0);
+    const crop = cropBox(c, out.box_2d); if (!crop) continue;
+    const id = 'img-' + uid();
+    await DB.put('media', { id, data: await compressImage(crop, 1200, 0.82), kind: 'qbank', caption: f.cap });
+    const list = (out.mcqs || []).map(m => cleanMcq({ ...m, type: 'IMG' }, t, { type: 'IMG', img: id, src: `figure: ${f.book} p.${f.p}`, system: t.system })).filter(Boolean);
+    list.forEach(q => { q.keyedBy = 'ai'; });
+    if (list.length) { await factCheck(list).catch(() => {}); await DB.putMany('mcqs', list.filter(q => !q.flagged)); made += list.length; }
+  }
+  t.figTried = Date.now(); await DB.put('topics', t);
+  return made;
+};

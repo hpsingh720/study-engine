@@ -417,8 +417,13 @@ ${existing || '(none yet)'}
 
 Return JSON: {"mcqs":[{"type":"AMC","stem":"","options":["","","","",""],"answer":0,"explanation":"","difficulty":"medium","cite":"","pearl":false,"master":""}]}`;
     const out = ctx?.provider ? await Providers.call(ctx.provider, { prompt, system: SYSTEM_TUTOR, temperature: 0.55, maxTokens: 12000 }) : await AI.call({ prompt, system: SYSTEM_TUTOR, temperature: 0.55 });
-    const list = (out.mcqs || []).map(m => cleanMcq(m, topic)).filter(Boolean);
+    let list = (out.mcqs || []).map(m => cleanMcq(m, topic)).filter(Boolean);
+    // Every key checked before you see it; hopeless questions never reach you.
+    try { await factCheck(list); } catch (e) { console.warn('answer check later', e); }
+    list = list.filter(q => !q.flagged);
     await DB.putMany('mcqs', list);
+    // Picture questions from the books' own figures (on the laptop, where the PDFs are).
+    try { if (!topic.figTried && (await DB.count('files')) > 0) await Queue.add('figmcq', { topicId: topic.id }, 7); } catch (e) {}
 
     // Record what these were actually written from, so the topic can say so plainly rather than
     // leaving it a guess whether the book was used at all.

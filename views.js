@@ -612,7 +612,7 @@ Views.session = async () => {
           ${revealed ? `<div class="expl ${a.ok ? 'ok' : 'bad'}"><b>${a.ok ? 'Correct' : 'Not quite — answer ' + letters(right)}</b>${md(m.expl)}${m.cite ? `<p class="muted small">Source: ${esc(m.cite)}</p>` : ''}${!a.ok ? masterBlock(m, a.c) : ''}${m.keyedBy === 'ai' && m.src !== 'ai' ? '<p class="muted small">Answer chosen by AI (the book had no key on these pages).</p>' : ''}
             ${m.disputed ? (m.arbit ? `<p class="disputed">⚠ Two AIs think <b>${letters([m.disputed.ai])}</b>, not the key — ${esc(m.arbit.why || m.disputed.why)}. Check this one in Murtagh / the guidelines.</p>` : `<p class="disputed">⚠ A second AI picked <b>${letters([m.disputed.ai])}</b> instead — ${esc(m.disputed.why)}. A third AI will settle it soon; until then, check Murtagh / the guidelines.</p>`)
               : m.upheld ? `<p class="muted small">✓ Answer confirmed by a third AI — ${esc(m.upheld.why)}</p>` : m.verified ? '<p class="muted small">✓ Answer double-checked by a second AI</p>' : ''}
-            <div class="row gap mt"><button class="btn sm" data-act="askQ">Ask AI about this</button><button class="btn sm ghost" data-act="flagQ">Flag bad question</button></div></div>` : ''}
+            <div class="row gap mt"><button class="btn sm" data-act="askQ">Ask AI about this</button><button class="btn sm ghost" data-act="checkQ">Answer wrong?</button><button class="btn sm ghost" data-act="flagQ">Flag bad question</button></div></div>` : ''}
           <div class="q-nav">
             <button class="btn" data-act="prevQ" ${s.idx ? '' : 'disabled'}>Back</button>
             ${s.mode === 'tutor' && !revealed ? `<button class="btn primary" data-act="checkQ" ${chosenArr.length ? '' : 'disabled'}>Check answer</button>`

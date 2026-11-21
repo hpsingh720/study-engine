@@ -766,6 +766,20 @@ const A = {
   },
   async copyQuote(el) { try { await navigator.clipboard.writeText(el.dataset.t); toast('Copied'); } catch (e) { toast('Could not copy — select the text instead'); } },
   wAll() { sessionStorage.setItem('wAll', sessionStorage.getItem('wAll') === '1' ? '' : '1'); App.render(true); },
+  // "This answer is wrong": checked at once against the current guideline; a wrong key is corrected.
+  async checkQ(el) {
+    const id = el.dataset.id || Practice.s?.qs?.[Practice.s.idx];
+    const m = id && await DB.get('mcqs', id); if (!m) return;
+    if (el.dataset.busy) return;
+    el.dataset.busy = '1'; el.disabled = true; el.innerHTML = '<span class="spin"></span>Checking';
+    try {
+      const r = await factCheck([m], { force: true });
+      const n = r.notes[0];
+      if (!n && !r.ok) { toast('Could not check it right now — try again in a minute.', 6000); return App.render(true); }
+      toast(n?.kind === 'fixed' ? `You were right — the answer is now ${n.to} (was ${n.from}). ${n.why || ''}` : n?.kind === 'dropped' ? `Taken out: ${n.why || 'no option is right'}.` : 'Checked: the answer stands.', 10000);
+    } catch (e) { toast(e.message || String(e), 8000); }
+    App.render(true);
+  },
   async flagQ() {
     const s = Practice.s; const m = await DB.get('mcqs', s.qs[s.idx]); m.flagged = 1; await DB.put('mcqs', m);
     toast('Flagged — it won’t appear in practice again.');
@@ -1280,6 +1294,9 @@ async function init() {
     } catch (e) { console.warn('notes check', e); }
   };
   setTimeout(gapRun, 120000); setInterval(bg(gapRun), 3600000);
+  // Answer keys of AI and lecture questions checked in the background; picture questions made from the books' figures.
+  setTimeout(bg(() => queueFactCheck().then(() => queueFigMcqs()).catch(console.warn)), 150000);
+  setInterval(bg(() => queueFactCheck().then(() => queueFigMcqs()).catch(console.warn)), 1800000);
   // Book topics ↔ AMC list, checked by the AI once per subject (again only when topics change).
   setTimeout(bg(() => Focus.linkAll().then(n => n && App.softRefresh()).catch(console.warn)), 90000);
   setInterval(bg(() => fillMindmapFigs().catch(console.warn)), 300000); setTimeout(() => fillMindmapFigs().catch(console.warn), 25000);
@@ -1287,7 +1304,9 @@ async function init() {
   // College lectures: pick up any recording still running, and refresh the night-before reminders.
   Lectures.init().catch(console.warn);
   setTimeout(() => Timetable.init().catch(console.warn), 4000);
-  if (Sync.on()) { Sync.run(); setInterval(bg(() => Sync.run()), 120000); document.addEventListener('visibilitychange', () => { if (!document.hidden) Sync.run(); }); }
+  // In the pocket the phone still syncs, every 10 minutes instead of 2 — so a lecture recorded with
+  // the screen off reaches the laptop without opening the app.
+  if (Sync.on()) { Sync.run(); setInterval(() => { if (document.hidden && handheld()) { if (Date.now() - (window._bgSync || 0) < 600000) return; window._bgSync = Date.now(); } Sync.run(); }, 120000); document.addEventListener('visibilitychange', () => { if (!document.hidden) Sync.run(); }); }
   else Sync.set('off');
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     // Pick up a new version by itself: check on every open, and reload once when the new one takes over.

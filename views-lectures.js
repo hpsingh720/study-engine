@@ -121,8 +121,10 @@ Views.lecture = async id => {
   const qHtml = qs.map((m, i) => `<div class="card">
       <p class="muted small">Q${i + 1}${m.fromLecture ? ' · from: “' + esc(m.fromLecture) + '”' : ''}</p>
       <p><b>${esc(m.stem)}</b></p>
-      <ol class="opts">${m.options.map((o, j) => `<li${j === m.ans ? ' class="right"' : ''}>${esc(o)}</li>`).join('')}</ol>
+      <ol class="opts">${m.options.map((o, j) => `<li${correctSet(m).includes(j) ? ' class="right"' : ''}>${esc(o)}</li>`).join('')}</ol>
       ${m.masterLine ? `<p class="muted small">${esc(m.masterLine)}</p>` : ''}
+      ${m.corrected ? `<p class="small ok-t">Corrected by the answer check (was ${esc(m.corrected.from)}): ${esc(m.corrected.why || '')}</p>` : ''}
+      <div class="row gap"><button class="btn ghost sm" data-act="checkQ" data-id="${m.id}">${m.checked ? 'Check again' : 'Answer wrong?'}</button></div>
     </div>`).join('');
 
   return `<div class="page">
@@ -136,7 +138,8 @@ Views.lecture = async id => {
 
     ${slidesHtml}
     ${notesHtml}
-    ${l.state === 'transcribed' ? `<button class="btn full primary" data-act="lecGenerate" data-id="${l.id}">Write questions from this lecture</button>` : ''}
+    ${l.state === 'transcribed' || (l.state === 'thin' && (l.transcript || '').length >= 400) ? `<button class="btn full primary" data-act="lecGenerate" data-id="${l.id}">Write questions from this lecture</button>` : ''}
+    ${l.state === 'done' && l.more ? `<button class="btn full primary" data-act="lecGenerate" data-id="${l.id}">${l.more} more part${l.more === 1 ? '' : 's'} of the class arrived after the questions — write questions again</button>` : ''}
     ${l.state === 'writing' ? '<p class="muted">Writing questions…</p>' : ''}
     ${l.error ? `<p class="warn">${esc(l.error)}</p>` : ''}
 

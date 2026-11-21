@@ -134,6 +134,8 @@ const Lectures = {
       return 'parked';
     }
 
+    let ok = false;
+    const idx = index || ((await this.get(l.id))?.chunks || 0) + 1;
     try {
       if (path) {
         const n = this.native();
@@ -143,28 +145,51 @@ const Lectures = {
       if (blob && blob.size > 1024) {
         const { text, raw, dropped } = await this.transcribe(blob, l);
         const fresh = await this.get(l.id); // re-read: chunks arrive while other things write
-        if (text) fresh.transcript = (fresh.transcript + ' ' + text).trim();
+        // Each part kept under its number, so a part transcribed late (after a failure) still lands
+        // in its place in the class rather than at the end.
+        fresh.parts ||= {};
+        if (!Object.keys(fresh.parts).length && fresh.transcript) fresh.parts['0'] = fresh.transcript;
+        if (text) fresh.parts[idx] = text;
+        fresh.transcript = Object.keys(fresh.parts).map(Number).sort((a, b) => a - b).map(k => fresh.parts[k]).join(' ').trim();
+        fresh.failedParts = (fresh.failedParts || []).filter(x => x !== idx);
+        if (!fresh.failedParts.length) fresh.error = '';
+        // Parts arriving after the questions were made: say so, and offer to make questions from them.
+        if (fresh.state === 'done' && text) fresh.more = (fresh.more || 0) + 1;
         // Everything Whisper heard, unfiltered, kept alongside. If the filter ever turns out to be
         // too strict for a room, the class is still there to rebuild from.
         if (raw) fresh.rawTranscript = ((fresh.rawTranscript || '') + ' ' + raw).trim();
         fresh.chunks++;
         fresh.seconds += this.CHUNK_SECONDS;
         fresh.unclearSeconds = (fresh.unclearSeconds || 0) + (dropped || 0);
-        await this.save(fresh);
+        // A class that had too little text before now has enough: make its questions.
+        if (fresh.state === 'thin' && fresh.transcript.length >= 400) { fresh.state = 'transcribed'; fresh.error = ''; await this.save(fresh); await Queue.add('lectureMcqs', { lectureId: fresh.id }, 0.5); }
+        else await this.save(fresh);
         this._paint();
       }
+      ok = true;
     } catch (e) {
       console.warn('chunk failed', e);
       const fresh = await this.get(l.id);
-      // One bad chunk must not kill the lecture — note it and keep going.
-      fresh.error = e.message || String(e);
+      // One bad part must not lose the class: the recording stays on the phone and is tried again
+      // later (Gemini busy, no internet, out of quota). It used to be deleted here — gone for good.
+      fresh.failedParts = [...new Set([...(fresh.failedParts || []), idx])];
+      fresh.error = `${fresh.failedParts.length} part${fresh.failedParts.length === 1 ? '' : 's'} not transcribed yet — will try again (${String(e.message || e).slice(0, 80)})`;
       await this.save(fresh);
       this._paint();
+      if (path) { await this._park({ path, index: idx, last: false, tries: 1 }); this._retrySoon(); }
     } finally {
-      if (path) { this._seen.add(path); try { await this.native().deleteChunk({ path }); } catch (e) {} }
+      // Deleted only once it has become text.
+      if (path && ok) { this._seen.add(path); try { await this.native().deleteChunk({ path }); } catch (e) {} }
     }
 
-    if (last) await this.finish(l.id);
+    if (last && ['recording', undefined].includes((await this.get(l.id))?.state)) await this.finish(l.id);
+    return ok ? 'ok' : 'failed';
+  },
+
+  // Failed parts are tried again in a few minutes, and whenever the app comes back to the front.
+  _retrySoon() {
+    if (this._rt) return;
+    this._rt = setTimeout(() => { this._rt = null; this.catchUp().catch(console.warn); }, 5 * 60000);
   },
 
   /**
@@ -331,7 +356,7 @@ Reply with the transcript text only.`;
       } catch (e) {}
     }
     await this.save(l);
-    await DB.meta('activeLecture', null);
+    if ((await DB.meta('activeLecture')) === l.id) await DB.meta('activeLecture', null);
     this._paint();
 
     if ((l.transcript || '').length < 400) {
@@ -398,8 +423,8 @@ Reply with the transcript text only.`;
     // An hour gives around twenty, before the extra ones for points the teacher flagged.
     const minutes = Math.max(1, Math.round((l.chunks || 0) * this.CHUNK_SECONDS / 60 - (l.unclearSeconds || 0) / 60));
     const flagged = this.emphasis(l.transcript);
-    const base = Math.max(8, Math.min(24, Math.round(minutes / 3)));
-    const target = Math.min(40, base + flagged.length * 3);
+    const base = Math.max(10, Math.min(30, Math.round(minutes / 2)));
+    const target = Math.min(50, base + flagged.length * 3);
 
     const prompt = `A lecturer has just taught this class. Below is an automatic transcript of what was actually said. It contains speech-recognition errors, Hindi/Punjabi words, repetition and digressions — read through them.
 
@@ -431,6 +456,7 @@ Write about ${target} MBBS-style questions (EXACTLY 4 options each)${flagged.len
 QUALITY RULES
 - Clinical reasoning, not recall of a sentence: diagnosis, next step, investigation of choice, first-line treatment, complication, contraindication.
 - Every wrong option must be something a real student could pick.
+- GUIDELINES: the lecturer usually teaches Indian (or US) practice. Write such questions as Indian practice ("as per Indian guidelines", or no country at all). NEVER put "Australian", "AMC" or "RANZCOG" in a stem unless the answer follows the current Australian guideline — e.g. Australia screens with an HPV test every 5 years from 25 to 74, not a Pap smear every 3 years.
 - No "all of the above" / "none of the above". One defensible answer. Spread the correct letter around.
 - "explanation": first line "Answer: <option text>", then 1–3 lines why, then one short line per wrong option.
 - "master": one line — the exact fact needed to never miss this.
@@ -459,6 +485,8 @@ Return JSON: {"mcqs":[{"stem":"","options":["","","",""],"answer":0,"explanation
 
     const { kept, duplicates } = await this.dedupe(list, topic);
 
+    // Every key checked before you see it (the lecture's own country's rule must not be sold as Australia's).
+    try { await factCheck(kept); } catch (e) { console.warn('answer check later', e); }
     if (kept.length) await DB.putMany('mcqs', kept);
 
     // A duplicate still means the lecturer covered it — surface the question you already own
@@ -473,9 +501,12 @@ Return JSON: {"mcqs":[{"stem":"","options":["","","",""],"answer":0,"explanation
     fresh.reinforced = duplicates.map(m => m.id);
     fresh.generated = kept.length;
     fresh.state = 'done';
-    fresh.error = '';
+    fresh.error = (fresh.failedParts || []).length ? fresh.error : '';
+    fresh.more = 0;
     await this.save(fresh);
     this._paint();
+    // Straight to the laptop and iPad — the phone may not be opened again for hours.
+    try { if (Sync.on()) Sync.run(); } catch (e) {}
     return fresh;
   },
 
@@ -1067,6 +1098,9 @@ On the parts:
       // Close the old one so this morning's class does not land inside last night's.
       await this.finish(existing.id);
     }
+    // Already made for this recording (by the catch-up pass): carry on with that one, never a second.
+    const same = (await this.all()).find(x => x.started && Math.abs(x.started - started) < 120000);
+    if (same) { if (same.state !== 'recording') { same.state = 'recording'; await this.save(same); } await DB.meta('activeLecture', same.id); return same; }
     const cls = await this.classAt(started);
     const topic = (st.label || '').trim() || cls?.topic || this._clockLabel(started);
 
@@ -1103,13 +1137,42 @@ On the parts:
     try { drained = (await n.drainPending())?.chunks || []; } catch (e) { drained = []; }
     for (const c of drained) if (c?.path) await this._park({ path: c.path, index: c.index || 0, last: !!c.last });
 
-    const queue = ((await DB.meta('pendingChunks')) || []).filter(c => !this._inflight?.has(c.path));
+    // Every recorded piece still on the phone that the page never received — the list of finished
+    // pieces lives in memory and is lost when Android closes the app; the files themselves are not.
+    if (n.listChunks) {
+      try {
+        const files = (await n.listChunks())?.chunks || [];
+        const st = await n.getState().catch(() => null);
+        const liveStart = st?.recording ? st.startedAt : 0;
+        const byStart = {};
+        for (const f of files) {
+          const m = /chunk_(\d{10,})_(\d+)\./.exec(f.path || '');
+          if (!m || this._seen?.has(f.path) || this._inflight?.has(f.path)) continue;
+          (byStart[m[1]] ||= []).push({ path: f.path, index: +m[2], size: f.size });
+        }
+        for (const [start, list] of Object.entries(byStart)) {
+          const top = Math.max(...list.map(x => x.index));
+          for (const c of list) {
+            if (c.size < 1024) continue;
+            await this._park({ path: c.path, index: c.index, last: c.index === top && Math.abs(+start - liveStart) > 120000 });
+          }
+        }
+      } catch (e) { console.warn('could not list recordings on the phone', e); }
+    }
+
+    // A part that keeps failing waits a while before the next try.
+    let tries = {}; try { tries = JSON.parse(localStorage.getItem('chunkTries') || '{}'); } catch (e) {}
+    const now = Date.now();
+    const queue = ((await DB.meta('pendingChunks')) || []).filter(c => !this._inflight?.has(c.path) && !(tries[c.path] && now - tries[c.path].at < Math.min(6, tries[c.path].n) * 10 * 60000));
     if (!queue.length) return;
 
-    // Split the queue into recordings. The service numbers chunks from 1 each time it starts.
+    // Split the queue into recordings by the start time in each file's name (the same for every
+    // piece of one recording), in order.
+    const key = c => /chunk_(\d{10,})_/.exec(c.path || '')?.[1] || 'x';
+    queue.sort((a, b) => key(a).localeCompare(key(b)) || (a.index || 0) - (b.index || 0));
     const sessions = [];
     for (const c of queue) {
-      if (!sessions.length || c.index === 1) sessions.push([]);
+      if (!sessions.length || key(sessions[sessions.length - 1][0]) !== key(c)) sessions.push([]);
       sessions[sessions.length - 1].push(c);
     }
 
@@ -1138,21 +1201,23 @@ On the parts:
           };
           await this.save(l);
         }
-        await DB.meta('activeLecture', l.id);
+        // Not made "the active lecture": a class being recorded right now must keep that place.
       }
 
       this._paint(); // show the lecture straight away; transcription takes a while
 
       let closed = false;
       for (const c of chunks) {
-        await this.onChunk({ path: c.path, index: c.index, last: !!c.last && !live, lecture: l });
+        const r = await this.onChunk({ path: c.path, index: c.index, last: !!c.last && !live, lecture: l });
         if (c.last && !live) closed = true;
-        await this._forget(c);
+        if (r === 'failed') { tries[c.path] = { n: (tries[c.path]?.n || 0) + 1, at: Date.now() }; try { localStorage.setItem('chunkTries', JSON.stringify(tries)); } catch (e) {} }
+        else { await this._forget(c); delete tries[c.path]; }
       }
+      try { localStorage.setItem('chunkTries', JSON.stringify(tries)); } catch (e) {}
 
       // The service never got to mark a final chunk — the app was killed, or the phone restarted.
       // Close it anyway rather than leave a lecture stuck on "recording" forever.
-      if (!live && !closed) await this.finish(l.id);
+      if (!live && !closed && (await this.get(l.id))?.state === 'recording') await this.finish(l.id);
     }
   },
 
@@ -1177,6 +1242,9 @@ On the parts:
   async init() {
     const n = this.native();
     if (!n) return;
+    // Parts still waiting to become text are tried again every 10 minutes and when the internet returns.
+    setInterval(() => DB.meta('pendingChunks').then(q => { if (q?.length || n.listChunks) this.catchUp(); }).catch(() => {}), 10 * 60000);
+    window.addEventListener('online', () => this.catchUp().catch(() => {}));
 
     // Listeners first. A chunk can finish while the rest of this is still running, and until this
     // is wired up every one of them goes into the native backlog instead of into the lecture.
@@ -1189,7 +1257,7 @@ On the parts:
         if (c.path) await this._park(c);
         const r = await this.onChunk(c);
         this._inflight.delete(c.path);
-        if (c.path && r !== 'parked') await this._forget(c);
+        if (c.path && r === 'ok') await this._forget(c);
       });
       // The tile started or stopped the recorder: make (or close) the lecture straight away.
       n.addListener('state', d => { if (d?.recording) this.catchUp().catch(console.warn); else this._paint(); });
