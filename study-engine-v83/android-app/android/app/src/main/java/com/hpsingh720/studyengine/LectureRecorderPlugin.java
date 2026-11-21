@@ -128,6 +128,37 @@ public class LectureRecorderPlugin extends Plugin {
         call.resolve();
     }
 
+    /**
+     * Every recorded piece still on the phone. A piece is deleted only after it has been turned into
+     * text, so anything listed here is a part of a lecture the page has not got yet — the class
+     * recorded from the tile while the app was closed, or a part whose transcription failed.
+     * The list of finished pieces kept in memory is lost when Android closes the app; the files are not.
+     */
+    @PluginMethod
+    public void listChunks(PluginCall call) {
+        JSObject r = new JSObject();
+        com.getcapacitor.JSArray arr = new com.getcapacitor.JSArray();
+        File dir = new File(getContext().getFilesDir(), "lectures");
+        File[] files = dir.listFiles();
+        String active = RecorderService.activePath;
+        long now = System.currentTimeMillis();
+        if (files != null) {
+            for (File f : files) {
+                String name = f.getName();
+                if (!name.startsWith("chunk_")) continue;
+                if (active != null && active.equals(f.getAbsolutePath())) continue;
+                if (now - f.lastModified() < 15000) continue;   // still being written
+                JSObject o = new JSObject();
+                o.put("path", f.getAbsolutePath());
+                o.put("size", f.length());
+                o.put("mtime", f.lastModified());
+                arr.put(o);
+            }
+        }
+        r.put("chunks", arr);
+        call.resolve(r);
+    }
+
     /** Chunks that finished while the page was away (reload, or the user left the app). */
     @PluginMethod
     public void drainPending(PluginCall call) {

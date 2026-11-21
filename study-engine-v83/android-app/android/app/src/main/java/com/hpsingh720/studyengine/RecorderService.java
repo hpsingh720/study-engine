@@ -41,6 +41,8 @@ public class RecorderService extends Service {
 
     private MediaRecorder recorder;
     private File currentFile;
+    /** The file being written right now — the page must not pick it up as a finished piece. */
+    public static volatile String activePath = null;
     private int chunkIndex = 0;
     private int chunkSeconds = 120;
     private String label = "Lecture";
@@ -124,6 +126,7 @@ public class RecorderService extends Service {
     /** Close the current chunk, hand it over, and immediately open the next one. */
     private void rotateChunk() {
         File finished = currentFile;
+        activePath = null;
         try {
             closeRecorder();
         } catch (Exception e) {
@@ -155,6 +158,7 @@ public class RecorderService extends Service {
         chunkIndex++;
         boolean opus = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q;
         currentFile = new File(dir, "chunk_" + startedAtOrNow() + "_" + chunkIndex + (opus ? ".ogg" : ".m4a"));
+        activePath = currentFile.getAbsolutePath();
 
         // CAMCORDER is the microphone setting phones use for filming: it listens to the room rather
         // than to a mouth at the phone, and lifts quiet speech. VOICE_RECOGNITION, used before, is
