@@ -297,9 +297,18 @@ ${batch.map(m => `[${m.id}]\n${m.stem}\n${m.options.map((o, j) => `${L(j)}) ${o}
 }
 
 JOB_LABEL.factcheck = 'Checking answer keys';
+// Only questions made in the last 3 days, and at most 3 batches a run. Checking the whole old bank
+// in one go used up Google's free daily allowance — and then lectures could not be transcribed.
+// Older questions are checked when you tap "Answer wrong?".
 async function queueFactCheck(prio = 6.5) {
+  const since = Date.now() - 3 * 864e5;
+  const jobs = (await DB.all('queue')).filter(j => j.kind === 'factcheck' && j.status !== 'done');
+  // Clear out the big backlog the first version queued.
+  const mids = Object.fromEntries((await DB.live('mcqs')).map(m => [m.id, m]));
+  for (const j of jobs) if (!j.payload.ids.some(id => (mids[id]?.created || 0) > since)) await DB.del('queue', j.id);
+  if (AI.isOut(AI.model) || AI.isOut(AI.bulkModel)) return 0;
   const queued = new Set((await DB.all('queue')).filter(j => j.kind === 'factcheck' && j.status !== 'done').flatMap(j => j.payload.ids));
-  const all = (await DB.live('mcqs')).filter(m => !m.checked && !m.flagged && !m.merged && !queued.has(m.id) && (qBank(m) === 'AI' || /^lecture/.test(m.src || '')));
+  const all = Object.values(mids).filter(m => (m.created || 0) > since && !m.checked && !m.flagged && !m.merged && !queued.has(m.id) && (qBank(m) === 'AI' || /^lecture/.test(m.src || ''))).slice(0, 24);
   for (let i = 0; i < all.length; i += 8) await Queue.add('factcheck', { ids: all.slice(i, i + 8).map(m => m.id) }, prio);
   return all.length;
 }
@@ -314,8 +323,8 @@ Handlers.factcheck = async function (job) {
 // and scans printed in your books (colposcopy, cytology, X-rays…), cut out without their captions.
 // Needs the PDF itself, so it runs on the laptop; the questions sync to the phone and iPad.
 JOB_LABEL.figmcq = 'Picture questions from your books';
-async function queueFigMcqs(limit = 6) {
-  if (!(await DB.all('files')).length) return 0;
+async function queueFigMcqs(limit = 3) {
+  if (!(await DB.all('files')).length || AI.isOut(AI.model) || AI.isOut(AI.bulkModel)) return 0;
   const mcqs = await DB.live('mcqs');
   const by = {}; for (const m of mcqs) (by[m.topicId] ||= []).push(m);
   const queued = new Set((await DB.all('queue')).filter(j => j.kind === 'figmcq' && j.status !== 'done').map(j => j.payload.topicId));

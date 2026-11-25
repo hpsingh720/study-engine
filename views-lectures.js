@@ -53,7 +53,7 @@ Views.lectures = async () => {
     const state = {
       recording: 'Recording', transcribed: 'Waiting to write questions', writing: 'Writing questions…',
       done: `${l.generated} question${l.generated === 1 ? '' : 's'}${l.reinforced?.length ? ` · ${l.reinforced.length} already in your bank` : ''}`,
-      thin: 'Too little speech captured'
+      thin: (l.failedParts || []).length ? 'Waiting for the AI to transcribe' : 'Too little speech captured'
     }[l.state] || l.state;
     return `<a class="card row between mid" href="#/lecture/${l.id}">
         <div><b>${esc(l.topic)}</b><br><span class="muted small">${when}${l.faculty ? ' · ' + esc(l.faculty) : ''} · ${state}</span></div>

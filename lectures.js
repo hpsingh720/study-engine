@@ -199,14 +199,20 @@ const Lectures = {
    */
   async transcribe(blob, lecture) {
     const engine = localStorage.getItem('lectureEngine') || 'gemini';
-    if (engine !== 'whisper' && AI.key) {
-      try { return await this.transcribeGemini(blob, lecture); }
-      catch (e) {
-        console.warn('Gemini could not transcribe this part; using Whisper', e);
-        if (!this.groqKey()) throw e;
-      }
+    let first = null, err = null;
+    // Gemini, unless Google's free allowance is used up for today on both models.
+    if (engine !== 'whisper' && AI.key && !(AI.isOut(AI.model) && AI.isOut(AI.bulkModel))) {
+      try { first = await this.transcribeGemini(blob, lecture); } catch (e) { err = e; console.warn('Gemini could not transcribe this part', e); }
+      // A loud two minutes that came back as a line or two is a failed listen, not a quiet room.
+      if (first && (first.text.length >= 60 || blob.size < 100000)) return first;
     }
-    return this.transcribeWhisper(blob, lecture);
+    if (!this.groqKey()) { if (first) return first; throw err || new Error('Add a Groq key (free) in Settings as a back-up for transcription.'); }
+    // Back-up: Groq's Whisper TRANSLATES Hindi and Punjabi straight into English — far better than
+    // its plain transcription, which guessed English or wrote Urdu letters.
+    let alt = null;
+    try { alt = await this.transcribeWhisper(blob, lecture, { translate: true }); }
+    catch (e) { console.warn('Whisper translation failed; plain transcription', e); try { alt = await this.transcribeWhisper(blob, lecture); } catch (e2) { if (!first) throw e2; } }
+    return !first || (alt && alt.text.length > first.text.length) ? alt : first;
   },
 
   async transcribeGemini(blob, lecture) {
@@ -236,7 +242,7 @@ Reply with the transcript text only.`;
   },
 
   /** Groq's Whisper endpoint. Free tier: 7,200 audio-seconds an hour, so a live lecture fits easily. */
-  async transcribeWhisper(blob, lecture) {
+  async transcribeWhisper(blob, lecture, { translate = false } = {}) {
     const p = Providers.get('groq');
     if (!p?.key) throw new Error('No Groq key');
 
@@ -258,9 +264,9 @@ Reply with the transcript text only.`;
     fd.append('prompt', `Medical college lecture in India${about ? ' on ' + about : ''}. The teacher mixes English with Hindi and Punjabi. Medical terms, drug names, eponyms, signs and abbreviations are spelled correctly, e.g. haemoglobin, ferritin, iron deficiency anaemia, pleural effusion, tetralogy of Fallot, TEF, VSD, ORS, IV fluids, mg/kg. ${tail}`.slice(0, 850));
 
     const lang = localStorage.getItem('lectureLang') || '';
-    if (lang) fd.append('language', lang);
+    if (lang && !translate) fd.append('language', lang);
 
-    const res = await Providers.send(p, '/audio/transcriptions', {
+    const res = await Providers.send(p, translate ? '/audio/translations' : '/audio/transcriptions', {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + p.key },
       body: fd
@@ -269,7 +275,7 @@ Reply with the transcript text only.`;
     if (res.status === 429) {
       const wait = +(res.headers.get('retry-after') || 30);
       await sleep(Math.min(wait, 120) * 1000);
-      return this.transcribeWhisper(blob, lecture);
+      return this.transcribeWhisper(blob, lecture, { translate });
     }
     if (!res.ok) throw new Error('Transcription failed (' + res.status + '): ' + (await res.text()).slice(0, 200));
     const d = await res.json();
@@ -361,7 +367,10 @@ Reply with the transcript text only.`;
 
     if ((l.transcript || '').length < 400) {
       l.state = 'thin';
-      l.error = 'Too little speech was captured to make questions from.';
+      // Parts still waiting for the AI are not "too little speech": say what is really happening.
+      l.error = (l.failedParts || []).length
+        ? `${l.failedParts.length} part${l.failedParts.length === 1 ? '' : 's'} of the class are recorded but not turned into text yet (the AI was busy or out of its free allowance). It keeps trying by itself; the questions follow.`
+        : 'Too little speech was captured to make questions from.';
       await this.save(l);
       this._paint();
       return;

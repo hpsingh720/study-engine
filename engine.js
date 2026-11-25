@@ -580,6 +580,8 @@ const Queue = {
     let c = pend.filter(j => this.accepts(lane, j, prov));
     // Phone in the pocket: only lecture work runs. Everything else waits until the app is opened.
     if (document.hidden && handheld()) c = c.filter(j => /^lecture/i.test(j.kind));
+    // Google's free allowance used up for today on both models: keep what is left for lectures.
+    if (lane === 'ai' && AI.isOut(AI.model) && AI.isOut(AI.bulkModel)) c = c.filter(j => /^lecture/i.test(j.kind));
     this._localBusy = pend.some(j => j.kind === 'extract');
     if (lane === 'ai') {
       // Only wait while books are still being opened (minutes) — not for the scanned-page reading, which can take days.
