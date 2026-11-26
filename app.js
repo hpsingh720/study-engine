@@ -59,7 +59,7 @@ const App = {
       if (h.includes('/notes') || h.includes('/settings')) return; // don't wipe Test results while you're in Settings
       // Never redraw under a case, a drill, a mock exam or a voice quiz in progress: it closed the
       // examination drawing half-way through (JVP has the most steps, so it was hit most).
-      if (document.body.classList.contains('station-open') || /^#\/(cases|drills|amc\/run|voice\/run)/.test(h) || (typeof LiveTalk !== 'undefined' && LiveTalk.on)) return;
+      if (document.body.classList.contains('station-open') || /^#\/(cases|drills|amc\/run|voice\/run|timetable)/.test(h) || (typeof LiveTalk !== 'undefined' && LiveTalk.on) || A._rosterBusy) return;
       this.render(true);
     }, 600);
   },

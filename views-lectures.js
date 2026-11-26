@@ -491,33 +491,56 @@ Object.assign(A, {
     location.hash = '#/lectures';
   },
 
+  // Reading a roster takes a minute or two (each page is read by the AI). It used to show one line
+  // that vanished when the screen redrew, leaving "No file chosen" as if nothing had happened. Now a
+  // panel stays at the bottom with each page's progress and the time, until the result is shown.
   async rosterRead() {
     const files = [...($('#roster-file')?.files || [])];
     if (!files.length) return toast('Pick the roster sheets first');
+    if (A._rosterBusy) return toast('Already reading — see the panel at the bottom.');
+    A._rosterBusy = true;
 
-    const say = t => { const p = $('#roster-progress'); if (p) p.textContent = t; };
+    document.getElementById('build-panel')?.remove();
+    const panel = Object.assign(document.createElement('div'), { id: 'build-panel', className: 'build-panel' });
+    panel.innerHTML = `<div class="row between mid"><b>Reading ${files.length} roster file${files.length === 1 ? '' : 's'}</b><span class="muted small" id="bp-time">0 s</span></div>
+      <div class="bp-bar"><i id="bp-fill"></i></div><p class="small" id="bp-msg">Opening the files…</p><div id="bp-end"></div>`;
+    document.body.appendChild(panel);
+    const t0 = Date.now(), q = s => panel.querySelector(s);
+    const clock = setInterval(() => { q('#bp-time').textContent = Math.round((Date.now() - t0) / 1000) + ' s'; }, 1000);
+    const say = (t, f) => { q('#bp-msg').textContent = t; if (f != null) q('#bp-fill').style.width = Math.round(f * 100) + '%'; };
     let rows = [], failed = [];
 
-    for (let i = 0; i < files.length; i++) {
-      const f = files[i];
-      say(`Reading ${f.name} (${i + 1} of ${files.length})…`);
-      try {
-        // A subject's sheet can run to several pages; read each one.
-        const imgs = /pdf$/i.test(f.name) || f.type === 'application/pdf'
-          ? await pdfToImages(f, 6)
-          : [await fileToDataUrl(f)];
-        // The filename is usually the subject ("Medicine Oct.pdf") and is a better fallback than
-        // "General" when the sheet's own title is unclear.
-        const hint = f.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
-        for (const img of imgs) rows = rows.concat(await Timetable.read(img, { subject: hint }));
-      } catch (e) {
-        console.warn('roster failed', f.name, e);
-        failed.push(`${f.name} (${String(e.message || e).slice(0, 160)})`);
+    try {
+      // Every page of every file is turned into a picture first, then all are read at once.
+      const pages = [];
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        say(`Opening ${f.name}…`, 0.05);
+        try {
+          const imgs = /pdf$/i.test(f.name) || f.type === 'application/pdf' ? await pdfToImages(f, 6) : [await fileToDataUrl(f)];
+          // The filename is usually the subject ("Medicine Oct.pdf") — a better fallback than "General".
+          const hint = f.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
+          imgs.forEach((img, n) => pages.push({ img, hint, label: `${f.name}${imgs.length > 1 ? ` page ${n + 1}` : ''}` }));
+        } catch (e) { failed.push(`${f.name} (${String(e.message || e).slice(0, 160)})`); }
       }
+      let done = 0;
+      say(`Reading ${pages.length} page${pages.length === 1 ? '' : 's'} with the AI…`, 0.1);
+      const results = await Promise.all(pages.map(async pg => {
+        try { const r = await Timetable.read(pg.img, { subject: pg.hint }); done++; say(`Read ${done} of ${pages.length} pages · ${rows.length + r.length} classes so far`, 0.1 + 0.85 * done / pages.length); rows = rows.concat(r); return r; }
+        catch (e) { done++; failed.push(`${pg.label} (${String(e.message || e).slice(0, 160)})`); say(`Read ${done} of ${pages.length} pages`, 0.1 + 0.85 * done / pages.length); return []; }
+      }));
+    } finally {
+      clearInterval(clock); A._rosterBusy = false;
     }
 
-    say('');
-    if (!rows.length) return toast(`Could not find any classes${failed.length ? ' — could not read ' + failed.join('; ') : ''}`, 15000);
+    if (!rows.length) {
+      say(`No classes found.`, 1); panel.classList.add('failed');
+      q('#bp-end').innerHTML = `<p class="small danger">${esc(failed.join(' · ') || 'The AI found no table on these pages.')}</p><button class="btn ghost sm mt" data-act="closeBuild">Close</button>`;
+      return;
+    }
+    panel.remove();
+    toast(`${rows.length} classes read${failed.length ? ` — ${failed.length} page(s) could not be read` : ''}. Check them, then save.`, 8000);
+    if (!location.hash.startsWith('#/timetable')) location.hash = '#/timetable';
 
     // One class can only be in one place at one time: drop anything the same across two sheets.
     const seen = new Set();
