@@ -59,7 +59,7 @@ const App = {
       if (h.includes('/notes') || h.includes('/settings')) return; // don't wipe Test results while you're in Settings
       // Never redraw under a case, a drill, a mock exam or a voice quiz in progress: it closed the
       // examination drawing half-way through (JVP has the most steps, so it was hit most).
-      if (document.body.classList.contains('station-open') || /^#\/(cases|drills|amc\/run|voice\/run|timetable)/.test(h) || (typeof LiveTalk !== 'undefined' && LiveTalk.on) || A._rosterBusy) return;
+      if (document.body.classList.contains('station-open') || /^#\/(cases|drills|amc\/run|voice\/run|timetable)/.test(h) || (typeof LiveTalk !== 'undefined' && LiveTalk.on) || A._rosterBusy || A._resorting || $('#idx-q')?.value) return;
       this.render(true);
     }, 600);
   },
@@ -212,12 +212,14 @@ const A = {
     const books = await Focus.books();
     if (!books.length) return toast('No textbook on this device yet. Add one under Library (set it to "Reference textbook"), or read it in on your laptop and let the text sync across.', 10000);
 
-    const built = new Set((await DB.live('topics')).filter(t => t.bookId && String(t.id).startsWith('f-')).map(t => t.bookId));
+    const built = new Set((await DB.live('topics')).filter(t => t.bookId).map(t => t.bookId));
     openModal(`<h3>Which book is ${sysName(code)}?</h3>
       <p class="muted small">The chapter list and the topics inside each chapter are read from this book's own contents page and printed headings — not from a standard list.</p>
-      <label class="row gap mid small mt"><input type="checkbox" id="sortSystems" ${books.some(b => Focus.multiSubject(b)) ? 'checked' : ''}> The book covers many subjects (like Harrison) — build it <b>once</b> and put every chapter into its own subject</label>
+      <p class="muted small mt">Harrison, Davidson, Bailey and other books that cover many subjects are built <b>once</b>: every chapter goes into its own subject (heart → Cardiovascular, lungs → Respiratory), whichever subject you start from.</p>
+      <p class="muted small">One-subject books (Ghai, Dutta, Shaw, Ahuja, Khurana, Dhingra, Park…) always stay in their own subject.</p>
+      <label class="row gap mid small mt"><input type="checkbox" id="sortSystems"> My book covers many subjects but is not marked "covers many subjects" below — sort its chapters too</label>
       <div class="menu mt">${books.map(b =>
-        `<button class="btn full" data-act="buildFromBook" data-id="${b.id}" data-sys="${code}"><span><b>${esc(b.short || b.name)}</b><br><small class="muted">${esc(b.name)}${b.fromLaptop ? ' · text from your laptop' : ''}${Focus.multiSubject(b) ? ' · covers many subjects' : ''}</small></span></button>
+        `<button class="btn full" data-act="buildFromBook" data-id="${b.id}" data-sys="${code}" data-sort="${Focus.multiSubject(b) ? '1' : ''}"><span><b>${esc(b.short || b.name)}</b><br><small class="muted">${esc(b.name)}${b.fromLaptop ? ' · text from your laptop' : ''}${Focus.multiSubject(b) ? ' · covers many subjects' : ''}</small></span></button>
         ${built.has(b.id) && Focus.multiSubject(b) ? `<button class="btn ghost sm" data-act="resortBook" data-id="${b.id}">Already built? Sort ${esc(b.short || b.name)}'s chapters into their subjects</button>` : ''}`).join('')}</div>`);
   },
 
@@ -225,14 +227,26 @@ const A = {
   // how far along, how long so far — and, if Gemini fails, the reason and a Try again button.
   async resortBook(el) {
     closeModal();
-    toast('Sorting the chapters into their subjects…', 4000);
-    try { const n = await Focus.resortBook(el.dataset.id); toast(`${n} topic${n === 1 ? '' : 's'} moved to their own subjects.`, 8000); App.render(true); }
-    catch (e) { toast(e.message || String(e), 9000); }
+    if (A._resorting) return toast('Already sorting — wait for it to finish.', 4000);
+    A._resorting = true;
+    const panel = document.getElementById('build-panel') || document.body.appendChild(Object.assign(document.createElement('div'), { id: 'build-panel', className: 'build-panel' }));
+    const say = (msg, f) => { panel.innerHTML = `<div class="card"><b>Sorting the book into subjects</b><p class="small mt">${esc(msg)}</p>${f == null ? '' : bar(Math.round(f * 100))}</div>`; };
+    say('Starting…', 0);
+    Focus._say = m => say(m);
+    try {
+      const { moved, total, by } = await Focus.resortBook(el.dataset.id, (m, n, f) => say(m, f));
+      const list = Object.entries(by).sort((a, b) => b[1] - a[1]).map(([c, n]) => `${sysName(c)} ${n}`).join(' · ');
+      panel.innerHTML = `<div class="card"><b>Done — ${moved} of ${total} topics moved.</b><p class="small mt">${esc(list)}</p><p class="muted small mt">Your other devices get this on their next sync.</p><button class="btn sm mt" data-act="closeBuild">OK</button></div>`;
+      App.render(true);
+    } catch (e) {
+      panel.innerHTML = `<div class="card"><b>Could not sort it</b><p class="small mt">${esc(e.message || String(e))}</p><div class="row gap mt"><button class="btn primary sm" data-act="resortBook" data-id="${esc(el.dataset.id)}">Try again</button><button class="btn ghost sm" data-act="closeBuild">Close</button></div></div>`;
+    } finally { A._resorting = false; Focus._say = null; }
   },
   async buildFromBook(el) {
-    const sortSystems = el.dataset.sort === '1' || !!document.getElementById('sortSystems')?.checked;
+    const wantSort = el.dataset.sort === '1' || !!document.getElementById('sortSystems')?.checked;
     closeModal();
     const { id, sys } = el.dataset;
+    const sortSystems = wantSort && !Focus.singleSubject(await Focus.book(id));
     if (A._building) { toast('Already building — see the panel at the bottom.'); return; }
     A._building = true;
     const book = await Focus.book(id);
@@ -1118,6 +1132,7 @@ Return JSON: {"ok":true,"mnemonic":"","items":[{"letter":"","item":""}],"note":"
 
 // Change / input handlers
 const C = {
+  indexAll() { const q = $('#idx-q'); if (q) I.indexFind(q); },
   /** The chapter menu on a subject page: straight to that chapter instead of scrolling for it. */
   jumpChapter(el) {
     const target = el.value && document.getElementById(el.value);
@@ -1195,6 +1210,23 @@ const C = {
   }
 };
 const I = {
+  indexFind(el) {
+    clearTimeout(el._t);
+    el._t = setTimeout(async () => {
+      const out = $('#idx-out'); if (!out) return;
+      const q = el.value.trim().toLowerCase();
+      if (q.length < 2) { out.innerHTML = ''; return; }
+      const words = q.split(/\s+/).filter(Boolean);
+      const sys = $('#idx-all')?.checked ? '' : el.dataset.sys;
+      const names = {}; for (const b of await DB.all('books')) names[b.id] = b.short || b.name;
+      const hay = t => `${t.name} ${t.chapter || t.parentName || ''} ${(t.kw || []).join(' ')}`.toLowerCase();
+      const hits = (await DB.live('topics')).filter(t => (!sys || t.system === sys) && words.every(w => hay(t).includes(w)))
+        .sort((a, b) => (b.name.toLowerCase().includes(q) ? 1 : 0) - (a.name.toLowerCase().includes(q) ? 1 : 0) || a.name.length - b.name.length);
+      out.innerHTML = hits.length
+        ? `<p class="muted small mt">${hits.length} found${hits.length > 40 ? ' — showing 40' : ''}</p><div class="list">${hits.slice(0, 40).map(t => `<a class="row between mid pad" href="#/topic/${t.id}"><span><b>${esc(t.name)}</b><br><small class="muted">${esc(sysName(t.system))}${t.chapter || t.parentName ? ' · ' + esc(t.chapter || t.parentName) : ''}${t.bookId && names[t.bookId] ? ' · ' + esc(names[t.bookId]) : ''}</small></span><span class="chev">›</span></a>`).join('')}</div>`
+        : `<p class="muted small mt">Nothing in ${sys ? esc(sysName(sys)) : 'any subject'} matches "${esc(el.value.trim())}".${sys ? ' Tick "Search every subject" to look wider.' : ''}</p>`;
+    }, 200);
+  },
   saveNote(el) {
     clearTimeout(el._t);
     el._t = setTimeout(async () => { const n = await getNote(el.dataset.id); n.text = el.value; await DB.put('notes', n); const s = $('#note-saved'); if (s) s.textContent = 'Saved'; }, 600);

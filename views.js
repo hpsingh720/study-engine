@@ -117,6 +117,7 @@ Views.systems = async () => {
   const busy = hasFocus ? await Focus.inFlight() : [];
 
   return `<div class="page"><header class="page-head"><div><p class="eyebrow">${done} of ${all} topics done</p><h1>Systems</h1></div></header>${bar(pct(done, all), 'thick')}
+  ${indexSearch('')}
 
   ${busy.length && !Providers.active().some(p => !p.ocrOnly) ? `<section class="card mt">
     <p class="warn-t"><b>Nothing can be written on this device.</b> ${busy.length} job${busy.length === 1 ? ' is' : 's are'} waiting, but there is no AI key here — add a free Gemini key in Settings, or open the app on the device that has one and they will run there.</p>
@@ -302,6 +303,7 @@ Views.system = async (code) => {
   const bookNames = {};
   for (const b of await DB.all('books')) bookNames[b.id] = b.short || b.name;
   const anchored = { n: withBook.length, books: [...new Set(withBook.map(t => bookNames[t.bookId] || 'a book'))] };
+  const lumped = await Focus.lumped(code);
   return `<div class="page">
   <header class="page-head"><div><p class="eyebrow"><a href="#/systems" class="link">Systems</a> / ${done} of ${ts.length} done · accuracy ${accTxt(st.by['sys:' + code])}</p><h1>${sysName(code)}</h1></div>
     <div class="row gap wrap">
@@ -310,6 +312,10 @@ Views.system = async (code) => {
       ${books ? `<button class="btn ghost" data-act="genSystem" data-sys="${code}" ${missing ? '' : 'disabled'}>${missing ? `Generate ${missing} missing topic${missing === 1 ? '' : 's'}` : 'All sheets generated'}</button>` : ''}
     </div></header>
   ${bar(pct(done, ts.length), 'thick')}
+  ${indexSearch(code)}
+  ${lumped.map(l => `<section class="card mt" style="border-left:4px solid var(--warn, #d08a00)"><b>${l.here} topics here are from ${esc(l.name)}, which covers all of medicine.</b>
+    <p class="small mt">They were all filed under ${esc(sysName(code))} by an older version. One tap puts each chapter into its own subject — heart into Cardiovascular, lungs into Respiratory. Notes, questions and ticks stay with them.</p>
+    <button class="btn primary sm mt" data-act="resortBook" data-id="${esc(l.id)}">Sort ${esc(l.name)} into its subjects</button></section>`).join('')}
 
   <section class="card soft mt">
     <div class="card-head"><h3>Chapters</h3><span class="muted small">${ts.length} topics${anchored.n ? ` · ${anchored.n} anchored to ${esc(anchored.books.join(', '))}` : ''}</span></div>
@@ -334,6 +340,13 @@ Views.system = async (code) => {
   <section class="card flush mt"><button class="btn ghost full" data-act="addTopic" data-sys="${code}">+ Add a topic</button></section>
   </div>`;
 };
+
+/** Search the topic index — every chapter and topic you have built, in every subject or this one. */
+function indexSearch(code) {
+  return `<section class="card mt"><input id="idx-q" type="search" placeholder="Search the index — topic or chapter, e.g. hyponatremia" autocomplete="off" data-input="indexFind" data-sys="${code}" style="width:100%">
+    ${code ? `<label class="row gap mid small mt"><input type="checkbox" id="idx-all" data-change="indexAll"> Search every subject, not just ${esc(sysName(code))}</label>` : ''}
+    <div id="idx-out"></div></section>`;
+}
 
 /**
  * Topics grouped under their chapter, so a subject reads like the book's contents page.

@@ -830,38 +830,81 @@ ${groups[g].join('\n\n')}`
    * subject, decided once by the AI from the chapter titles. Before, every chapter of Harrison went
    * into whichever subject you happened to build from — all of medicine filed under Endocrine.
    */
-  async sortChapters(book, names) {
-    const codes = SEED.systems.map(s => `${s.code} = ${s.name}`).join('\n');
-    const out = await this._bigAI({ json: true, prompt: `These are the chapters of "${book.name}". Put each into ONE of these subjects, by what the chapter is about:
+  // names: chapter titles, or {name, part} so "Approach to the patient" under "Disorders of the
+  // Kidney" lands in Renal. Harrison has 400+ chapters, so they go 80 at a time.
+  async sortChapters(book, names, onProgress) {
+    const items = names.map(n => typeof n === 'string' ? { name: n, part: '' } : n);
+    // Harrison or Bailey never fills Paediatrics, Obstetrics or Gynaecology — those subjects come
+    // from Ghai, Dutta and the rest. Only a general-practice book (Murtagh) covers them.
+    const gp = /murtagh|general practice/i.test(`${book?.name || ''} ${book?.short || ''}`);
+    const allowed = SEED.systems.filter(s => gp || !['PAEDS', 'OBS', 'GYN'].includes(s.code));
+    const codes = allowed.map(s => `${s.code} = ${s.name}`).join('\n');
+    const ok = new Set(allowed.map(s => s.code)), map = {};
+    const STEP = 80;
+    for (let i = 0; i < items.length; i += STEP) {
+      const part = items.slice(i, i + STEP);
+      onProgress?.(`Sorting chapters ${i + 1}–${i + part.length} of ${items.length} into their subjects…`, i, i / items.length);
+      const out = await this._bigAI({ json: true, prompt: `These are chapters of "${book?.name || 'a medical textbook'}". Put each into ONE of these subjects, by what the chapter is about:
 ${codes}
-Use "" for a chapter that belongs to none (history, principles of research, general introductions, appendices).
+Use "" only for a chapter that belongs to no clinical subject (history of medicine, research methods, appendices).
+The section a chapter sits in is a strong clue: "Approach to the patient" in the kidney section is RENAL.${gp ? '' : `
+This is an adult book: there is no Paediatrics, Obstetrics or Gynaecology here. A chapter on a disease in pregnancy or in children goes to the organ system it is about.`}
 
 Chapters:
-${names.map((n, i) => `${i + 1}. ${n}`).join('\n')}
+${part.map((c, k) => `${k + 1}. ${c.name}${c.part ? `   [section: ${c.part}]` : ''}`).join('\n')}
 
 Return JSON: {"map":[{"n":1,"code":"CVS"}]} — one entry per chapter, in order.` });
-    const ok = new Set(SEED.systems.map(s => s.code)), map = {};
-    for (const x of Array.isArray(out?.map) ? out.map : []) { const name = names[(+x?.n || 0) - 1]; if (name) map[name] = ok.has(x.code) ? x.code : ''; }
+      for (const x of Array.isArray(out?.map) ? out.map : []) { const c = part[(+x?.n || 0) - 1]; if (c) map[c.name] = ok.has(x.code) ? x.code : ''; }
+    }
+    const got = Object.keys(map).length;
+    if (got < items.length * 0.6) throw new Error(`The AI sorted only ${got} of ${items.length} chapters — nothing was moved. Try again in a minute.`);
     return map;
   },
   // A multi-subject book already built into one subject: move each of its chapters to the right one.
+  // Every topic tied to the book moves — the ones it made and the starter-list ones it took over.
   async resortBook(bookId, onProgress) {
     const book = await this.book(bookId);
-    const ts = (await DB.live('topics')).filter(t => t.bookId === bookId && String(t.id).startsWith('f-'));
-    const names = [...new Set(ts.map(t => t.chapter).filter(Boolean))];
-    if (!names.length) return 0;
-    onProgress?.(`Sorting ${names.length} chapters into their subjects…`, 0, 0.3);
-    const map = await this.sortChapters(book, names);
+    if (this.singleSubject(book)) throw new Error(`${book?.short || book?.name || 'This book'} covers one subject, so it stays where it is.`);
+    const ts = (await DB.live('topics')).filter(t => t.bookId === bookId);
+    const chOf = t => t.chapter || t.parentName || '';
+    const seen = new Map();
+    for (const t of ts) { const n = chOf(t); if (n && !seen.has(n)) seen.set(n, { name: n, part: t.part || '' }); }
+    if (!seen.size) throw new Error('This book has no chapters built yet. Build it first.');
+    const map = await this.sortChapters(book, [...seen.values()], onProgress);
+    const by = {};
     let moved = 0;
-    for (const t of ts) { const code = map[t.chapter]; if (code && code !== t.system) { t.system = code; await DB.put('topics', t); moved++; } }
-    if (book && book.system) { delete book.system; try { await DB.put('books', book); } catch (e) {} }
-    return moved;
+    for (const t of ts) {
+      const code = map[chOf(t)];
+      if (!code) continue;
+      by[code] = (by[code] || 0) + 1;
+      if (code !== t.system) { t.system = code; await DB.put('topics', t); moved++; }
+    }
+    const b = await DB.get('books', bookId);
+    if (b && b.system) { delete b.system; await DB.put('books', b); }
+    return { moved, total: ts.length, by };
   },
-  multiSubject(book) { return /harrison|davidson|kumar|clark|oxford handbook|textbook of medicine|principles of internal|bailey|love|srb|manipal manual|sabiston|schwartz|murtagh|general practice/i.test(`${book?.name || ''} ${book?.short || ''}`); },
+  // A many-subject book whose topics all sit in one subject — built before sorting existed.
+  async lumped(code) {
+    const ts = await DB.live('topics');
+    const out = [];
+    for (const id of new Set(ts.filter(t => t.bookId && t.system === code).map(t => t.bookId))) {
+      const book = await this.book(id);
+      if (!this.multiSubject(book)) continue;
+      const mine = ts.filter(t => t.bookId === id);
+      const here = mine.filter(t => t.system === code).length;
+      if (mine.length >= 30 && here / mine.length > 0.6) out.push({ id, name: book?.short || book?.name || 'This book', here });
+    }
+    return out;
+  },
+  // A one-subject book (Ghai is all Paediatrics, Dutta all Obstetrics) is never spread across
+  // subjects, whatever is ticked: "Cardiovascular disorders in children" stays in Paediatrics.
+  singleSubject(book) { return /ghai|nelson|o\.?p\.? ?ghai|essential pa?ediatrics|dutta|williams|shaw|berek|novak|howkins|bourne|gynaecolog|gynecolog|obstetric|pa?ediatric|ahuja|niraj|psychiatr|khurana|kanski|parsons|ophthalm|dhingra|logan|\bent\b|otorhino|park'?s|preventive|forensic|reddy|maheshwari|orthop/i.test(`${book?.name || ''} ${book?.short || ''}`); },
+  multiSubject(book) { return !this.singleSubject(book) && /harrison|davidson|kumar ?(&|and) ?clark|oxford handbook of clinical|textbook of medicine|principles of internal|internal medicine|bailey|srb|manipal manual|sabiston|schwartz|murtagh|general practice/i.test(`${book?.name || ''} ${book?.short || ''}`); },
 
   async fromBook(bookId, { onProgress, system = '', sortSystems = false } = {}) {
     const book = await this.book(bookId);
     if (!book) throw new Error('Book not found');
+    if (this.singleSubject(book)) sortSystems = false;
     // The subject you are building now comes first; a book filed under one subject earlier no
     // longer drags every later build into that subject.
     const sys = system || book.system;
@@ -945,7 +988,9 @@ Return JSON: {"map":[{"n":1,"code":"CVS"}]} — one entry per chapter, in order.
       seenHere.add(key);
       const old = mine.get(key);
       if (old) {
-        Object.assign(old, { chapter: fields.chapter, parentName: fields.chapter, chapterNo: fields.chapterNo, part: fields.part || '', order: fields.order });
+        // Its subject follows the chapter too — before, a rebuild with sorting left every old topic
+        // in the subject it was first built into.
+        Object.assign(old, { chapter: fields.chapter, parentName: fields.chapter, chapterNo: fields.chapterNo, part: fields.part || '', order: fields.order, system: fields.system || old.system });
         if (!old.bookPage && fields.bookPage) old.bookPage = fields.bookPage;
         if (fields.kw?.length && (old.kw || []).length < 3) old.kw = fields.kw;
         kept.push(old);
@@ -983,7 +1028,8 @@ Return JSON: {"map":[{"n":1,"code":"CVS"}]} — one entry per chapter, in order.
     let chSys = {};
     if (sortSystems) {
       onProgress?.(`Sorting ${chapters.length} chapters into their subjects…`, 0, 0.84);
-      try { chSys = await this.sortChapters(book, chapters.map(c => c.name)); } catch (e) { console.warn('chapter sorting failed — all go to this subject', e); }
+      // If this fails the build stops — quietly dumping all of Harrison into one subject again is worse.
+      chSys = await this.sortChapters(book, chapters.map(c => ({ name: c.name, part: c.part || '' })), onProgress);
     }
 
     for (let i = 0; i < chapters.length; i++) {
