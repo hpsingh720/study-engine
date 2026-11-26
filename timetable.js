@@ -335,10 +335,22 @@ Rules:
 
 Return JSON: {"subject":"","rows":[{"date":"","start":"","end":"","topic":"","faculty":"","unclear":false}]}`;
 
-    const p = Providers.active().find(x => x.vision && !x.ocrApi);
-    const out = p
-      ? await Providers.call(p, { prompt, images: [dataUrl], temperature: 0.1, maxTokens: 8000 })
-      : await AI.call({ prompt, images: [dataUrl], temperature: 0.1, maxTokens: 8000 });
+    // Every picture-reading AI you have, one after another, and Gemini's two models — a single
+    // refusal (a retired model, a busy server) used to end with "could not be read" and no reason.
+    const cap = (pr, ms) => Promise.race([pr, new Promise((_, no) => setTimeout(() => no(new Error('no answer in ' + ms / 1000 + ' s')), ms))]);
+    const tries = [];
+    if (AI.key) { tries.push(['Gemini', () => AI.call({ prompt, images: [dataUrl], temperature: 0.1 })]); tries.push(['Gemini Lite', () => AI.call({ prompt, images: [dataUrl], temperature: 0.1, model: AI.bulkModel })]); }
+    for (const p of Providers.active().filter(x => x.vision && !x.ocrApi)) tries.push([p.name, () => Providers.call(p, { prompt, images: [dataUrl], temperature: 0.1, maxTokens: 8000 })]);
+    if (!tries.length) throw new Error('add your Gemini key in Settings');
+    let out = null; const why = [];
+    for (let round = 0; round < 2 && !out; round++) {
+      if (round) await sleep(8000);
+      for (const [name, go] of tries) {
+        try { const o = await cap(go(), 120000); if (Array.isArray(o?.rows)) { out = o; break; } why.push(name + ': no table found'); }
+        catch (e) { why.push(name + ': ' + String(e.message || e).slice(0, 70)); }
+      }
+    }
+    if (!out) throw new Error(why.slice(-3).join(' · '));
 
     const subj = (out.subject || subject || 'General').trim();
     const resolved = await this.resolve(subj);

@@ -53,10 +53,11 @@ Views.lectures = async () => {
     const state = {
       recording: 'Recording', transcribed: 'Waiting to write questions', writing: 'Writing questions…',
       done: `${l.generated} question${l.generated === 1 ? '' : 's'}${l.reinforced?.length ? ` · ${l.reinforced.length} already in your bank` : ''}`,
-      thin: (l.failedParts || []).length ? 'Waiting for the AI to transcribe' : 'Too little speech captured'
+      thin: (l.failedParts || []).length ? 'Waiting for the AI to transcribe' : (l.lostParts || []).length ? 'Parts lost (older version)' : 'Too little speech captured'
     }[l.state] || l.state;
+    const why = (l.failedParts || []).length && l.error ? `<br><span class="small warn-t">${esc(l.error.replace(/^.*?\(/, '').replace(/\)$/, '').slice(0, 90))}</span>` : '';
     return `<a class="card row between mid" href="#/lecture/${l.id}">
-        <div><b>${esc(l.topic)}</b><br><span class="muted small">${when}${l.faculty ? ' · ' + esc(l.faculty) : ''} · ${state}</span></div>
+        <div><b>${esc(l.topic)}</b><br><span class="muted small">${when}${l.faculty ? ' · ' + esc(l.faculty) : ''} · ${state}</span>${why}</div>
         <span class="ni">›</span>
       </a>`;
   }).join('');
@@ -68,6 +69,7 @@ Views.lectures = async () => {
   return `<div class="page">
     <header class="page-head"><div><p class="eyebrow">College</p><h1>Lectures</h1></div>
       <div class="row gap"><a class="btn ghost" href="#/notes">Class notes</a><a class="btn ghost" href="#/timetable">Class roster</a></div></header>
+    ${native && !Lectures.native().listChunks ? `<div class="card soft"><p class="warn-t"><b>The Android app on this phone is an old one.</b> It cannot find a class recorded while the app was closed, so such a class is lost. Install the newest one over it — do not uninstall:</p><a class="btn primary full mt" href="https://github.com/hpsingh720/study-engine/releases/download/apk/study-engine.apk" target="_blank" rel="noopener">Download the new Android app</a><p class="muted small mt">Opens in Chrome. Then tap the file → Install. On a Samsung, turn off Auto Blocker first (Settings → Security and privacy → Auto Blocker).</p></div>` : ''}
     ${unfiled.length ? `<div class="card soft">
       <p class="warn-t"><b>${unfiled.length} lecture${unfiled.length === 1 ? '' : 's'} not filed under a topic.</b> Their questions exist but never come up in practice or a system test, because they belong to nothing.</p>
       <p class="muted small">${unfiled.map(l => esc(l.topic)).join(' · ')}</p>
@@ -510,12 +512,12 @@ Object.assign(A, {
         for (const img of imgs) rows = rows.concat(await Timetable.read(img, { subject: hint }));
       } catch (e) {
         console.warn('roster failed', f.name, e);
-        failed.push(f.name);
+        failed.push(`${f.name} (${String(e.message || e).slice(0, 160)})`);
       }
     }
 
     say('');
-    if (!rows.length) return toast(`Could not find any classes${failed.length ? ' — ' + failed.join(', ') + ' could not be read' : ''}`, 7000);
+    if (!rows.length) return toast(`Could not find any classes${failed.length ? ' — could not read ' + failed.join('; ') : ''}`, 15000);
 
     // One class can only be in one place at one time: drop anything the same across two sheets.
     const seen = new Set();

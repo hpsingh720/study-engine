@@ -170,6 +170,16 @@ const Lectures = {
     } catch (e) {
       console.warn('chunk failed', e);
       const fresh = await this.get(l.id);
+      // The file itself is gone (an older version deleted parts that failed): nothing to wait for.
+      if (/no longer on the device|not found|ENOENT/i.test(e.message || '')) {
+        fresh.failedParts = (fresh.failedParts || []).filter(x => x !== idx);
+        fresh.lostParts = [...new Set([...(fresh.lostParts || []), idx])];
+        fresh.error = `${fresh.lostParts.length} part${fresh.lostParts.length === 1 ? ' was' : 's were'} lost before this version (an older version deleted parts it could not transcribe).`;
+        await this.save(fresh); this._paint();
+        if (path) await this._forget({ path });
+        if (last && fresh.state === 'recording') await this.finish(l.id);
+        return 'lost';
+      }
       // One bad part must not lose the class: the recording stays on the phone and is tried again
       // later (Gemini busy, no internet, out of quota). It used to be deleted here — gone for good.
       fresh.failedParts = [...new Set([...(fresh.failedParts || []), idx])];
@@ -197,22 +207,30 @@ const Lectures = {
    * in English, where Whisper either guessed English that was never said or wrote Urdu letters.
    * Whisper (Groq) stays as the back-up, and for anyone who picks it in Settings.
    */
+  /**
+   * Groq's Whisper first — the one that made the good lectures (Benign lesions of the cervix,
+   * 26 questions) — now in translate mode, which writes Hindi and Punjabi out in English. Gemini
+   * only when Whisper fails or hears almost nothing. Putting Gemini first (v128) is when the
+   * lectures stopped coming through. Each try has a time limit, so one stuck call can never hold
+   * up the rest of the class.
+   */
   async transcribe(blob, lecture) {
-    const engine = localStorage.getItem('lectureEngine') || 'gemini';
-    let first = null, err = null;
-    // Gemini, unless Google's free allowance is used up for today on both models.
-    if (engine !== 'whisper' && AI.key && !(AI.isOut(AI.model) && AI.isOut(AI.bulkModel))) {
-      try { first = await this.transcribeGemini(blob, lecture); } catch (e) { err = e; console.warn('Gemini could not transcribe this part', e); }
-      // A loud two minutes that came back as a line or two is a failed listen, not a quiet room.
-      if (first && (first.text.length >= 60 || blob.size < 100000)) return first;
+    const cap = (pr, ms, what) => Promise.race([pr, new Promise((_, no) => setTimeout(() => no(new Error(what + ' gave no answer in ' + ms / 1000 + ' s')), ms))]);
+    const why = [];
+    let best = null;
+    const take = r => { if (r && (!best || (r.text || '').length > (best.text || '').length)) best = r; };
+    const enough = () => best && ((best.text || '').length >= 60 || blob.size < 100000);
+    if (this.groqKey()) {
+      try { take(await cap(this.transcribeWhisper(blob, lecture, { translate: true }), 150000, 'Groq')); }
+      catch (e) { why.push('Groq: ' + String(e.message || e).slice(0, 90)); }
+      if (!enough()) { try { take(await cap(this.transcribeWhisper(blob, lecture), 150000, 'Groq')); } catch (e) { why.push('Groq (plain): ' + String(e.message || e).slice(0, 60)); } }
+    } else why.push('no Groq key in Settings');
+    if (!enough() && AI.key && !(AI.isOut(AI.model) && AI.isOut(AI.bulkModel))) {
+      try { take(await cap(this.transcribeGemini(blob, lecture), 150000, 'Gemini')); }
+      catch (e) { why.push('Gemini: ' + String(e.message || e).slice(0, 90)); }
     }
-    if (!this.groqKey()) { if (first) return first; throw err || new Error('Add a Groq key (free) in Settings as a back-up for transcription.'); }
-    // Back-up: Groq's Whisper TRANSLATES Hindi and Punjabi straight into English — far better than
-    // its plain transcription, which guessed English or wrote Urdu letters.
-    let alt = null;
-    try { alt = await this.transcribeWhisper(blob, lecture, { translate: true }); }
-    catch (e) { console.warn('Whisper translation failed; plain transcription', e); try { alt = await this.transcribeWhisper(blob, lecture); } catch (e2) { if (!first) throw e2; } }
-    return !first || (alt && alt.text.length > first.text.length) ? alt : first;
+    if (best) return best;
+    throw new Error(why.join(' · ') || 'no speech-to-text service set up');
   },
 
   async transcribeGemini(blob, lecture) {
@@ -370,6 +388,7 @@ Reply with the transcript text only.`;
       // Parts still waiting for the AI are not "too little speech": say what is really happening.
       l.error = (l.failedParts || []).length
         ? `${l.failedParts.length} part${l.failedParts.length === 1 ? '' : 's'} of the class are recorded but not turned into text yet (the AI was busy or out of its free allowance). It keeps trying by itself; the questions follow.`
+        : (l.lostParts || []).length ? `${l.lostParts.length} part${l.lostParts.length === 1 ? ' was' : 's were'} lost before this version (an older version deleted parts it could not transcribe), so there is too little left to make questions from.`
         : 'Too little speech was captured to make questions from.';
       await this.save(l);
       this._paint();
@@ -1080,7 +1099,7 @@ On the parts:
 
   async _forget(c) {
     const q = (await DB.meta('pendingChunks')) || [];
-    await DB.meta('pendingChunks', q.filter(x => !(x.path === c.path && x.index === c.index)));
+    await DB.meta('pendingChunks', q.filter(x => x.path !== c.path));
   },
 
   /**
