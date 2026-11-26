@@ -7,6 +7,9 @@ on:
       - 'study-engine-v83/android-app/**'
       - '.github/workflows/android.yml'
 
+permissions:
+  contents: write
+
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -43,3 +46,14 @@ jobs:
           path: study-engine-v83/android-app/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 90
+
+      # The same APK as a plain download link that never changes, so the phone can install it
+      # straight from Chrome — no zip to extract:
+      # https://github.com/hpsingh720/study-engine/releases/download/apk/study-engine.apk
+      - name: Publish the APK as a direct download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp study-engine-v83/android-app/android/app/build/outputs/apk/debug/app-debug.apk study-engine.apk
+          gh release view apk --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create apk --repo "$GITHUB_REPOSITORY" --title "Study Engine Android app" --notes "The newest Android app. Install it over the old one; do not uninstall." --target "$GITHUB_SHA"
+          gh release upload apk study-engine.apk --clobber --repo "$GITHUB_REPOSITORY"
