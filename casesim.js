@@ -485,7 +485,7 @@ function animateFace() {
   const loop = () => {
     const m = document.getElementById('mouth');
     if (!m) return;
-    const v = Voice.speaking ? Voice.level : 0;
+    const v = LiveTalk.on ? LiveTalk.outLevel() : Voice.speaking ? Voice.level : 0;
     m.setAttribute('ry', (0.5 + v * 9).toFixed(1));
     m.setAttribute('rx', (9 - v * 2).toFixed(1));
     animateFace._r = requestAnimationFrame(loop);
@@ -840,4 +840,5 @@ Object.assign(I, {
 });
 
 ROUTES.push([/^#\/cases(?:\/(\w+))?$/, m => Views.cases(m[1])]);
-window.addEventListener('hashchange', () => { if (!location.hash.startsWith('#/cases/run')) LiveTalk.stop(); if (!location.hash.startsWith('#/cases')) Voice.stop(); });
+// Leaving the case ends the patient's line — but never the doubt tutor's, which goes with you.
+window.addEventListener('hashchange', () => { if (!location.hash.startsWith('#/cases/run') && !(window.Tutor && Tutor.on)) LiveTalk.stop(); if (!location.hash.startsWith('#/cases')) Voice.stop(); });

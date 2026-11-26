@@ -14,7 +14,16 @@ const LiveTalk = {
   url() { return `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(AI.key)}`; },
 
   // Two ways of writing the opening message are in use; whichever Google accepts is remembered.
-  _setups(model, system, voice) {
+  // extra: more for the opening message (tools, long sessions). Every way of asking is tried with
+  // it first and then without, so a model that refuses the extras still talks.
+  _setups(model, system, voice, extra) {
+    const base = this._baseSetups(model, system, voice);
+    if (!extra) return base;
+    const out = [];
+    for (const b of base) { if (b.name !== 'flat') out.push({ name: b.name + '+', setup: { ...b.setup, ...extra } }); out.push(b); }
+    return out;
+  },
+  _baseSetups(model, system, voice) {
     const speech = { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } };
     const common = {
       model: 'models/' + model,
@@ -41,11 +50,12 @@ const LiveTalk = {
    *  onState(state, detail) — 'connecting' | 'live' | 'ended' | 'error'
    *  onLevel(0..1)          — your microphone level
    */
-  async start({ system, voice = 'Charon', onYou, onThem, onState, onLevel } = {}) {
+  async start({ system, voice = 'Charon', extra = null, onYou, onThem, onState, onLevel, onTool } = {}) {
     if (this.on) return;
     if (!AI.key) throw new Error('Live talk needs your Gemini key — add it in Settings.');
     if (!window.WebSocket) throw new Error('This browser cannot hold a live line open.');
-    this.cb = { onYou, onThem, onState, onLevel };
+    this.cb = { onYou, onThem, onState, onLevel, onTool };
+    this._extra = extra;
     this.on = true; this.muted = false;
     this._you = ''; this._them = ''; this._ended = false;
     onState?.('connecting');
@@ -55,7 +65,7 @@ const LiveTalk = {
       if (Voice.speaking) Voice.stop();
       // Microphone first: if it cannot open, there is no point connecting.
       this.stream = await Voice._mic();
-      await this._connect(system, voice);
+      await this._connect(system, voice, extra);
       if (!this.on) return this._cleanup();
       this._capture();
       onState?.('live');
@@ -66,17 +76,20 @@ const LiveTalk = {
     }
   },
 
-  async _connect(system, voice) {
+  async _connect(system, voice, extra) {
     const saved = localStorage.getItem('liveModel'), savedSetup = localStorage.getItem('liveSetup');
     const models = saved && this.MODELS.includes(saved) ? [saved, ...this.MODELS.filter(m => m !== saved)] : this.MODELS;
     let last;
     for (const model of models) {
-      let setups = this._setups(model, system, voice);
-      if (model === saved && savedSetup) setups = [...setups.filter(s => s.name === savedSetup), ...setups.filter(s => s.name !== savedSetup)];
+      let setups = this._setups(model, system, voice, extra);
+      // The way that worked last time goes first — with the extras first, if there are any.
+      const same = s => s.name.replace(/\+$/, '') === savedSetup;
+      if (model === saved && savedSetup) setups = [...setups.filter(same), ...setups.filter(s => !same(s))];
       for (const s of setups) {
         try {
           await this._open(s.setup);
-          localStorage.setItem('liveModel', model); localStorage.setItem('liveSetup', s.name);
+          localStorage.setItem('liveModel', model); localStorage.setItem('liveSetup', s.name.replace(/\+$/, ''));
+          this.withExtra = s.name.endsWith('+');
           return;
         } catch (e) {
           last = e;
@@ -129,6 +142,10 @@ const LiveTalk = {
   _onMessage(msg) {
     const sc = msg.serverContent;
     if (msg.goAway) this._goingAway = true;
+    // A handle to carry the same conversation over to a new line when this one closes.
+    const ru = msg.sessionResumptionUpdate;
+    if (ru?.newHandle && ru.resumable !== false) this.handle = ru.newHandle;
+    if (msg.toolCall?.functionCalls?.length) this._tools(msg.toolCall.functionCalls);
     if (!sc) return;
     if (sc.inputTranscription?.text) {
       this._you += sc.inputTranscription.text;
@@ -157,6 +174,34 @@ const LiveTalk = {
       if (this._them.trim()) this.cb.onThem?.(this._them.trim(), true);
       this._them = '';
     }
+  },
+
+  async _tools(calls) {
+    const functionResponses = [];
+    for (const fc of calls) {
+      let response;
+      try { response = { result: await this.cb.onTool?.(fc.name, fc.args || {}) ?? 'not available' }; }
+      catch (e) { response = { error: String(e?.message || e) }; }
+      functionResponses.push({ id: fc.id, name: fc.name, response });
+    }
+    this._send({ toolResponse: { functionResponses } });
+  },
+
+  // A photo of the page or figure you are looking at, for the next question.
+  sendImage(b64, mimeType = 'image/jpeg') {
+    if (!this.on) return false;
+    this._send({ realtimeInput: { video: { data: b64, mimeType } } });
+    return true;
+  },
+
+  // How loud the voice coming out is right now (0..1), read every frame for the lips.
+  outLevel() {
+    const an = this._an;
+    if (!an || !this._srcs?.size) return 0;
+    const buf = this._abuf ||= new Float32Array(an.fftSize);
+    an.getFloatTimeDomainData(buf);
+    let s = 0; for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i];
+    return Math.min(1, Math.sqrt(s / buf.length) * 5);
   },
 
   _doneYou() {
@@ -236,7 +281,8 @@ const LiveTalk = {
     let sum = 0;
     for (let i = 0; i < n; i++) { let v = bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8); if (v >= 0x8000) v -= 0x10000; ch[i] = v / 0x8000; sum += ch[i] * ch[i]; }
     const src = ctx.createBufferSource();
-    src.buffer = buf; src.connect(ctx.destination);
+    if (!this._an || this._an.context !== ctx) { this._an = ctx.createAnalyser(); this._an.fftSize = 512; this._an.connect(ctx.destination); this._abuf = null; }
+    src.buffer = buf; src.connect(this._an);
     const at = Math.max(ctx.currentTime + 0.02, this._next || 0);
     src.start(at);
     this._next = at + buf.duration;
@@ -263,7 +309,7 @@ const LiveTalk = {
     if (!wasOn) return;
     const why = ev?.reason || '';
     const limit = this._goingAway || /time|duration|limit|deadline/i.test(why) || ev?.code === 1000;
-    this.cb.onState?.(limit ? 'ended' : 'error', limit ? 'The live line closes after about 10 minutes. Tap Talk live to carry on — the patient remembers what was said.' : this._explain(why || 'line dropped').message);
+    this.cb.onState?.(limit ? 'ended' : 'error', limit ? 'The live line closes after about 10 minutes. Tap Talk live to carry on — the patient remembers what was said.' : this._explain(why || 'line dropped').message, { limit, dropped: !limit });
   },
 
   stop() {

@@ -916,3 +916,28 @@ body.station-open { overflow: hidden; }
 #bp-msg { margin: 0; }
 
 .twin-line { margin: -4px 0 10px; }
+
+/* Live doubt tutor */
+.tutor-fab { position: fixed; right: 14px; bottom: calc(80px + env(safe-area-inset-bottom)); z-index: 7900; border: 0; border-radius: 999px; padding: 11px 16px; font-weight: 700; font-size: .95rem; background: var(--accent, #2563eb); color: #fff; box-shadow: 0 6px 18px rgba(0,0,0,.25); cursor: pointer; }
+.tutor-fab[hidden] { display: none; }
+@media (min-width: 900px) { .tutor-fab { bottom: 22px; right: 22px; } }
+.tutor-panel { position: fixed; right: 10px; bottom: calc(76px + env(safe-area-inset-bottom)); width: min(380px, calc(100vw - 20px)); max-height: 46vh; z-index: 8100; display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 16px; background: var(--card, #fff); color: var(--text, #111); box-shadow: 0 10px 30px rgba(0,0,0,.28); border: 1px solid var(--line, rgba(0,0,0,.08)); }
+.tutor-panel.big { max-height: 78vh; width: min(560px, calc(100vw - 20px)); }
+@media (min-width: 900px) { .tutor-panel { bottom: 18px; right: 18px; } }
+.tp-head { display: flex; align-items: center; gap: 10px; }
+.tp-face { width: 74px; flex: none; transition: transform .05s linear; }
+.tutor-panel.big .tp-face { width: 132px; }
+.tp-face svg { width: 100%; height: auto; display: block; }
+.tp-who { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.tp-who small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tp-lvl { height: 4px; border-radius: 4px; background: rgba(127,127,127,.18); overflow: hidden; }
+.tp-lvl i { display: block; height: 100%; width: 0; background: #2ea043; transition: width .08s; }
+.tp-log { overflow-y: auto; flex: 1; min-height: 60px; display: flex; flex-direction: column; gap: 6px; font-size: .92rem; }
+.tp-you, .tp-them { padding: 7px 10px; border-radius: 12px; max-width: 92%; line-height: 1.35; }
+.tp-you { align-self: flex-end; background: rgba(37,99,235,.12); }
+.tp-them { align-self: flex-start; background: rgba(127,127,127,.12); }
+.tp-you.open, .tp-them.open { opacity: .75; }
+.tp-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.tp-type { display: flex; gap: 6px; }
+.tp-type input { flex: 1; }
+.tp-type[hidden] { display: none; }

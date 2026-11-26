@@ -581,7 +581,8 @@ async function askTab(t) {
   const note = await getNote(t.id);
   const thread = (note.doubts || []).slice(-20).map(d => `<div class="qa"><div class="qa-q">${esc(d.q)}</div><div class="qa-a read">${md(d.a)}</div></div>`).join('');
   return `<div class="card"><h3>Ask about ${esc(t.name)}</h3>
-    <p class="muted small">Answers use this topic's sheet, and say clearly when Indian and Australian practice differ.</p>
+    <p class="muted small">Answers use this topic's sheet, and say clearly when Indian and Australian practice differ. Doubts you ask out loud with <b>Ask live</b> are saved here too, and the teacher remembers them next time.</p>
+    <button class="btn primary mt" data-act="tutorStart">🎙 Ask live — just talk</button>
     <div class="thread">${thread || '<p class="muted">No questions yet.</p>'}</div>
     <form class="ask" data-submit="askDoubt" data-id="${t.id}"><textarea name="q" rows="2" placeholder="e.g. Why tenecteplase over streptokinase in rural Australia?"></textarea><button class="btn primary">Ask</button></form></div>`;
 }
