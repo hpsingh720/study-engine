@@ -212,15 +212,25 @@ const A = {
     const books = await Focus.books();
     if (!books.length) return toast('No textbook on this device yet. Add one under Library (set it to "Reference textbook"), or read it in on your laptop and let the text sync across.', 10000);
 
+    const built = new Set((await DB.live('topics')).filter(t => t.bookId && String(t.id).startsWith('f-')).map(t => t.bookId));
     openModal(`<h3>Which book is ${sysName(code)}?</h3>
       <p class="muted small">The chapter list and the topics inside each chapter are read from this book's own contents page and printed headings — not from a standard list.</p>
+      <label class="row gap mid small mt"><input type="checkbox" id="sortSystems" ${books.some(b => Focus.multiSubject(b)) ? 'checked' : ''}> The book covers many subjects (like Harrison) — build it <b>once</b> and put every chapter into its own subject</label>
       <div class="menu mt">${books.map(b =>
-        `<button class="btn full" data-act="buildFromBook" data-id="${b.id}" data-sys="${code}"><span><b>${esc(b.short || b.name)}</b><br><small class="muted">${esc(b.name)}${b.fromLaptop ? ' · text from your laptop' : ''}</small></span></button>`).join('')}</div>`);
+        `<button class="btn full" data-act="buildFromBook" data-id="${b.id}" data-sys="${code}"><span><b>${esc(b.short || b.name)}</b><br><small class="muted">${esc(b.name)}${b.fromLaptop ? ' · text from your laptop' : ''}${Focus.multiSubject(b) ? ' · covers many subjects' : ''}</small></span></button>
+        ${built.has(b.id) && Focus.multiSubject(b) ? `<button class="btn ghost sm" data-act="resortBook" data-id="${b.id}">Already built? Sort ${esc(b.short || b.name)}'s chapters into their subjects</button>` : ''}`).join('')}</div>`);
   },
 
   // Building a subject takes a minute or more, so it gets a panel that stays: what it is doing,
   // how far along, how long so far — and, if Gemini fails, the reason and a Try again button.
+  async resortBook(el) {
+    closeModal();
+    toast('Sorting the chapters into their subjects…', 4000);
+    try { const n = await Focus.resortBook(el.dataset.id); toast(`${n} topic${n === 1 ? '' : 's'} moved to their own subjects.`, 8000); App.render(true); }
+    catch (e) { toast(e.message || String(e), 9000); }
+  },
   async buildFromBook(el) {
+    const sortSystems = el.dataset.sort === '1' || !!document.getElementById('sortSystems')?.checked;
     closeModal();
     const { id, sys } = el.dataset;
     if (A._building) { toast('Already building — see the panel at the bottom.'); return; }
@@ -240,11 +250,11 @@ const A = {
     const end = (html, ok) => {
       clearInterval(clock); A._building = false; Focus._say = null; over = true;
       panel.classList.add(ok ? 'done' : 'failed');
-      $p('#bp-end').innerHTML = html + `<div class="row gap mt">${ok ? '' : `<button class="btn primary sm" data-act="buildFromBook" data-id="${esc(id)}" data-sys="${esc(sys || '')}">Try again</button>`}<button class="btn ghost sm" data-act="closeBuild">Close</button></div>`;
+      $p('#bp-end').innerHTML = html + `<div class="row gap mt">${ok ? '' : `<button class="btn primary sm" data-act="buildFromBook" data-id="${esc(id)}" data-sys="${esc(sys || '')}" data-sort="${sortSystems ? '1' : ''}">Try again</button>`}<button class="btn ghost sm" data-act="closeBuild">Close</button></div>`;
     };
     try {
-      const { chapters, made, updated = 0, removed = 0 } = await Focus.fromBook(id, { system: sys || '', onProgress: (msg, n, f) => set(typeof n === 'number' && n && !/^Reading|busy/.test(msg) ? `${msg} — ${n} topics so far` : msg, f) });
-      if (sys) await Focus.assignSystem(id, sys);
+      const { chapters, made, updated = 0, removed = 0 } = await Focus.fromBook(id, { system: sys || '', sortSystems, onProgress: (msg, n, f) => set(typeof n === 'number' && n && !/^Reading|busy/.test(msg) ? `${msg} — ${n} topics so far` : msg, f) });
+      if (sys && !sortSystems) await Focus.assignSystem(id, sys);
       // Pair the new topics with the AMC list (checked by the AI), in the background.
       setTimeout(() => Focus.linkAll().catch(console.warn), 3000);
       set('Done.', 1);
@@ -417,7 +427,7 @@ const A = {
     if (!t || !sheet) return toast('Make the notes for this topic first.');
     el.dataset.busy = '1'; el.disabled = true;
     const orig = el.innerHTML;
-    el.innerHTML = '<span class="spin"></span>Writing the differences…';
+    el.innerHTML = '<span class="spin"></span>' + (el.dataset.force ? 'Rewriting — only real differences…' : 'Writing the differences…');
     try {
       sheet.comparison = await Gen.comparison(t);
       sheet.contentAt = Date.now();   // not "edited": that marks notes you changed by hand

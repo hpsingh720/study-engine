@@ -50,7 +50,8 @@ const Sync = {
     this.busy = true; this.set('syncing', 'Syncing…');
     try {
       await this.push();
-      const got = await this.pull();
+      let got = await this.pull();
+      try { got += await this.catchUpOnce(); } catch (e) { console.warn('catch-up sync', e); }
       localStorage.setItem('sb_last', Date.now());
       this.set('ok', 'Synced ' + new Date().toLocaleTimeString());
       if (got) App.softRefresh();
@@ -82,11 +83,18 @@ const Sync = {
     }
   },
 
-  async pull() {
+  /**
+   * Download what changed. Paged by (time, id), not time alone: one upload stamps up to 250 records
+   * with the SAME time, and paging by time alone (150 at a time, "after this time") skipped the
+   * other 100 for good. That is how a subject built on the laptop arrived on the iPad with most of
+   * its topics missing.
+   */
+  async pull(stores = SYNCED, sinceKey = 'sb_since') {
     const { url } = this.cfg();
-    let since = localStorage.getItem('sb_since') || '1970-01-01T00:00:00Z', got = 0;
+    let since = localStorage.getItem(sinceKey) || '1970-01-01T00:00:00Z', sinceId = localStorage.getItem(sinceKey + '_id') || '', got = 0;
     while (true) {
-      const q = `${url}/rest/v1/records?select=store,data,updated,synced_at&synced_at=gt.${encodeURIComponent(since)}&store=in.(${SYNCED.join(',')})&order=synced_at.asc&limit=150`;
+      const after = sinceId ? `or=${encodeURIComponent(`(synced_at.gt."${since}",and(synced_at.eq."${since}",id.gt."${sinceId}"))`)}` : `synced_at=gt.${encodeURIComponent(since)}`;
+      const q = `${url}/rest/v1/records?select=id,store,data,updated,synced_at&${after}&store=in.(${stores.join(',')})&order=synced_at.asc,id.asc&limit=200`;
       const r = await fetch(q, { headers: this.headers() });
       if (!r.ok) throw new Error('Download failed (' + r.status + '): ' + (await r.text()).slice(0, 160));
       const rows = await r.json();
@@ -101,13 +109,22 @@ const Sync = {
           got++;
           continue;
         }
+        if (local && (local.updated || 0) >= (row.updated || 0) && !local._dirty && sinceKey !== 'sb_since') continue;   // catch-up: already have it
         if (local && local._dirty && (local.updated || 0) > (row.updated || 0)) continue;
         await DB.put(row.store, { ...row.data, _dirty: 0 }, { fromSync: true });
         got++;
       }
-      if (rows.length) { since = rows[rows.length - 1].synced_at; localStorage.setItem('sb_since', since); }
-      if (rows.length < 150) break;
+      if (rows.length) { since = rows[rows.length - 1].synced_at; sinceId = rows[rows.length - 1].id; localStorage.setItem(sinceKey, since); localStorage.setItem(sinceKey + '_id', sinceId); }
+      if (rows.length < 200) break;
     }
+    return got;
+  },
+
+  // Once: fetch everything again (except pictures), to bring in what the old paging skipped.
+  async catchUpOnce() {
+    if (localStorage.getItem('sb_resync2') === 'done') return 0;
+    const got = await this.pull(SYNCED.filter(s => s !== 'media'), 'sb_resync2_at');
+    localStorage.setItem('sb_resync2', 'done');
     return got;
   },
 

@@ -825,10 +825,46 @@ ${groups[g].join('\n\n')}`
    * AMC follows from this rather than leading it: once a topic exists, generation writes both
    * AMC-style and MBBS-style questions for it.
    */
-  async fromBook(bookId, { onProgress, system = '' } = {}) {
+  /**
+   * A book that covers many subjects (Harrison, Davidson, Bailey): each chapter goes to its own
+   * subject, decided once by the AI from the chapter titles. Before, every chapter of Harrison went
+   * into whichever subject you happened to build from — all of medicine filed under Endocrine.
+   */
+  async sortChapters(book, names) {
+    const codes = SEED.systems.map(s => `${s.code} = ${s.name}`).join('\n');
+    const out = await this._bigAI({ json: true, prompt: `These are the chapters of "${book.name}". Put each into ONE of these subjects, by what the chapter is about:
+${codes}
+Use "" for a chapter that belongs to none (history, principles of research, general introductions, appendices).
+
+Chapters:
+${names.map((n, i) => `${i + 1}. ${n}`).join('\n')}
+
+Return JSON: {"map":[{"n":1,"code":"CVS"}]} — one entry per chapter, in order.` });
+    const ok = new Set(SEED.systems.map(s => s.code)), map = {};
+    for (const x of Array.isArray(out?.map) ? out.map : []) { const name = names[(+x?.n || 0) - 1]; if (name) map[name] = ok.has(x.code) ? x.code : ''; }
+    return map;
+  },
+  // A multi-subject book already built into one subject: move each of its chapters to the right one.
+  async resortBook(bookId, onProgress) {
+    const book = await this.book(bookId);
+    const ts = (await DB.live('topics')).filter(t => t.bookId === bookId && String(t.id).startsWith('f-'));
+    const names = [...new Set(ts.map(t => t.chapter).filter(Boolean))];
+    if (!names.length) return 0;
+    onProgress?.(`Sorting ${names.length} chapters into their subjects…`, 0, 0.3);
+    const map = await this.sortChapters(book, names);
+    let moved = 0;
+    for (const t of ts) { const code = map[t.chapter]; if (code && code !== t.system) { t.system = code; await DB.put('topics', t); moved++; } }
+    if (book && book.system) { delete book.system; try { await DB.put('books', book); } catch (e) {} }
+    return moved;
+  },
+  multiSubject(book) { return /harrison|davidson|kumar|clark|oxford handbook|textbook of medicine|principles of internal|bailey|love|srb|manipal manual|sabiston|schwartz|murtagh|general practice/i.test(`${book?.name || ''} ${book?.short || ''}`); },
+
+  async fromBook(bookId, { onProgress, system = '', sortSystems = false } = {}) {
     const book = await this.book(bookId);
     if (!book) throw new Error('Book not found');
-    const sys = book.system || system;
+    // The subject you are building now comes first; a book filed under one subject earlier no
+    // longer drags every later build into that subject.
+    const sys = system || book.system;
     this._say = m => onProgress?.(m, 0);
 
     const pages = [];
@@ -919,10 +955,11 @@ ${groups[g].join('\n\n')}`
       // you added) moves into this chapter; one another book of this subject owns stays where it is.
       // A topic of the same name in a different subject is a different topic — this chapter gets its
       // own, so it is never missing "Acid base disorders" because Medicine has one.
+      const fsys = fields.system || sys;
       const other = others.get(key);
-      if (other && (!other.system || other.system === sys)) {
+      if (other && (!other.system || other.system === fsys)) {
         if (other.bookId) return;
-        Object.assign(other, { bookId, chapter: fields.chapter, parentName: fields.chapter, chapterNo: fields.chapterNo, part: fields.part || '', order: fields.order, system: sys || other.system });
+        Object.assign(other, { bookId, chapter: fields.chapter, parentName: fields.chapter, chapterNo: fields.chapterNo, part: fields.part || '', order: fields.order, system: fsys || other.system });
         if (!other.bookPage && fields.bookPage) other.bookPage = fields.bookPage;
         kept.push(other);
         return;
@@ -930,11 +967,11 @@ ${groups[g].join('\n\n')}`
       // The same subject under another name (the AMC list's "Cervical screening and cervical
       // cancer" for the book's "Carcinoma cervix"): that topic joins this chapter, with its notes and
       // questions, instead of a second copy being made beside it.
-      const near = [...others.values()].filter(o => !o.bookId && !claimed.has(o.id) && (!o.system || o.system === sys))
+      const near = [...others.values()].filter(o => !o.bookId && !claimed.has(o.id) && (!o.system || o.system === fsys))
         .map(o => [o, this.likeness(o.name, fields.name)]).filter(x => x[1] > 0).sort((a, b) => b[1] - a[1])[0]?.[0];
       if (near) {
         claimed.add(near.id);
-        Object.assign(near, { bookId, bookName: fields.name, chapter: fields.chapter, parentName: fields.chapter, chapterNo: fields.chapterNo, part: fields.part || '', order: fields.order, system: sys || near.system });
+        Object.assign(near, { bookId, bookName: fields.name, chapter: fields.chapter, parentName: fields.chapter, chapterNo: fields.chapterNo, part: fields.part || '', order: fields.order, system: fsys || near.system });
         if (!near.bookPage && fields.bookPage) near.bookPage = fields.bookPage;
         kept.push(near);
         return;
@@ -942,9 +979,18 @@ ${groups[g].join('\n\n')}`
       made.push(this._topic(fields));
     };
 
+    // Many-subject book: each chapter's subject, decided once from the titles.
+    let chSys = {};
+    if (sortSystems) {
+      onProgress?.(`Sorting ${chapters.length} chapters into their subjects…`, 0, 0.84);
+      try { chSys = await this.sortChapters(book, chapters.map(c => c.name)); } catch (e) { console.warn('chapter sorting failed — all go to this subject', e); }
+    }
+
     for (let i = 0; i < chapters.length; i++) {
       const ch = chapters[i];
       const chapterNo = ch.no || i + 1;
+      const csys = sortSystems ? (chSys[ch.name] ?? sys) : sys;
+      if (sortSystems && chSys[ch.name] === '') continue;   // not a clinical subject (history, appendices)
       order = 1000 + (i + 1) * 1000;        // chapters stay together and in the book's order
       onProgress?.(`Making topics: ${ch.name}`, made.length + kept.length, 0.85 + 0.15 * i / chapters.length);
 
@@ -957,7 +1003,7 @@ ${groups[g].join('\n\n')}`
           place({
             name: s.name, chapter: ch.name, chapterNo, part: ch.part, bookId,
             bookPage: s.page || ch.page || 0,
-            system: sys || '', order: (order += 1)
+            system: csys || '', order: (order += 1)
           });
         }
         continue;
@@ -1016,7 +1062,7 @@ Same rules: one entry per separately examinable subject, textbook wording, 8-14 
 
         place({
           name, kw, chapter: ch.name, chapterNo, part: ch.part, bookId, bookPage: ch.page || 0,
-          system: sys || '', order: (order += 1)
+          system: csys || '', order: (order += 1)
         });
       }
 

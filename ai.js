@@ -304,7 +304,8 @@ RULES
 - pearls: include the small bedside concepts and examination tricks that separate look-alikes (e.g. direction of visible peristalsis: stomach left → right vs transverse colon right → left), plus red flags.
 - CLINICAL METHODS: where the excerpts come from a practical or clinical-methods book, use them for what only those books give — how to elicit a sign step by step, the order of the examination, what a positive test actually looks like, the local examination of a lump or an ulcer, and the questions a viva asks on it. Put the technique in clinical, the interpretation in investigations, and the traps in pearls. Half the MBBS exam is the practical one; do not reduce this to a list of signs.
 - TABLES: where the excerpts print a table the student would otherwise go back to the book for — classification or staging, a differential laid side by side, drug doses by weight or age, diagnostic criteria, normal ranges, a comparison of two look-alike conditions — reproduce it as a markdown table inside the cell it belongs to, with its [Book p.N] citation. Keep the book's own rows, columns and numbers; do not summarise a table into prose and do not invent rows the excerpts do not contain. A classification table belongs in patho, criteria and normal values in investigations, dosing in management.
-- comparison.rows: ONLY real differences between the Indian MBBS answer and the Australian/AMC answer — first-line drugs and doses, investigation of choice, thresholds and targets, setting (GP, rural, retrieval, referral), screening and prevention programs, legal duties (driving, notification, consent, mandatory reporting), Aboriginal and Torres Strait Islander considerations. 4–10 rows. "trap" = how the AMC exam typically tests that difference.
+- comparison.rows: ONLY real differences between the Indian MBBS answer and the Australian/AMC answer — first-line drugs and doses, investigation of choice, thresholds and targets, setting (GP, rural, retrieval, referral), screening and prevention programs, legal duties (driving, notification, consent, mandatory reporting), Aboriginal and Torres Strait Islander considerations. 0–10 rows. "trap" = how the AMC exam typically tests that difference.
+- HONESTY: a row is a difference only if Indian textbooks (Harrison, Davidson, Ghai, Dutta, Bailey and the like — most are the same international books Australians use) really teach it differently from Australian practice. Pathophysiology, physiology and most hospital management are the SAME everywhere — never invent a contrast to fill the table, and never describe the Indian side as vaguer or older just to make a difference. If there is no real difference, return "rows": [] and put the AMC exam points in "bottomLine" and "mustKnow". Every Australian number (dose, rate, threshold, interval) must be what eTG/Murtagh/Australian guidelines actually say.
 - comparison.same: one or two lines on what is the same, so the student can skip it.
 - comparison.mustKnow: Australia-only facts with no Indian equivalent (programs, laws, local epidemiology, brand-specific practice).
 
@@ -323,14 +324,16 @@ Return JSON exactly in this shape:
     // Rewriting the notes keeps the topic's mind map: it is its own piece of work, and losing it
     // silently to a rewrite is worse than it being a little older than the notes.
     const prev = await DB.get('sheets', topic.id);
+    if (out.comparison && Gen.hasComparison(out.comparison)) out.comparison.v = 2;
     const sheet = { id: topic.id, topicId: topic.id, sections: out.sections, comparison: out.comparison || {}, sources, model: ctx?.provider ? ctx.provider.name + ' ' + ctx.provider.model : AI.model, created: Date.now(), contentAt: Date.now() };
     if (prev?.mindmap) sheet.mindmap = prev.mindmap;
     await DB.put('sheets', sheet);
     return sheet;
   },
 
+  // Written — with differences, or (under the honesty rule) saying there are none worth knowing.
   hasComparison(c) {
-    return !!(c && Array.isArray(c.rows) && c.rows.some(r => r && (r.india || r.australia)));
+    return !!(c && Array.isArray(c.rows) && (c.rows.some(r => r && (r.india || r.australia)) || (c.rows.length === 0 && asText(c.bottomLine).trim())));
   },
 
   // The India-vs-Australia guide on its own: a short reply, so it is not lost at the end of a long one.
@@ -349,7 +352,8 @@ ${mbbs.length ? excerptBlock(mbbs) : '(no excerpts — use standard Indian MBBS 
 ${amc.length ? excerptBlock(amc) : '(no excerpts — use current Australian practice: eTG, Murtagh, RACGP, RCH guidelines, Australian Immunisation Handbook)'}
 
 RULES
-- rows: real differences only — first-line drugs and doses, investigation of choice, thresholds and targets, setting (GP, rural, referral), screening, legal duties, Aboriginal and Torres Strait Islander considerations. Give 4–8 rows. Almost every topic has some; for paediatric topics think of RCH guidelines.
+- rows: real differences only — first-line drugs and doses, investigation of choice, thresholds and targets, setting (GP, rural, referral), screening, legal duties, Aboriginal and Torres Strait Islander considerations. 0–8 rows; for paediatric topics think of RCH guidelines.
+- HONESTY: a row is a difference only if Indian textbooks (Harrison, Davidson, Ghai, Dutta, Bailey and the like — most are the same international books Australians use) really teach it differently from Australian practice. Pathophysiology, physiology and most hospital management are the SAME everywhere — never invent a contrast to fill the table, and never describe the Indian side as vaguer or older just to make a difference. If there is no real difference, return "rows": [] and put the AMC exam points in "bottomLine" and "mustKnow". Every Australian number (dose, rate, threshold, interval) must be what eTG/Murtagh/Australian guidelines actually say.
 - Cite like [Murtagh p.512] when an excerpt supports it; otherwise start the cell with "(general knowledge)".
 - Short lines. Use **bold** for the single most-tested fact.
 - bottomLine: two or three lines — what to remember for the AMC.
@@ -360,7 +364,8 @@ Return JSON exactly:
 {"bottomLine":"","rows":[{"aspect":"","india":"","australia":"","trap":"","cite":""}],"same":"","mustKnow":[""]}`;
     const out = ctx?.provider ? await Providers.call(ctx.provider, { prompt, system: SYSTEM_TUTOR, temperature: 0.2 }) : await AI.call({ prompt, system: SYSTEM_TUTOR, temperature: 0.2 });
     const c = out?.comparison || out;
-    if (!Gen.hasComparison(c)) throw new Error('The AI did not list any differences — try again.');
+    if (!Gen.hasComparison(c)) throw new Error('The AI wrote nothing — try again.');
+    c.v = 2;   // written under the honesty rule: no invented differences
     return c;
   },
 
